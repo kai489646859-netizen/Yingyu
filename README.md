@@ -18,7 +18,7 @@
 
 ### 📱 移动端体验 (平板/手机)
 <div align="center">
-  <img src="picture/竖版媒体库展示.jpg" alt="竖版媒体库" width="800">
+  <img src="picture/竖版媒体库展示.jpg" alt="竖版媒体库" width="">
   <img src="picture/竖版账号页面展示.jpg" alt="竖版账号" width="800">
   <img src="picture/竖版设置展示.jpg" alt="竖版设置" width="220">
   <img src="picture/平板首页展示.jpg" alt="平板首页" width="280">
