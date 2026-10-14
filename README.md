@@ -34,10 +34,27 @@
 
 ### 1. 部分功能设置
 
-  <img src="picture/应用设置展示01.jpg" alt="应用设置1" width="200">
-  <img src="picture/应用设置展示02.jpg" alt="应用设置2" width="200">
-  <img src="picture/应用设置展示03.jpg" alt="应用设置3" width="200">
-  <img src="picture/应用设置展示04.jpg" alt="应用设置4" width="200">
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" valign="top">
+        <img src="picture/应用设置展示01.jpg" alt="应用设置1" width="48%"><br>
+      </td>
+      <td align="center" valign="top">
+        <img src="picture/应用设置展示02.jpg" alt="应用设置2" width="48%"><br>
+      </td>
+    </tr>
+    <tr>
+      <td align="center" valign="top">
+        <img src="picture/应用设置展示03.jpg" alt="应用设置3" width="48%"><br>
+      </td>
+      <td align="center" valign="top">
+        <img src="picture/应用设置展示04.jpg" alt="应用设置4" width="48%"><br>
+      </td>
+    </tr>
+  </table>
+  <p><em>应用设置界面展示</em></p>
+</div>
 
 ### 2. 原码播放与强大解码
 底层深度集成 MPV 播放器核心，支持直接播放原文件，支持多种字幕格式与音轨切换。
