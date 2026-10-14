@@ -77,7 +77,7 @@
 | :--- | :--- | :--- |
 | **Android** | [0.7.1 (最新)](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v0.7.1) | `Yingyu-0.7.1.apk` |
 | Android 历史版本 | [0.6.9](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v0.6.9) | `Yingyu-0.6.9.apk` |
-| Windows | 后续安排 | *当前仓库尚未发布* |
+| Windows | 正在更新中… | *当前仓库尚未发布* |
 
 **⚠️ 安装必读：**
 1. **签名与升级**：Android 同签名升级可直接覆盖，保留账户、观看进度与设置。
