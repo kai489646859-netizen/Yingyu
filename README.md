@@ -35,10 +35,10 @@
 ### 1. 部分功能设置
 支持添加多个 Emby 服务器，随时一键切换。完美支持多用户登录，互不干扰。
 
-  <img src="picture/应用设置展示01.jpg" alt="应用设置1" width="">
-  <img src="picture/应用设置展示02.jpg" alt="应用设置2" width="">
-  <img src="picture/应用设置展示03.jpg" alt="应用设置3" width="">
-  <img src="picture/应用设置展示04.jpg" alt="应用设置4" width="">
+  <img src="picture/应用设置展示01.jpg" alt="应用设置1" width="400">
+  <img src="picture/应用设置展示02.jpg" alt="应用设置2" width="400">
+  <img src="picture/应用设置展示03.jpg" alt="应用设置3" width="400">
+  <img src="picture/应用设置展示04.jpg" alt="应用设置4" width="400">
 
 ### 2. 原码播放与强大解码
 底层深度集成 MPV 播放器核心，支持直接播放原文件，支持多种字幕格式与音轨切换。
