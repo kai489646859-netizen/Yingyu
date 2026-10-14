@@ -19,12 +19,12 @@
 ### 📱 移动端体验 (平板/手机)
 <div align="center">
   <img src="picture/竖版媒体库展示.jpg" alt="竖版媒体库" width="">
-  <img src="picture/竖版账号页面展示.jpg" alt="竖版账号" width="800">
-  <img src="picture/竖版设置展示.jpg" alt="竖版设置" width="220">
-  <img src="picture/平板首页展示.jpg" alt="平板首页" width="280">
-  <img src="picture/横板媒体库展示.jpg" alt="横板媒体库" width="280">
-    <img src="picture/横板账户展示.jpg" alt="横板账户" width="280">
-  <img src="picture/横板设置展示.jpg" alt="横板设置" width="280">
+  <img src="picture/竖版账号页面展示.jpg" alt="竖版账号" width="">
+  <img src="picture/竖版设置展示.jpg" alt="竖版设置" width="">
+  <img src="picture/平板首页展示.jpg" alt="平板首页" width="">
+  <img src="picture/横板媒体库展示.jpg" alt="横板媒体库" width="">
+    <img src="picture/横板账户展示.jpg" alt="横板账户" width="">
+  <img src="picture/横板设置展示.jpg" alt="横板设置" width="">
   <p><em>移动端体验</em></p>
 </div>
 
@@ -35,10 +35,10 @@
 ### 1. 部分功能设置
 支持添加多个 Emby 服务器，随时一键切换。完美支持多用户登录，互不干扰。
 
-  <img src="picture/应用设置展示01.jpg" alt="应用设置1" width="200">
-  <img src="picture/应用设置展示02.jpg" alt="应用设置2" width="200">
-  <img src="picture/应用设置展示03.jpg" alt="应用设置3" width="200">
-  <img src="picture/应用设置展示04.jpg" alt="应用设置4" width="200">
+  <img src="picture/应用设置展示01.jpg" alt="应用设置1" width="">
+  <img src="picture/应用设置展示02.jpg" alt="应用设置2" width="">
+  <img src="picture/应用设置展示03.jpg" alt="应用设置3" width="">
+  <img src="picture/应用设置展示04.jpg" alt="应用设置4" width="">
 
 ### 2. 原码播放与强大解码
 底层深度集成 MPV 播放器核心，支持直接播放原文件，支持多种字幕格式与音轨切换。
@@ -49,7 +49,7 @@
 ### 4. 日志可视化与隐私保护
 提供直观的日志可视化功能，方便排查播放问题。不上传签名私钥、账户凭据或用户媒体日志，所有数据仅保存在本地与你的 Emby 服务器中。
 <div align="center">
-  <img src="picture/日志可视化展示.jpg" alt="日志可视化" width="300">
+  <img src="picture/日志可视化展示.jpg" alt="日志可视化" width="">
   <p><em>日志可视化展示</em></p>
 </div>
 
