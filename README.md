@@ -1,11 +1,19 @@
-# Yingyu · 映屿
+<div align="center">
+  <img src="Yingyu icon.png" alt="Yingyu Icon" width="120">
+  <h1>Yingyu · 映屿</h1>
+  
+  <p>
+    <img src="https://img.shields.io/badge/Platform-Android-green.svg" alt="Platform">
+    <img src="https://img.shields.io/badge/License-GPL%20v3-blue.svg" alt="License">
+  </p>
+  
+  <p><strong>Yingyu（映屿）</strong>是一款基于 Emby 和 MPV 的跨平台影视客户端。支持登录 Emby 服务器，提供原文件播放、媒体库浏览、多账号管理与跨设备进度同步。</p>
+  
+  <p>📢 <strong>当前状态</strong>：本项目为跨平台版本归档仓库。已归档 Android 版本，Windows 版本正在规划中（未在本次发布范围）。</p>
+</div>
 
-![Platform](https://img.shields.io/badge/Platform-Android-green.svg)
-![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
+---
 
-**Yingyu（映屿）** 是一款基于 Emby 和 MPV 的跨平台影视客户端。支持登录 Emby 服务器，提供原文件播放、媒体库浏览、多账号管理与跨设备进度同步。
-
-> 📢 **当前状态**：本项目为跨平台版本归档仓库。已归档 Android 版本，Windows 版本正在规划中（未在本次发布范围）。
 
 ## ✨ 核心特性
 
@@ -24,7 +32,7 @@
 | Windows | 后续安排 | *当前仓库尚未发布* |
 
 **⚠️ 安装必读：**
-1. **签名与升级**：Android 同签名升级可直接覆盖，保留账户、观看进度与设置，**千万不要先卸载**。
+1. **签名与升级**：Android 同签名升级可直接覆盖，保留账户、观看进度与设置。
 2. **版本降级**：旧版仅作历史归档，不能把较低版本直接覆盖安装到高版本上。
 3. **校验文件**：每个版本同时附带对应的 `Yingyu-版本号-source.zip` 和 `SHA256SUMS.txt`，下载后可核对文件完整性。
 4. **源码说明**：请使用手工附带的源码包；GitHub 自动生成的 "Source code" 仅包含本仓库中的说明文件，不包含应用源码。
@@ -45,7 +53,7 @@
 ## 📄 开源协议与致谢
 
 本项目应用与对应源码按 **GPL-3.0** 交付。
-第三方组件（如 Emby、MPV）遵循各自许可证；许可证和依赖来源随对应源码保留。本项目为第三方开源客户端，与 Emby 官方无直接关联。
+第三方组件（如 Emby、MPV）遵循各自许可证；许可证和依赖来源随对应源码保留。本项目为第三方开源客户端，与 Emby 官方无直接关联。本项目由chatgpt开发测试。
 
 ---
 *如果映屿对你有帮助，欢迎扫码支持开发者继续维护：*
