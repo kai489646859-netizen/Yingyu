@@ -23,7 +23,7 @@
   <img src="picture/竖版设置展示.jpg" alt="竖版设置" width="">
   <img src="picture/平板首页展示.jpg" alt="平板首页" width="">
   <img src="picture/横板媒体库展示.jpg" alt="横板媒体库" width="">
-    <img src="picture/横板账户展示.jpg" alt="横板账户" width="">
+  <img src="picture/横板账户展示.jpg" alt="横板账户" width="">
   <img src="picture/横板设置展示.jpg" alt="横板设置" width="">
   <p><em>移动端体验</em></p>
 </div>
