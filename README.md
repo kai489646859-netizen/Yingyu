@@ -62,7 +62,7 @@
 
 | 手机媒体库 | 平板横屏媒体库 |
 | --- | --- |
-| <img src="picture/手机媒体库展示.jpg" alt="手机媒体库" width="360"> | ![平板横屏媒体库](picture/横板媒体库展示.jpg) |
+| <img src="picture/手机媒体库展示.jpg" alt="手机媒体库" width="400"> | ![平板横屏媒体库](picture/横板媒体库展示.jpg) |
 
 ### 竖屏浏览与账户
 
