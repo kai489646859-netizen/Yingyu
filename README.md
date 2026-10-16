@@ -60,15 +60,16 @@
 | --- | --- |
 | ![平板横屏首页](picture/平板首页展示.jpg) | ![平板竖屏首页](picture/平板竖屏展示.jpg) |
 
-### 手机媒体库
-
-<div align="center">
-  <img src="picture/手机媒体库展示.jpg" alt="手机媒体库" width="480">
-</div>
-
-### 平板横屏媒体库
-
-![平板横屏媒体库](picture/横板媒体库展示.jpg)
+<table>
+  <tr>
+    <th width="30%">手机媒体库</th>
+    <th width="70%">平板横屏媒体库</th>
+  </tr>
+  <tr>
+    <td width="30%" valign="top"><img src="picture/手机媒体库展示.jpg" alt="手机媒体库" width="100%"></td>
+    <td width="70%" valign="top"><img src="picture/横板媒体库展示.jpg" alt="平板横屏媒体库" width="100%"></td>
+  </tr>
+</table>
 
 ### 竖屏浏览与账户
 
