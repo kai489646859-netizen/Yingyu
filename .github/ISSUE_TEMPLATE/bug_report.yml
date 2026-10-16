@@ -1,0 +1,79 @@
+name: 播放或使用问题
+description: 反馈映屿的播放、界面、同步或兼容问题
+title: "[问题] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请勿提交账号密码、API Key、Access Token、完整媒体直链、私人域名或未脱敏日志。
+  - type: input
+    id: version
+    attributes:
+      label: 映屿版本
+      description: 例如 0.9.2 / code 107
+      placeholder: 0.9.2 / code 107
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: 设备与系统
+      description: 设备型号、Android 版本、芯片/GPU；如连接电视或功放也请注明
+      placeholder: 设备型号 / Android 版本 / 芯片
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Emby 与网络环境
+      description: Emby Server 版本，以及是否使用 HTTPS、反向代理、STRM 或 302
+      placeholder: Emby 版本 / 连接方式
+  - type: dropdown
+    id: media_type
+    attributes:
+      label: 资源类型
+      options:
+        - 普通文件
+        - STRM
+        - ISO / BDMV 原盘
+        - 界面或账户问题
+        - 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从进入页面或点击播放开始，按顺序说明操作和问题出现时间
+      placeholder: |
+        1. 打开……
+        2. 选择……
+        3. 出现……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果与实际结果
+      placeholder: 期望……；实际……
+    validations:
+      required: true
+  - type: textarea
+    id: media_info
+    attributes:
+      label: 媒体信息
+      description: 如日志能确认，请填写视频、音频、字幕格式及杜比 Profile；不要填写完整文件名或直链
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志
+      description: 可拖入应用导出的日志文件；上传前请再次检查隐私信息
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已检查并移除账号、令牌、完整地址、私人域名和其他隐私信息
+          required: true
