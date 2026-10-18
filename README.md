@@ -4,7 +4,7 @@
   <p><strong>为个人 Emby 媒体库打造的 Android 第三方客户端</strong></p>
   <p>原文件播放 · 手机/平板适配 · 多账号 · 观看进度 · 原盘与 STRM 通用兼容</p>
   <p>
-    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v0.9.6"><img src="https://img.shields.io/badge/Android-0.9.6-19A974?style=for-the-badge&logo=android" alt="Android 0.9.6"></a>
+    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v0.9.7"><img src="https://img.shields.io/badge/Android-0.9.7-19A974?style=for-the-badge&logo=android" alt="Android 0.9.7"></a>
     <a href="https://github.com/kai489646859-netizen/Yingyu/releases"><img src="https://img.shields.io/github/downloads/kai489646859-netizen/Yingyu/total?style=for-the-badge&logo=github&label=Downloads" alt="GitHub 下载量"></a>
     <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android" alt="Android 8.0+">
   </p>
@@ -24,7 +24,7 @@
 
 映屿是一款面向个人 Emby 媒体库的 Android 客户端。它把媒体库浏览、个性化整理、观看记录和应用内 MPV 播放整合在同一个界面中，支持手机与平板，并坚持以原文件播放为默认方向，不主动要求服务器转码。
 
-当前公开版本为 **0.9.6 / code 111**。Windows 版本不在本次发布范围内。
+当前公开版本为 **0.9.7 / code 112**。Windows 版本不在本次发布范围内。
 
 ## 功能一览
 
@@ -41,15 +41,15 @@
 | 缓存 | 独立海报/详情图缓存、图片加载节奏、可选视频缓存、应用私有图形着色器缓存 |
 | 辅助 | 英译中离线翻译、脱敏诊断日志、筛选/复制/导出日志、缓存清理与开源许可查看 |
 
-### 0.9.6 重点更新
+### 0.9.7 重点更新
 
-- 网络读取遇到本版已确认的暂态超时时，不再被应用提前转换为播放失败；交由播放器既有的有界重连和缓存播放继续处理。
-- 音频焦点的降低音量、恢复、临时丢失和永久丢失分别处理；短暂 duck 只降低应用内音量，不再误报“其他应用占用”并暂停。
-- 恢复音频焦点时只恢复音量，不会擅自播放用户已经暂停的影片。
-- 延续 0.9.5 对 Flutter 图像围栏句柄释放的修复，降低长时间播放发生句柄耗尽、无响应或原生退出的风险。
-- 保留 MPV、原画、不转码、音轨字幕、倍速、观看进度及手机/平板交互。
+- 剧集看完后，首页“继续观看”会保留最后看过的一集并标注“已看完”，刷新或重启后仍可查看。
+- 新分集进度、同集重看和本机待同步进度仍优先；账号隔离、手动移出、资源删除与隐私过滤规则保持。
+- 真正播放到结尾时继续沿用既有流程同步 Emby“已看”；仅浏览详情或保留首页条目不会伪造已看状态。
+- 对媒体服务返回的 HTTP 502 给出更明确的“服务暂时不可用”提示，但不增加自动重试、转码或开播等待。
+- 延续 0.9.5—0.9.6 的句柄释放、暂态读超时和音频焦点修复。
 
-> 0.9.6 的静态分析、离线合成测试、编译、签名与包结构核对已经完成，但本轮未连接设备，不能替代真实设备和真实媒体测试。持续断网、临时地址失效、真实通知焦点、长时间播放、原盘连续播放与色彩仍受设备、网络、服务器和片源影响。
+> 0.9.7 的静态分析、离线合成测试、编译、签名与包结构核对已经完成，但本轮未连接设备，不能替代真实设备和真实账号测试。502 提示增强不等于修复服务器或反向代理重启期间无法取流；已看记录同步、长时间播放与真实媒体兼容性仍需设备复测。
 
 ## 界面预览
 
@@ -98,23 +98,23 @@
 
 ## 下载与安装
 
-前往 [Android 0.9.6 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v0.9.6) 下载：
+前往 [Android 0.9.7 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v0.9.7) 下载：
 
-- `Yingyu-0.9.6.apk`：Android 安装包。
+- `Yingyu-0.9.7.apk`：Android 安装包。
 - `SHA256SUMS.txt`：下载文件校验值。
-- `Yingyu-0.9.6-source.zip`：与安装包对应的完整源码归档。
-- `Yingyu-0.9.6-symbols.zip`：调试符号，普通用户无需下载。
-- `Yingyu-0.9.6-release-notes.txt`：本版变化、验证结果和已知边界。
+- `Yingyu-0.9.7-source.zip`：与安装包对应的完整源码归档。
+- `Yingyu-0.9.7-symbols.zip`：调试符号，普通用户无需下载。
+- `Yingyu-0.9.7-release-notes.txt`：本版变化、验证结果和已知边界。
 
 安装要求与注意事项：
 
 1. Android 8.0（API 26）或更高版本。
 2. 从旧版升级时，直接安装 APK 覆盖即可；**不要先卸载**，否则本机账号、缓存和设置可能丢失。
-3. 0.9.6 / code 111 与此前正式交付版本使用同一应用身份和签名。
+3. 0.9.7 / code 112 与此前正式交付版本使用同一应用身份和签名。
 4. 建议先核对 `SHA256SUMS.txt`。Windows PowerShell 可运行：
 
    ```powershell
-   Get-FileHash .\Yingyu-0.9.6.apk -Algorithm SHA256
+   Get-FileHash .\Yingyu-0.9.7.apk -Algorithm SHA256
    ```
 
 5. 本版本作为预发布版本提供。重要设备建议保留上一版安装包，并先用常看片源试播。
