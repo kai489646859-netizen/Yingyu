@@ -4,7 +4,7 @@
   <p><strong>为个人 Emby 媒体库打造的 Android 第三方客户端</strong></p>
   <p>原文件播放 · 手机/平板适配 · 多账号 · 观看进度 · 原盘与 STRM 通用兼容</p>
   <p>
-    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v1.1.7"><img src="https://img.shields.io/badge/Android-1.1.7-19A974?style=for-the-badge&logo=android" alt="Android 1.1.7"></a>
+    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v1.3.1"><img src="https://img.shields.io/badge/Android-1.3.1-19A974?style=for-the-badge&logo=android" alt="Android 1.3.1"></a>
     <a href="https://github.com/kai489646859-netizen/Yingyu/releases"><img src="https://img.shields.io/github/downloads/kai489646859-netizen/Yingyu/total?style=for-the-badge&logo=github&label=Downloads" alt="GitHub 下载量"></a>
     <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android" alt="Android 8.0+">
   </p>
@@ -24,7 +24,7 @@
 
 映屿是一款面向个人 Emby 媒体库的 Android 客户端。它把媒体库浏览、个性化整理、观看记录和应用内 MPV 播放整合在同一个界面中，支持手机与平板，并坚持以原文件播放为默认方向，不主动要求服务器转码。
 
-当前公开版本为 **1.1.7 / code 140**。Windows 版本不在本次发布范围内。
+当前公开版本为 **1.3.1 / code 159**。Windows 版本不在本次发布范围内。
 
 ## 功能一览
 
@@ -41,18 +41,18 @@
 | 缓存 | 独立海报/详情图缓存、图片加载节奏、可选视频缓存、应用私有图形着色器缓存 |
 | 辅助 | 英译中离线翻译、脱敏诊断日志、筛选/复制/导出日志、缓存清理与开源许可查看 |
 
-### 1.1.7 累计更新
+### 1.3.1 累计更新
 
-- 优化首次开播、切集、精确定位、缓存交接和异常恢复，继续使用 MPV 原文件播放，不主动要求服务器转码。
-- 按实际视频轨、解码结果和设备能力识别 SDR、HDR10、HLG 与杜比兼容映射，并改进高位深色彩、P010 和 HDR 输出回退。
-- 扩大 2×/3× 的实际预读容量，向兼容硬解传递倍速工作负载提示，并优化部分 GPU 输出路径。
-- 支持本地字幕导入、字幕位置记忆、字幕延迟、章节、片头片尾提示、音轨信息和可选音量均衡。
-- 重整播放器控制、手势反馈、播放状态、网络速率和观看进度；修复完整剧集目录加载后的上次观看定位。
-- 最终保留霞光紫（默认）、流金粉、宝石绿和钛金属四套主题，旧主题设置会自动迁移。
+- 修复杜比 Profile 5/7 画面增强在连续播放中只短暂生效的问题；整体亮度和暗部增强可独立或叠加使用，默认关闭，普通 HDR 保持原处理方式。
+- 改善部分 302/反向代理媒体的原文件入口、播放初始化、杜比画面准备及原盘缓存衔接，减少不必要的重复等待和误触发预读切换。
+- 改善续播时当前一句文字或图像字幕的读取，保留约 10 秒有界字幕预滚、字幕记忆和准确定位。
+- 减少轻微横向移动造成的误定位；临时打开通知栏、系统侧栏时继续播放，真正离开应用或锁屏仍按原规则暂停。
+- 统一首页与详情页已核对的最后观看集数和进度，进度条与“已看 N 分钟”使用同一位置，并保留本机待同步进度。
+- 补充分版本日志及开播、HDR、定位的分阶段诊断；慢定位主要等待在解码前的输入/解复用阶段，但尚未证明冷开播或跳转已经提速。
 
 完整功能、修复和边界见 [Android 更新历史](CHANGELOG-Android.md)。
 
-> 1.1.7 的静态分析、离线测试、编译、签名与包结构核对已经完成，但不能替代真实设备和真实媒体测试。较大的目标窗口不代表已经缓存对应时长，也不承诺整部影片无缓冲；现有日志仍不能证明 HDR/杜比 3× 丢帧或首次取流等待已经根治。
+> 1.3.1 已完成静态分析、2779 项 Flutter/Dart 检查、143 项专项、9 组参考主机场景及 APK/签名/16 KiB/原生库/符号核对，但不能替代真实 Android 设备和真实媒体测试。冷开播和慢定位尚未确认提速；一次设备复测中同一原盘第二次播放未再缓冲，不代表所有片源均已验收。
 
 ## 界面预览
 
@@ -101,23 +101,23 @@
 
 ## 下载与安装
 
-前往 [Android 1.1.7 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v1.1.7) 下载：
+前往 [Android 1.3.1 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v1.3.1) 下载：
 
-- `Yingyu-1.1.7.apk`：Android 安装包。
+- `Yingyu-1.3.1.apk`：Android 安装包。
 - `SHA256SUMS.txt`：下载文件校验值。
-- `Yingyu-1.1.7-source.zip`：与安装包对应的完整源码归档。
-- `Yingyu-1.1.7-symbols.zip`：调试符号，普通用户无需下载。
-- `Yingyu-1.1.7-release-notes.txt`：本版变化、验证结果和已知边界。
+- `Yingyu-1.3.1-source.zip`：与安装包对应的完整源码归档。
+- `Yingyu-1.3.1-symbols.zip`：调试符号，普通用户无需下载。
+- `Yingyu-1.3.1-release-notes.txt`：累计变化、验证结果和已知边界。
 
 安装要求与注意事项：
 
 1. Android 8.0（API 26）或更高版本。
 2. 从旧版升级时，直接安装 APK 覆盖即可；**不要先卸载**，否则本机账号、缓存和设置可能丢失。
-3. 1.1.7 / code 140 与此前正式交付版本使用同一应用身份和签名。
+3. 1.3.1 / code 159 与此前正式交付版本使用同一应用身份和签名。
 4. 建议先核对 `SHA256SUMS.txt`。Windows PowerShell 可运行：
 
    ```powershell
-   Get-FileHash .\Yingyu-1.1.7.apk -Algorithm SHA256
+   Get-FileHash .\Yingyu-1.3.1.apk -Algorithm SHA256
    ```
 
 5. 本版本作为预发布版本提供。重要设备建议保留上一版安装包，并先用常看片源试播。
