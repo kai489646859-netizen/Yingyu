@@ -5,7 +5,7 @@
 每个公开发行版同时提供与安装包对应的源码归档、调试符号和 SHA-256。源码归档保留该版本实际使用或修改的代码、构建入口、固定依赖/来源记录、许可证及必要通知。调试符号仅用于排错，不是普通安装所必需。
 
 - Android：`Yingyu-版本-source.zip` 与 `Yingyu-版本-symbols.zip`。
-- Windows：`Yingyu-版本-说明-源码及符号.zip`。
+- Windows：`Yingyu-版本-source-and-symbols.zip`。
 
 发布包的哈希以同一发行版中的 `SHA256SUMS.txt` 为准。签名私钥、账号凭据、访问令牌和用户媒体日志不会公开。
 
