@@ -1,2 +1,2 @@
 28e09217f30dfebc44ab54bc9dbb2cdf38bd2262f97b96bd8563cab064052ef4  Yingyu-Setup-x64-0.5.8.exe
-3e1c0ecd3079fe5a4ca1626be6fb1c559252119fd3683b0bdc0eea3699a63cff  Yingyu-0.5.8-搜索响应与自动聚焦-源码及符号.zip
+3e1c0ecd3079fe5a4ca1626be6fb1c559252119fd3683b0bdc0eea3699a63cff  Yingyu-0.5.8-source-and-symbols.zip
