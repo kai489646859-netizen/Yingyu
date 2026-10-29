@@ -1,0 +1,66 @@
+name: Android 问题
+description: 反馈 Android 版播放、界面、同步或兼容故障
+title: "[Android] "
+labels: ["bug", "android"]
+body:
+  - type: markdown
+    attributes:
+      value: 请勿提交密码、令牌、私人域名、完整媒体直链或未经检查的日志。
+  - type: input
+    id: version
+    attributes:
+      label: 映屿版本
+      placeholder: 1.9.6 / code224
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: 设备与 Android
+      description: 型号、Android 版本、芯片/GPU、屏幕刷新率；连接电视或功放时也请注明
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Emby 与连接方式
+      description: Emby Server 版本，以及 HTTPS、反向代理、STRM 或 302 情况
+  - type: dropdown
+    id: media_type
+    attributes:
+      label: 问题范围
+      options: ["普通文件", "STRM / 302", "ISO / BDMV", "HDR / 杜比", "字幕 / 音轨", "界面 / 账户 / 同步", "其他"]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从打开页面或点击播放开始，按顺序说明操作和问题出现时间
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 期望结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: 媒体信息
+      description: 可填写容器、视频/音频/字幕格式及已确认的 Dolby Profile；不要填写完整文件名或直链
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏日志
+      description: 上传前请人工检查账号、令牌、地址、路径、片名等隐私信息
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 确认
+      options:
+        - label: 我已确认使用当前公开版本，并搜索过现有 Issue
+          required: true
+        - label: 我已检查并移除账号、令牌、完整地址、私人域名和其他隐私信息
+          required: true

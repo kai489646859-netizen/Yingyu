@@ -1,0 +1,7 @@
+{
+  "current": "0.5.8",
+  "next": "0.5.9",
+  "maximumSegment": 9,
+  "rule": "Each segment is 0 through 9. Carry to the preceding segment: 0.4.9 -> 0.5.0, 0.9.9 -> 1.0.0. Stop at 9.9.9; never silently wrap. Historical versions are retained as released.",
+  "userDirectedTransitionFrom": "0.4.9"
+}

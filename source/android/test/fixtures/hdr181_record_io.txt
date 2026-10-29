@@ -1,0 +1,12 @@
+class NativeHarness extends Engine181 {
+ NativeHarness(this.container,this.profile,this.gamma);
+ final String container,profile,gamma;
+ @override Future<String> getOutputProperty(String key)async{
+  if(key=='yingyu-hdr-source-dv-profile'||key=='yingyu-preloaded-dolby-vision-profile'||key=='current-tracks/video/dolby-vision-profile')return profile;
+  if(key=='file-format')return container;
+  if(key=='paused-for-cache')return 'no';if(key=='demuxer-cache-idle')return 'yes';
+  final facts={'video-format':'hevc','video-params/primaries':'bt.709','video-params/gamma':gamma,'video-params/colormatrix':'bt.709','video-params/pixelformat':'mediacodec','hwdec-current':'mediacodec','audio-codec-name':'aac','audio-params/channels':'stereo','audio-out-params/channels':'stereo','audio-out-params/format':'float'};
+  return facts[key]??await super.getOutputProperty(key);
+ }
+ Future<void> setProperty(String k,String v)=>setOutputProperty(k,v);
+}

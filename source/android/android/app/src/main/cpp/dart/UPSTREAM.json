@@ -1,0 +1,9 @@
+{
+  "sdk_version": "3.12.2",
+  "source": "Dart SDK include headers distributed with the pinned build toolchain",
+  "files": {
+    "dart_api.h": "da42f9d2691a41dfec4a7c53101399d5e65480de0661d4cefdb338f11acbd506",
+    "dart_native_api.h": "13b9236aba0a53a04640d74c3cd22e574503b04441578221ddb732a4054254b1",
+    "LICENSE": "2cfa3ee8e7512e6d44c854b986510810fadc815f93f890373b3a81c1b6ccd256"
+  }
+}

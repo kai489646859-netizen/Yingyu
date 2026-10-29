@@ -1,0 +1,65 @@
+name: Windows 问题
+description: 反馈 Windows 版安装、播放、界面、同步或兼容故障
+title: "[Windows] "
+labels: ["bug", "windows"]
+body:
+  - type: markdown
+    attributes:
+      value: 请勿提交密码、令牌、私人域名、完整媒体直链或未经检查的日志。
+  - type: input
+    id: version
+    attributes:
+      label: 映屿版本
+      placeholder: 0.5.8
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Windows 与硬件
+      description: Windows 版本、CPU、GPU、显卡驱动、显示器刷新率及是否使用功放/电视
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: 安装情况
+      description: 新装或覆盖更新、安装目录，以及是否保留旧设置
+  - type: input
+    id: server
+    attributes:
+      label: Emby 与连接方式
+      description: Emby Server 版本，以及 HTTPS、反向代理、STRM 或 302 情况
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题范围
+      options: ["安装 / 更新", "普通播放", "STRM / 302", "ISO / BDMV", "HDR / 杜比", "字幕 / 音轨", "界面 / 搜索 / 账户", "其他"]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 期望结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏日志
+      description: 上传前请人工检查账号、令牌、地址、路径、片名等隐私信息
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 确认
+      options:
+        - label: 我已确认使用当前公开版本，并搜索过现有 Issue
+          required: true
+        - label: 我已检查并移除账号、令牌、完整地址、私人域名和其他隐私信息
+          required: true

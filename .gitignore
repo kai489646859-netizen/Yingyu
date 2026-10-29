@@ -1,0 +1,26 @@
+# Local tooling and build output
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+build/
+dist/
+out/
+*.log
+
+# Secrets and signing material
+*.jks
+*.keystore
+*.pfx
+*.p12
+*.key
+*.pem
+.env
+.env.*
+
+# Release binaries belong on GitHub Releases
+*.apk
+*.aab
+*.exe
+*.msi
+*.pdb

@@ -1,0 +1,2400 @@
+import 'dart:async';
+import 'package:flutter/widgets.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit/ffi/ffi.dart';
+import 'package:media_kit/generated/libmpv/bindings.dart' as mpv;
+import 'package:media_kit_video/media_kit_video.dart';
+import '../core/models.dart';
+import '../version.dart';
+import '../core/log.dart';
+import 'diagnostics.dart';
+import 'http_trace.dart';
+import 'origin_transport.dart';
+import 'disc_transport.dart';
+import 'disc_worker.dart';
+import 'disc_native.dart';
+import 'dart:ffi' show Pointer, Void;
+import 'disc_buffering.dart';
+import 'rate_transition.dart';
+import 'disc_startup.dart';
+import 'disc_timestamps.dart';
+import 'packet_trace.dart';
+import 'disc_buffer_phase.dart';
+import 'disc_cache_retention.dart';
+import 'tracks.dart';
+import 'subtitle_files.dart';
+import 'media_notice.dart';
+import 'dolby_source.dart';
+import 'dolby_recovery.dart';
+import 'decoder_recovery.dart';
+import 'device.dart';
+import 'position_guard.dart';
+import 'runtime_health.dart';
+import 'observation.dart';
+import 'opening_output.dart';
+import 'stream_buffering.dart';
+import 'display_diagnostics.dart';
+import 'byte_cache.dart';
+import 'cache_policy.dart';
+import 'cached_transport.dart';
+import 'hardware_fallback.dart';
+import 'media_facts.dart';
+import 'audio_decode_watch.dart';
+import 'startup_seek.dart';
+import 'playback_adjustments.dart';
+export 'tracks.dart' show TrackOption;
+
+class PlaybackSnapshot {
+  const PlaybackSnapshot({
+    this.position = Duration.zero,
+    this.duration = Duration.zero,
+    this.playing = false,
+    this.buffering = false,
+    this.completed = false,
+    this.openingStage = '正在打开媒体',
+  });
+  final Duration position, duration;
+  final bool playing, buffering, completed;
+  final String openingStage;
+}
+
+abstract class TrackStateBackend {
+  String? get selectedAudioId;
+  String? get selectedSubtitleId;
+}
+
+abstract class MediaNoticeBackend {
+  String get sourceNotice;
+}
+
+abstract class VideoGeometryBackend {
+  double? get videoAspectRatio;
+}
+
+abstract class PlayerBackend {
+  Stream<PlaybackSnapshot> get changes;
+  Stream<String> get errors;
+  PlaybackSnapshot get snapshot;
+  List<TrackOption> get audioTracks;
+  List<TrackOption> get subtitleTracks;
+  Widget view(BoxFit fit);
+  Future<void> open(PlaybackRoute route, Duration start);
+  Future<void> play();
+  Future<void> pause();
+  Future<void> seek(Duration position);
+  Future<void> rate(double value);
+  Future<void> audio(TrackOption track);
+  Future<void> subtitle(TrackOption track);
+  Future<void> dispose();
+}
+
+abstract class DiscNavigationBackend {
+  List<DiscTitle> get discTitles;
+  int? get selectedDiscPlaylist;
+  set discPlaylist(int? value);
+  set forcedDiscKind(DiscKind? value);
+}
+
+abstract class PersistentPlaybackBackend {
+  void configureCache(PlaybackByteCache cache, String scope, Duration duration);
+}
+
+class MpvBackend
+    implements
+        PlayerBackend,
+        DiscNavigationBackend,
+        TrackStateBackend,
+        VideoGeometryBackend,
+        PlaybackDiagnosticState,
+        PersistentPlaybackBackend,
+        PlaybackFactsBackend,
+        PlaybackResourceBackend,
+        PlaybackChapterBackend,
+        SubtitleDelayBackend,
+        MediaNoticeBackend {
+  MpvBackend({int bufferBytes = 64 * 1024 * 1024, this.log}) {
+    _baseBufferBytes = bufferBytes;
+    _discCacheBytes = (bufferBytes >= 64 * 1024 * 1024 ? 32 : 16) * 1024 * 1024;
+    player = Player(
+      configuration: PlayerConfiguration(
+        bufferSize: bufferBytes,
+        logLevel: MPVLogLevel.warn,
+      ),
+    );
+    video = VideoController(player);
+    subscriptions.addAll([
+      player.stream.log.listen((log) {
+        if (_disposed || _discInterrupted) return;
+        _observeDiscPacketTimestamp(log.prefix, log.level, log.text);
+        _trace?.add(log.prefix, log.text);
+        _packetTrace?.add(log.prefix, log.level, log.text);
+        if (_dolbyMapping) {
+          final issue = classifyDolbyOutputFailure(
+            log.prefix,
+            log.level,
+            log.text,
+          );
+          if (issue != DolbyOutputFailure.none) {
+            unawaited(
+              _handleDolbyOutputFailure(
+                issue,
+                dolbyOutputFailureCode(log.text),
+              ),
+            );
+          }
+        }
+        if (_packetTrace?.exhausted == true) {
+          unawaited(_stopPacketTrace());
+        }
+        if (!_opening &&
+            _hardwareFallback.fault(log.prefix, log.level, log.text)) {
+          unawaited(_recordVideoHealth());
+        }
+        final videoWarning = _videoDiagnostics.add(
+          log.prefix,
+          log.level,
+          log.text,
+        );
+        if (videoWarning != null) {
+          this.log?.add(
+            LogArea.player,
+            '$videoWarning；位置=${player.state.position.inMilliseconds} ms；'
+            '倍速=$_speed；开播=$_opening；$diagnosticState',
+            level: LogLevel.warning,
+          );
+        }
+        final changed = diagnostics.add(log.prefix, log.level, log.text);
+        if (changed) {
+          this.log?.add(
+            LogArea.network,
+            _describe('媒体请求失败'),
+            level: LogLevel.error,
+          );
+        }
+        if (changed && _lastFailure != null && !failures.isClosed) {
+          failures.add(_describe(_lastFailure!));
+        }
+        if (isTransportReadEof(log.prefix, log.level, log.text) &&
+            !_readEofReported) {
+          _readEofReported = true;
+          this.log?.add(
+            LogArea.network,
+            '媒体读取返回 EOF（0xdfb9b0bb）；保留已有缓存播放，等待内核终止事件判定；$diagnosticState',
+            level: LogLevel.warning,
+          );
+        }
+        if (isMpvErrorLog(log.prefix, log.level, log.text)) {
+          _mpvError(
+            mpvOpenFailure(log.prefix, log.text) ?? log.text,
+            videoDecoder: log.prefix == 'vd',
+            audioPacket: isAudioPacketError(log.prefix, log.level, log.text),
+          );
+        }
+      }),
+      player.stream.position.listen((_) => emit()),
+      player.stream.duration.listen((_) => emit()),
+      player.stream.playing.listen((playing) {
+        _dolbyRecovery.playbackChanged(
+          now: _runtimeClock.elapsed,
+          playing: playing,
+        );
+        emit();
+      }),
+      player.stream.buffering.listen((_) => emit()),
+      player.stream.completed.listen((_) => emit()),
+      player.stream.tracks.listen((_) => _tracksChanged()),
+      player.stream.track.listen((_) => _tracksChanged()),
+    ]);
+    final native = player.platform;
+    if (native is NativePlayer) {
+      subscriptions.add(native.playbackEvents.listen(_nativeEvent));
+    }
+  }
+  late final Player player;
+  late final VideoController video;
+  bool _dolbyMapping = false;
+  Future<void> Function()? _dolbyPreloadedHook;
+  final updates = StreamController<PlaybackSnapshot>.broadcast();
+  final failures = StreamController<String>.broadcast();
+  final diagnostics = PlaybackDiagnostics();
+  final _videoDiagnostics = VideoDiagnostics();
+  final _observation = PlaybackObservation();
+  final _rateAudio = RateAudioSetup();
+  PlaybackByteCache? _persistentCache;
+  String _cacheScope = '';
+  Duration _cacheDuration = Duration.zero;
+  CachedPlaybackTransport? _cachedTransport;
+  final _readAhead = PlaybackReadAhead();
+  bool _readAheadAllowed = false;
+  Map<String, String>? _discAppliedOptions;
+  @override
+  void configureCache(
+    PlaybackByteCache cache,
+    String scope,
+    Duration duration,
+  ) {
+    _persistentCache = cache;
+    _cacheScope = scope;
+    _cacheDuration = duration;
+  }
+
+  final _discStartup = DiscStartupSetup();
+  final _discTimestamps = DiscTimestampSetup();
+  final _discProbe = DiscProbeSetup();
+  late final _rateProbe = RateSwitchProbe(
+    read: (key) => (player.platform as NativePlayer).getProperty(key),
+    record: (message) => log?.add(LogArea.player, message),
+    active: () =>
+        !_disposed && !_opening && _lastFailure == null && log?.enabled == true,
+  );
+  @override
+  String get diagnosticState =>
+      '$_cacheDescription；'
+      '${_observation.describe(_runtimeClock.elapsed)}';
+  bool _networkFile = false;
+  bool get _usesBufferPolicy => _disc != null || _networkFile;
+  String get _cacheDescription => _disc != null
+      ? _discPlanDescription
+      : _networkFile
+      ? _streamBuffer.description
+      : '普通媒体';
+  late final _streamBuffer = StreamBuffering(
+    write: (key, value) async {
+      if (_disposed) return;
+      await (player.platform as NativePlayer).setProperty(key, value);
+    },
+    onRestoreFailure: () => _failPlayback('播放缓存参数调整失败，原参数也未能恢复'),
+  );
+  Timer? _videoTimer;
+  bool _videoProbeBusy = false;
+  final _bufferPhase = DiscBufferPhase();
+  DiscBufferPlan? _appliedDiscPlan;
+  late final _discCacheRetention = DiscCacheRetention(
+    (generation, tier) => unawaited(_releaseDiscCache(generation, tier)),
+  );
+  Timer? _bufferPhaseTimer;
+  bool _bufferPhaseProbeBusy = false, _bufferPromotionQueued = false;
+  final _runtimeWatch = RuntimeHealthWatch();
+  int? _discPtsLoad;
+  bool _discMissingVideoPts = false;
+  final _audioDecode = AudioDecodeWatch();
+  final _startupSeek = StartupSeekSetup();
+  int? _fastSeekIntent;
+  final _hardwareFallback = HardwareFallbackWatch();
+  final _dolbyRecovery = DolbySeekRecovery();
+  bool _hardwareRepairQueued = false;
+  final _runtimePosition = PlaybackPositionGuard();
+  final _runtimeClock = Stopwatch()..start();
+  int _runtimeEpoch = 0, _videoSamples = 0;
+  int _seekIntent = 0;
+  bool _runtimeRepairBusy = false, _positionRejected = false;
+  Duration? _seekSince;
+  final DiagnosticLog? log;
+  final _trackMetadata =
+      <String, ({int? pid, int? ffIndex, bool forced, bool external})>{};
+  String? _decoderOpeningError;
+  late final _decoderRecovery = DecoderRecovery(
+    readOutput: _readVideoOutput,
+    onFailure: _failPlayback,
+    onRecovered: (state) => log?.add(
+      LogArea.player,
+      'MPV 解码恢复已核对：播放重启完成，视频输出持有帧；'
+      '实际硬件解码=${state.hardwareDecoder}',
+    ),
+  );
+
+  Future<VideoOutputState> _readVideoOutput() async {
+    final native = player.platform;
+    if (_disposed || native is! NativePlayer) {
+      throw const AppFailure('播放会话已关闭');
+    }
+    final values = await Future.wait([
+      for (final key in [
+        'current-vo',
+        'vo-configured',
+        'video-frame-info/interlaced',
+        'seeking',
+        'hwdec-current',
+      ])
+        native.getProperty(key),
+    ]).timeout(const Duration(seconds: 2));
+    return VideoOutputState(
+      output: values[0],
+      configured: values[1] == 'yes',
+      frameAvailable: const {'yes', 'no'}.contains(values[2]),
+      seeking: values[3] != 'no',
+      hardwareDecoder: values[4],
+    );
+  }
+
+  void _nativeEvent(NativePlaybackEvent event) {
+    if (_disposed || _discInterrupted) return;
+    if (_opening && (_switching || _origin?.discDetected == true)) return;
+    if (event.failed) {
+      log?.add(
+        LogArea.player,
+        'MPV 终止状态：end-file error=${event.error}',
+        level: LogLevel.error,
+      );
+    }
+    if (_lastFailure != null) return;
+    if (event.failed) {
+      _failPlayback(
+        'MPV 播放已终止：end-file error=${event.error}'
+        '${_decoderOpeningError == null ? "" : "；$_decoderOpeningError"}',
+      );
+    } else if (event.id == mpv.mpv_event_id.MPV_EVENT_END_FILE &&
+        event.reason == mpv.mpv_end_file_reason.MPV_END_FILE_REASON_EOF &&
+        !_opening &&
+        !_runtimePosition.settling &&
+        prematureMediaEnd(_runtimePosition.value, player.state.duration)) {
+      _failPlayback('媒体在片尾之前提前结束，请重试；已有观看进度保留');
+    } else if (event.outputChanged) {
+      _decoderRecovery.outputChanged(
+        seeking: event.id == mpv.mpv_event_id.MPV_EVENT_SEEK,
+      );
+      log?.add(
+        LogArea.player,
+        'MPV 视频输出配置变化；位置=${player.state.position.inMilliseconds} ms；倍速=$_speed；开播=$_opening',
+      );
+    } else if (event.restarted) {
+      _dolbyRecovery.restarted();
+      _decoderRecovery.restarted();
+      _bufferPhase.restart();
+      log?.add(
+        LogArea.player,
+        'MPV 播放重启事件；位置=${player.state.position.inMilliseconds} ms；倍速=$_speed；缓冲=${player.state.buffering}；$diagnosticState',
+      );
+    }
+  }
+
+  void _mpvError(
+    String error, {
+    required bool videoDecoder,
+    bool audioPacket = false,
+  }) {
+    if (_disposed || _discInterrupted) return;
+    if (_subtitleFilePaths.any(error.contains)) {
+      log?.add(
+        LogArea.player,
+        '外挂字幕文件无法加载或解析，可在字幕菜单重试',
+        level: LogLevel.warning,
+      );
+      return;
+    }
+    if (_opening && (_switching || _origin?.discDetected == true)) return;
+    if (audioPacket) {
+      _audioDecode.fault(_runtimeClock.elapsed, playing: player.state.playing);
+      log?.add(
+        LogArea.player,
+        '音频包解码失败；当前媒体内等待后续音画输出核对；'
+        '次数=${_audioDecode.errors}；开播=$_opening；'
+        '连续错误或播放后 8 秒仍未恢复将报错，原生终止错误立即报错',
+        level: LogLevel.warning,
+      );
+      if (_audioDecode.errors >= 8) {
+        _failPlayback('音频连续解码失败，已保留观看进度');
+      }
+      return;
+    }
+    if (videoDecoder && decoderMayFallback(error)) {
+      _decoderOpeningError = error;
+      _decoderRecovery.codecFailed(error);
+      log?.add(
+        LogArea.player,
+        '视频解码器初始化失败：$error；等待当前媒体内的后备解码；'
+        '${_opening ? "开播期限保持不变" : "恢复最多等待 30 秒"}',
+        level: LogLevel.warning,
+      );
+      return;
+    }
+    _failPlayback(error);
+  }
+
+  void _failPlayback(String error) {
+    unawaited(_stopPacketTrace());
+    if (_disposed || _discInterrupted || _lastFailure != null) return;
+    log?.add(
+      LogArea.player,
+      'MPV 报告播放错误：${_describe(error)}',
+      level: LogLevel.error,
+    );
+    _lastFailure = error;
+    if (_opening) {
+      if (_openFailure?.isCompleted == false) {
+        _openFailure!.completeError(AppFailure(_describe(error)));
+      }
+    } else if (!failures.isClosed) {
+      failures.add(_describe(error));
+    }
+    _decoderRecovery.cancel();
+    _audioDecode.cancel();
+    _dolbyRecovery.cancel();
+    _cancelBufferPhase();
+  }
+
+  @override
+  String sourceNotice = '';
+  final _subtitleFiles = SubtitleFiles();
+  final _subtitleFilePaths = <String>{};
+  final _externalIds = <String, String>{};
+  bool _tracksReady = false, _tracksBusy = false, _tracksDirty = false;
+  @override
+  String? selectedAudioId;
+  @override
+  String? selectedSubtitleId;
+
+  void _tracksChanged() {
+    emit();
+    if (!_tracksReady || _disposed || player.state.completed) return;
+    _tracksDirty = true;
+    unawaited(
+      _refreshTracks().catchError((Object _) {
+        if (!_disposed) {
+          log?.add(LogArea.player, '轨道信息更新失败，保留已有轨道', level: LogLevel.warning);
+        }
+      }),
+    );
+  }
+
+  Future<void> _refreshTracks() async {
+    if (_tracksBusy || _disposed || player.state.completed) return;
+    final native = player.platform;
+    if (native is! NativePlayer) return;
+    _tracksBusy = true;
+    try {
+      do {
+        _tracksDirty = false;
+        final count =
+            int.tryParse(await native.getProperty('track-list/count')) ?? 0;
+        if (count < 0 || count > 512) throw const AppFailure('轨道数量超出上限');
+        final metadata =
+            <String, ({int? pid, int? ffIndex, bool forced, bool external})>{};
+        Future<String?> optional(String key) async {
+          try {
+            return await native.getProperty(key);
+          } catch (_) {
+            return null;
+          }
+        }
+
+        for (var i = 0; i < count; i++) {
+          if (_disposed) return;
+          final prefix = 'track-list/$i/';
+          final type = await native.getProperty('${prefix}type');
+          if (type != 'sub' && type != 'audio') continue;
+          final id = await native.getProperty('${prefix}id');
+          metadata['$type:$id'] = (
+            pid: int.tryParse(await optional('${prefix}src-id') ?? ''),
+            ffIndex: int.tryParse(await optional('${prefix}ff-index') ?? ''),
+            forced: await optional('${prefix}forced') == 'yes',
+            external: await optional('${prefix}external') == 'yes',
+          );
+        }
+        if (_disposed) return;
+        _trackMetadata
+          ..clear()
+          ..addAll(metadata);
+        selectedAudioId = await native.getProperty('aid');
+        final sid = await native.getProperty('sid');
+        selectedSubtitleId =
+            _externalIds.entries
+                .where((e) => e.value == sid)
+                .map((e) => e.key)
+                .firstOrNull ??
+            sid;
+      } while (_tracksDirty && !_disposed);
+      emit();
+    } finally {
+      _tracksBusy = false;
+    }
+  }
+
+  TrackOption _trackOption(dynamic track, bool subtitles) {
+    final String id = track.id;
+    if (id == 'auto' || id == 'no') {
+      return TrackOption(
+        id,
+        id == 'auto'
+            ? (subtitles ? '自动 · 简体中文优先' : '自动 · 影片默认音轨')
+            : (subtitles ? '关闭字幕' : '关闭音频'),
+        track,
+      );
+    }
+    final meta = _trackMetadata['${subtitles ? "sub" : "audio"}:$id'];
+    final rawLanguage = (track.language as String?) ?? '';
+    final external = meta?.external ?? false;
+    final language = resolvedTrackLanguage(
+      rawLanguage,
+      meta?.pid,
+      subtitles
+          ? _disc?.selected?.subtitleLanguages
+          : _disc?.selected?.audioLanguages,
+      external: external,
+    );
+    final title = (track.title as String?) ?? '';
+    final codec = (track.codec as String?) ?? '';
+    final publicId =
+        _externalIds.entries
+            .where((e) => e.value == id)
+            .map((e) => e.key)
+            .firstOrNull ??
+        id;
+    return TrackOption(
+      publicId,
+      subtitles
+          ? trackLabel(
+              id: id,
+              language: language,
+              title: title,
+              codec: codec,
+              channels: subtitles ? null : track.channelscount as int?,
+              external: external,
+              isDefault: track.isDefault == true,
+              forced: meta?.forced ?? false,
+              subtitles: subtitles,
+            )
+          : compactAudioTrackLabel(
+              language: language,
+              codec: codec,
+              channels: track.channelscount as int?,
+              channelLayout: track.channels as String?,
+            ),
+      track,
+      language: language,
+      title: title,
+      codec: codec,
+      sourcePid: meta?.pid,
+      ffIndex: _disc == null ? meta?.ffIndex : null,
+      channels: subtitles ? null : track.channelscount as int?,
+      external: external,
+      forced: meta?.forced ?? false,
+      isDefault: track.isDefault == true,
+    );
+  }
+
+  HttpPlaybackTrace? _trace;
+  DiscPacketTrace? _packetTrace;
+  Timer? _packetTimer;
+  String? _packetPreviousLevel;
+  Future<void> _packetCleanup = Future.value();
+
+  Future<void> _startPacketTrace(NativePlayer native) async {
+    await _stopPacketTrace();
+    if (_disposed || log?.enabled != true || _disc?.selected == null) return;
+    try {
+      _packetPreviousLevel = await native
+          .getProperty('options/msg-level')
+          .timeout(const Duration(milliseconds: 600));
+      await native
+          .setProperty('msg-level', 'all=warn,demux=trace,ffmpeg/video=trace')
+          .timeout(const Duration(seconds: 2));
+      if (_disposed) {
+        await _stopPacketTrace();
+        return;
+      }
+      _packetTrace = DiscPacketTrace();
+      // Public API terminal-default honors the prefix whitelist even with
+      // terminal output disabled. Global trace would trace HTTP/auth as well.
+      if (_nativeLogLevel(native, 'terminal-default') < 0) {
+        throw StateError('native log request failed');
+      }
+      _packetTimer = Timer(
+        const Duration(seconds: 45),
+        () => unawaited(_stopPacketTrace()),
+      );
+      log?.add(
+        LogArea.player,
+        '原盘数值诊断开始：最长 45 秒或 20000 条事件；'
+        '只保留容器/时间线 PTS、DTS 与硬解入出队数值；每类首 4 条及末 12 条',
+      );
+    } catch (_) {
+      await _stopPacketTrace();
+      log?.add(LogArea.player, '原盘数值诊断未启用，播放继续沿用原配置', level: LogLevel.warning);
+    }
+  }
+
+  Future<void> _stopPacketTrace() {
+    _packetTimer?.cancel();
+    _packetTimer = null;
+    final trace = _packetTrace;
+    final previous = _packetPreviousLevel;
+    _packetTrace = null;
+    _packetPreviousLevel = null;
+    final native = player.platform;
+    if (native is NativePlayer &&
+        !native.disposed &&
+        native.ctx.address != 0 &&
+        (trace != null || previous != null)) {
+      _nativeLogLevel(native, 'warn');
+      _packetCleanup = _packetCleanup.then((_) async {
+        if (previous == null || native.disposed) return;
+        try {
+          await native
+              .setProperty('msg-level', previous)
+              .timeout(const Duration(seconds: 2));
+        } catch (_) {
+          log?.add(
+            LogArea.player,
+            '原生日志等级还原未确认，客户端已恢复警告级别',
+            level: LogLevel.warning,
+          );
+        }
+      });
+    }
+    for (final row in trace?.finish() ?? <String>[]) {
+      log?.add(LogArea.player, row);
+    }
+    return _packetCleanup;
+  }
+
+  EmbyOriginTransport? _origin;
+  DiscTransport? _disc;
+  late final int _discCacheBytes;
+  double _speed = 1;
+  late final int _baseBufferBytes;
+  @override
+  double? get videoAspectRatio {
+    final rect = video.rect.value;
+    return rect != null && rect.width > 1 && rect.height > 1
+        ? rect.width / rect.height
+        : null;
+  }
+
+  late final _rates = PlaybackRateQueue(_applyRate);
+  Timer? _discTimer;
+  final _discClock = Stopwatch();
+  final _bufferWatch = DiscBufferWatch();
+  bool _healthBusy = false;
+  @override
+  int? discPlaylist;
+  @override
+  DiscKind? forcedDiscKind;
+  @override
+  List<DiscTitle> get discTitles => _disc?.titles ?? const [];
+  @override
+  int? get selectedDiscPlaylist => _disc?.selected?.playlist;
+  @override
+  String get discResourceType => switch (_disc?.kind) {
+    DiscKind.iso => 'ISO',
+    DiscKind.blurayFolder => 'BDMV',
+    _ => '',
+  };
+  Future<void>? _nativeDiscRegistration;
+  Future<void> _registerNativeDisc() async {
+    final native = player.platform;
+    if (native is! NativePlayer) throw const AppFailure('当前播放组件不支持原生原盘读取');
+    final handle = await native.handle;
+    if (DiscNativeApi().register(Pointer<Void>.fromAddress(handle)) < 0) {
+      throw const AppFailure('原生原盘读取接口注册失败');
+    }
+  }
+
+  Future<DiscTransport> _newDiscTransport(
+    PlaybackRoute route,
+    DiscKind kind, {
+    String? address,
+  }) async {
+    if (_persistentCache == null) {
+      await (_nativeDiscRegistration ??= _registerNativeDisc());
+      return DiscWorkerTransport(
+        route,
+        kind: kind,
+        address: address,
+        log: log,
+        onStage: _setStage,
+        onFailure: _discFailed,
+        cacheBytes: _discCacheBytes,
+        directNative: true,
+      );
+    }
+    return DiscTransport(
+      route,
+      kind: kind,
+      address: address,
+      backgroundOutput: true,
+      log: log,
+      onStage: _setStage,
+      onFailure: _discFailed,
+      cacheBytes: _discCacheBytes,
+      persistentCache: _persistentCache,
+      cacheScope: _cacheScope,
+    );
+  }
+
+  bool _opening = false, _switching = false, _disposed = false;
+  bool _discInterrupted = false;
+  Completer<void>? _openFailure;
+  String _stage = '正在打开媒体';
+  int _loadSerial = 0;
+  void _setStage(String value) {
+    _stage = value;
+    emit();
+    log?.add(LogArea.player, value);
+  }
+
+  String _describe(Object error) {
+    final localFailure = _origin?.localFailure;
+    if (localFailure != null) return localFailure;
+    final message = diagnostics.describe(error);
+    final rejection = _origin?.rejection;
+    final discError = _disc?.failure;
+    return [
+      message,
+      ?rejection,
+      ?discError,
+      ?_cachedTransport?.failure,
+    ].join('\n');
+  }
+
+  String? _lastFailure;
+  bool _readEofReported = false;
+  void _discFailed(String message) {
+    if (_disposed || _lastFailure != null) return;
+    _discCacheRetention.cancel();
+    _discInterrupted = true;
+    _lastFailure = message;
+    log?.add(LogArea.player, '原盘播放中断：$message', level: LogLevel.error);
+    if (_opening) {
+      if (_openFailure?.isCompleted == false) {
+        _openFailure!.completeError(AppFailure(message));
+      }
+    } else if (!failures.isClosed) {
+      failures.add(message);
+    }
+    _discTimer?.cancel();
+    _decoderRecovery.cancel();
+    final disc = _disc;
+    if (disc != null) unawaited(disc.close());
+  }
+
+  void _sampleDiscHealth() {
+    if (_disposed || _opening || _disc == null || _lastFailure != null) return;
+    final state = snapshot;
+    if (_bufferWatch.sample(
+      now: _discClock.elapsed,
+      position: state.position,
+      playing: state.playing,
+      buffering: state.buffering,
+      completed: state.completed,
+    )) {
+      _discFailed('原盘缓冲超过 60 秒，播放位置没有继续前进，请重试');
+      return;
+    }
+    unawaited(_recordDiscHealth());
+  }
+
+  Future<void> _recordDiscHealth() async {
+    if (_healthBusy || log?.enabled != true) return;
+    final native = player.platform;
+    if (native is! NativePlayer) return;
+    _healthBusy = true;
+    try {
+      await _disc?.refreshReadHealth();
+      if (_disposed || _disc == null) return;
+      final values = <String>[];
+      for (final key in [
+        'paused-for-cache',
+        'demuxer-cache-duration',
+        'cache-buffering-state',
+        'cache-pause-wait',
+        'demuxer-max-bytes',
+        'decoder-frame-drop-count',
+        'frame-drop-count',
+      ]) {
+        if (_disposed) return;
+        try {
+          final raw = await native
+              .getProperty(key)
+              .timeout(const Duration(milliseconds: 600));
+          values.add(
+            '$key=${num.tryParse(raw) != null || const {"yes", "no"}.contains(raw) ? raw : "未提供"}',
+          );
+        } catch (_) {
+          values.add('$key=未提供');
+        }
+      }
+      if (_disposed || _disc == null) return;
+      final state = snapshot;
+      log?.add(
+        LogArea.player,
+        '原盘运行：倍速=$_speed；位置=${state.position.inMilliseconds} ms；'
+        '请求播放=${state.playing}；缓冲=${state.buffering}；${values.join("；")}；${_disc!.readHealth}',
+      );
+    } finally {
+      _healthBusy = false;
+    }
+  }
+
+  final subscriptions = <StreamSubscription>[];
+  void emit() {
+    if (!_disposed && !_opening && !_runtimeRepairBusy) {
+      final accepted = _runtimePosition.accept(
+        player.state.position,
+        duration: player.state.duration,
+      );
+      if (!accepted && _runtimePosition.rejected && !_positionRejected) {
+        if (_packetTrace != null) {
+          _packetTimer?.cancel();
+          _packetTimer = Timer(
+            const Duration(seconds: 2),
+            () => unawaited(_stopPacketTrace()),
+          );
+        }
+        log?.add(
+          LogArea.player,
+          '播放时钟异常：原始=${player.state.position.inMilliseconds} ms；'
+          '最后有效=${_runtimePosition.value.inMilliseconds} ms；等待音画状态核对',
+          level: LogLevel.warning,
+        );
+      }
+      _positionRejected = _runtimePosition.rejected;
+      if (!_runtimePosition.settling) _seekSince = null;
+    }
+    if (!updates.isClosed) updates.add(snapshot);
+  }
+
+  @override
+  Stream<PlaybackSnapshot> get changes => updates.stream;
+  @override
+  Stream<String> get errors => failures.stream;
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot(
+    position: player.state.position,
+    duration: player.state.duration,
+    playing: player.state.playing,
+    buffering: player.state.buffering,
+    completed: player.state.completed,
+    openingStage: _stage,
+  );
+  @override
+  List<TrackOption> get audioTracks =>
+      player.state.tracks.audio.map((t) => _trackOption(t, false)).toList();
+  @override
+  List<TrackOption> get subtitleTracks =>
+      player.state.tracks.subtitle.map((t) => _trackOption(t, true)).toList();
+  @override
+  Widget view(BoxFit fit) => Video(
+    controller: video,
+    controls: NoVideoControls,
+    fit: fit,
+    wakelock: false,
+  );
+
+  Future<void> _handleDolbyOutputFailure(
+    DolbyOutputFailure issue,
+    String code,
+  ) async {
+    if (_disposed || _discInterrupted || _lastFailure != null) return;
+    log?.add(
+      LogArea.player,
+      '杜比输出诊断：类别=$code；定位代次=${_dolbyRecovery.generation}；'
+      '目标=${_dolbyRecovery.target.inMilliseconds} ms；已用恢复=${_dolbyRecovery.attempted}',
+      level: LogLevel.warning,
+    );
+    // Classify synchronously at log arrival. Waiting for a property read here
+    // could turn an already queued warning into a post-rebuild failure.
+    // The recorded decoder is checked against MPV again before any rebuild.
+    final action = _dolbyRecovery.fault(
+      issue,
+      now: _runtimeClock.elapsed,
+      opening: _opening,
+      currentHardware: _dolbyRecovery.hardware,
+      playing: player.state.playing,
+    );
+    if (action == DolbyRecoveryAction.fail) {
+      _failPlayback(switch (issue) {
+        DolbyOutputFailure.pairing => '杜比画面与色彩信息配对失败，已停止播放并保留观看进度',
+        DolbyOutputFailure.capability => '杜比硬解画面输出不可用，已停止播放并保留观看进度',
+        _ => '杜比画面输出未能恢复，已停止播放并保留观看进度',
+      });
+      return;
+    }
+    if (action != DolbyRecoveryAction.rebuildHardware) return;
+    final native = player.platform;
+    if (native is! NativePlayer) {
+      _failPlayback('杜比定位恢复时原生播放器不可用，已保留观看进度');
+      return;
+    }
+    final generation = _dolbyRecovery.generation;
+    final intent = _seekIntent;
+    bool active() =>
+        !_disposed &&
+        !_opening &&
+        !_discInterrupted &&
+        _lastFailure == null &&
+        generation == _dolbyRecovery.generation &&
+        intent == _seekIntent;
+    try {
+      await _rates.run(() async {
+        if (!active()) return;
+        final actual = await native
+            .getProperty('hwdec-current')
+            .timeout(const Duration(milliseconds: 600));
+        if (!active()) return;
+        if (actual != _dolbyRecovery.hardware ||
+            !const {'mediacodec', 'mediacodec-copy'}.contains(actual)) {
+          throw const AppFailure('杜比定位恢复前的实际解码器已变化');
+        }
+        if (!_dolbyRecovery.repairStarted(
+          generation: generation,
+          now: _runtimeClock.elapsed,
+        )) {
+          if (active()) {
+            _failPlayback('杜比定位恢复超过原定位期限，已保留观看进度');
+          }
+          return;
+        }
+        _runtimeRepairBusy = true;
+        try {
+          ++_runtimeEpoch;
+          _runtimeWatch.seek();
+          _hardwareFallback.cancel();
+          _observation.invalidate();
+          final target = _dolbyRecovery.target;
+          _runtimePosition.beginSeek(target);
+          _seekSince ??= _runtimeClock.elapsed;
+          log?.add(
+            LogArea.player,
+            '杜比定位映射恢复：当前媒体内仅一次原硬解重建；'
+            '目标=${target.inMilliseconds} ms；实际解码=$actual；不重新解析入口',
+            level: LogLevel.warning,
+          );
+          await _beginFastBuffer('杜比定位恢复');
+          if (!active()) return;
+          _cachedTransport?.seek();
+          _disc?.resetReadAhead();
+          _armBufferPhase();
+          await repairHardwareFallback(
+            action: HardwareRepairAction.retryHardware,
+            hardware: actual,
+            position: target,
+            active: active,
+            write: native.setProperty,
+            seek: player.seek,
+          );
+          if (!active()) return;
+          _dolbyRecovery.repairCompleted(generation: generation);
+          log?.add(LogArea.player, '杜比定位恢复命令完成；等待新的播放重启与目标位置连续音画，命令完成不代表恢复成功');
+        } finally {
+          _runtimeRepairBusy = false;
+        }
+      });
+    } catch (_) {
+      if (active()) {
+        _dolbyRecovery.cancel();
+        _failPlayback('杜比定位后的硬解重建失败，已保留观看进度');
+      }
+    } finally {
+      if (!_disposed) emit();
+    }
+  }
+
+  // Read only this player's in-memory output. A valid texture or VO frame is
+  // diagnostic evidence, not proof that the user saw a non-black image.
+  Future<void> _recordVideoHealth() async {
+    final native = player.platform;
+    if (_disposed || _videoProbeBusy || native is! NativePlayer) {
+      return;
+    }
+    _videoProbeBusy = true;
+    final epoch = _runtimeEpoch;
+    final dolbyGeneration = _dolbyRecovery.generation;
+    final sampleGeneration = _observation.generation;
+    final sampleSpeed = _speed;
+    try {
+      final fields = <String>[];
+      final values = <String, String>{};
+      for (final key in [
+        'current-vo',
+        'vo-configured',
+        'hwdec-current',
+        'video-frame-info/interlaced',
+        'video-out-params/pixelformat',
+        'video-dec-params/pixelformat',
+        'estimated-frame-number',
+        'decoder-frame-drop-count',
+        'frame-drop-count',
+        'time-pos',
+        'audio-pts',
+        'avsync',
+        'speed',
+        'seeking',
+        'paused-for-cache',
+        'demuxer-cache-duration',
+      ]) {
+        if (_disposed) return;
+        try {
+          final value = await native
+              .getProperty(key)
+              .timeout(const Duration(milliseconds: 600));
+          values[key] = value;
+          fields.add(
+            '$key=${RegExp(r'^[a-zA-Z0-9_.-]{1,40}$').hasMatch(value) ? value : "未提供"}',
+          );
+        } catch (_) {
+          fields.add('$key=未提供');
+        }
+      }
+      if (_disposed || _lastFailure != null || epoch != _runtimeEpoch) return;
+      final now = _runtimeClock.elapsed;
+      if (!_runtimeRepairBusy) {
+        _runtimePosition.accept(
+          player.state.position,
+          duration: player.state.duration,
+        );
+        if (!_runtimePosition.settling) _seekSince = null;
+      }
+      if (!player.state.playing && _seekSince != null) _seekSince = now;
+      if (_seekSince != null &&
+          !_dolbyRecovery.trackingSeek &&
+          now - _seekSince! > const Duration(seconds: 30)) {
+        _failPlayback('定位超过 30 秒仍未得到目标位置，已保留定位进度');
+        return;
+      }
+      final sample = RuntimeSample(
+        now: now,
+        position: mediaClock(values['time-pos']) ?? player.state.position,
+        audioPosition: mediaClock(values['audio-pts']),
+        playing: player.state.playing,
+        buffering: player.state.buffering,
+        seeking: values['seeking'] != 'no' || _runtimePosition.settling,
+        cachePaused: values['paused-for-cache'] != 'no',
+        outputReady:
+            values['vo-configured'] == 'yes' &&
+            const {
+              'yes',
+              'no',
+            }.contains(values['video-frame-info/interlaced']) &&
+            values['current-vo'] != null &&
+            values['current-vo'] != 'null',
+        hardware: values['hwdec-current'] ?? '',
+      );
+      final dolbyAction = _dolbyRecovery.sample(
+        sample,
+        generation: dolbyGeneration,
+        speed: _speed,
+      );
+      if (dolbyAction == DolbyRecoveryAction.fail) {
+        _failPlayback('杜比定位恢复后未得到目标位置的连续音画，已保留观看进度');
+        return;
+      } else if (dolbyAction == DolbyRecoveryAction.recovered) {
+        log?.add(LogArea.player, '杜比定位恢复已核对：新播放重启后目标位置的音画时钟连续前进；不代表已验证颜色');
+      }
+      if (_fastSeekIntent != null && !sample.seeking && sample.outputReady) {
+        final intent = _fastSeekIntent;
+        await _rates.run(() async {
+          if (_disposed || intent != _seekIntent || intent != _fastSeekIntent) {
+            return;
+          }
+          try {
+            await _startupSeek.restore(
+              read: (key) => native
+                  .getProperty(key)
+                  .timeout(const Duration(milliseconds: 600)),
+              write: (key, value) => native
+                  .setProperty(key, value)
+                  .timeout(const Duration(seconds: 2)),
+            );
+          } catch (_) {
+            _failPlayback('精确定位参数未能恢复，已保留观看进度');
+          }
+          _fastSeekIntent = null;
+        });
+        if (_disposed || _lastFailure != null || epoch != _runtimeEpoch) return;
+      }
+      final hardwareAction =
+          _runtimeRepairBusy ||
+              _hardwareRepairQueued ||
+              _dolbyRecovery.recovering
+          ? HardwareRepairAction.none
+          : _hardwareFallback.sample(sample);
+      if (hardwareAction == HardwareRepairAction.retryHardware ||
+          hardwareAction == HardwareRepairAction.cleanSoftware) {
+        unawaited(_repairHardwareFallback(native, hardwareAction));
+      } else if (hardwareAction == HardwareRepairAction.verified) {
+        log?.add(
+          LogArea.player,
+          '解码重建后时钟核对通过：实际解码=${sample.hardware}；'
+          '音频与视频时钟已前进；不代表已验证画面无花屏或设备全倍速流畅',
+        );
+      }
+      final action =
+          _runtimeRepairBusy ||
+              _hardwareRepairQueued ||
+              _dolbyRecovery.recovering
+          ? RuntimeAction.none
+          : _runtimeWatch.sample(sample, speed: _speed);
+      if (action == RuntimeAction.recover) {
+        unawaited(_repairRuntimeVideo(native, sample.hardware));
+      } else if (action == RuntimeAction.recovered) {
+        log?.add(
+          LogArea.player,
+          '视频恢复核对通过：当前媒体内音频与视频时钟已连续前进；实际解码=${sample.hardware}；倍速=$_speed',
+        );
+      } else if (action == RuntimeAction.fail) {
+        _failPlayback(
+          '视频时钟持续停滞，音频仍在前进；${_runtimeWatch.attempted ? "本次恢复未成功" : "没有可用的硬解恢复条件"}，已保留最后有效进度',
+        );
+      }
+      // Resolve video recovery first: its sixth-second decision can coincide
+      // with the audio fault deadline in this same sample.
+      final audioAction = _audioDecode.sample(
+        sample,
+        videoRecovering:
+            _runtimeWatch.recovering ||
+            _runtimeRepairBusy ||
+            _dolbyRecovery.recovering ||
+            dolbyAction == DolbyRecoveryAction.recovered ||
+            action == RuntimeAction.recovered,
+      );
+      if (audioAction == AudioDecodeAction.fail) {
+        _failPlayback('音频解码错误后未恢复连续音画输出，已保留观看进度');
+        return;
+      } else if (audioAction == AudioDecodeAction.verified) {
+        log?.add(LogArea.player, '音频包错误后核对：视频与音频时钟均已前进，保留原音轨播放');
+      }
+      final sampleAccepted = _observation.record(
+        sampleGeneration: sampleGeneration,
+        now: now,
+        speed: sampleSpeed,
+        values: values,
+      );
+      if (++_videoSamples % 5 != 1 &&
+          action == RuntimeAction.none &&
+          !_positionRejected) {
+        return;
+      }
+      final rect = video.rect.value;
+      log?.add(
+        LogArea.player,
+        '画面链路采样：纹理已分配=${video.id.value != null}；'
+        '纹理尺寸=${rect?.width.toInt() ?? 0}×${rect?.height.toInt() ?? 0}；'
+        '画面尺寸=${player.state.width ?? 0}×${player.state.height ?? 0}；'
+        '位置=${player.state.position.inMilliseconds} ms；播放=${player.state.playing}；'
+        '缓冲=${player.state.buffering}；${fields.join("；")}；'
+        '${sampleAccepted ? _observation.describe(now) : "诊断采样跨越操作边界，不做区间比较"}',
+      );
+    } finally {
+      _videoProbeBusy = false;
+    }
+  }
+
+  void _beginDiscTimestampScope(int serial) {
+    _discMissingVideoPts = false;
+    // Native log messages have no load serial. A reused player's old queue
+    // cannot safely qualify a later media, even after clearing this flag.
+    _discPtsLoad = serial == 1 && _disc?.selected != null ? serial : null;
+  }
+
+  void _observeDiscPacketTimestamp(String prefix, String level, String text) {
+    if (_discPtsLoad != _loadSerial ||
+        _disc?.selected == null ||
+        _dolbyMapping ||
+        prefix != 'ffmpeg/video' ||
+        !const {'warn', 'error', 'fatal'}.contains(level)) {
+      return;
+    }
+    if (RegExp(
+      r'^(?:(?:hevc|h264|vp8|vp9|av1|mpeg2)_mediacodec: )?Input packet is missing PTS$',
+    ).hasMatch(text.trim())) {
+      _discMissingVideoPts = true;
+    }
+  }
+
+  Future<void> _repairRuntimeVideo(NativePlayer native, String hardware) async {
+    if (_disposed || _opening || _runtimeRepairBusy || _lastFailure != null) {
+      return;
+    }
+    final epoch = _runtimeEpoch;
+    final intent = _seekIntent;
+    _hardwareFallback.cancel();
+    _runtimeRepairBusy = true;
+    bool active() =>
+        !_disposed &&
+        !_opening &&
+        !_discInterrupted &&
+        epoch == _runtimeEpoch &&
+        intent == _seekIntent &&
+        _lastFailure == null;
+    try {
+      await _rates.run(() async {
+        if (!active()) return;
+        final target = _runtimePosition.value;
+        // The fixed MediaCodec path substitutes zero for missing input PTS.
+        // Only this validated disc/load's exact warning plus the existing
+        // audio-advancing stall earns a software attempt at normal speed.
+        final missingPtsFallback =
+            _discPtsLoad == _loadSerial &&
+            _discMissingVideoPts &&
+            _disc?.selected != null &&
+            !_dolbyMapping &&
+            const {'mediacodec', 'mediacodec-copy'}.contains(hardware);
+        // Keep the established >2x fallback and all other hardware rebuilds.
+        final expected = _speed > 2 || missingPtsFallback ? 'no' : hardware;
+        _runtimeWatch.beginRecovery(
+          target,
+          _runtimeClock.elapsed,
+          hardware: expected,
+        );
+        log?.add(
+          LogArea.player,
+          '视频停滞恢复开始：音频前进、视频至少 6 秒未前进；'
+          '保留=${target.inMilliseconds} ms；倍速=$_speed；'
+          '仅一次${expected == "no" ? "后备解码" : "原硬解重建"}，不重新打开入口'
+          '${missingPtsFallback ? "；本次原盘已记录缺失 PTS，避免重复同一路硬解" : ""}',
+          level: LogLevel.warning,
+        );
+        await _beginFastBuffer('视频停滞恢复');
+        if (!active()) return;
+        await native
+            .setProperty('hwdec', expected)
+            .timeout(const Duration(seconds: 3));
+        if (!active()) return;
+        _observation.invalidate();
+        _runtimePosition.beginSeek(target);
+        _seekSince = _runtimeClock.elapsed;
+        _cachedTransport?.seek();
+        _disc?.resetReadAhead();
+        _armBufferPhase();
+        await player.seek(target).timeout(const Duration(seconds: 3));
+        if (!active()) return;
+        log?.add(LogArea.player, '视频恢复命令已完成；等待音画时钟前进核对，最多 30 秒播放时间');
+      });
+    } catch (_) {
+      if (active()) {
+        _failPlayback('视频停滞后的解码恢复命令失败，已保留最后有效进度');
+      }
+    } finally {
+      _runtimeRepairBusy = false;
+    }
+  }
+
+  Future<void> _repairHardwareFallback(
+    NativePlayer native,
+    HardwareRepairAction action,
+  ) async {
+    if (_disposed ||
+        _opening ||
+        _runtimeRepairBusy ||
+        _hardwareRepairQueued ||
+        _lastFailure != null) {
+      return;
+    }
+    _hardwareRepairQueued = true;
+    final generation = _hardwareFallback.generation;
+    bool active() =>
+        !_disposed &&
+        !_opening &&
+        !_discInterrupted &&
+        _lastFailure == null &&
+        generation == _hardwareFallback.generation;
+    try {
+      await _rates.run(() async {
+        if (!active()) return;
+        final target = _runtimePosition.value;
+        _runtimeRepairBusy = true;
+        ++_runtimeEpoch;
+        _runtimeWatch.seek();
+        _observation.invalidate();
+        _runtimePosition.beginSeek(target);
+        _seekSince = _runtimeClock.elapsed;
+        log?.add(
+          LogArea.player,
+          '${action == HardwareRepairAction.retryHardware ? "运行中硬解失败：仅尝试一次原硬解重建" : "硬解重建后仍为软解：清理缺失参考帧"}；'
+          '保留=${target.inMilliseconds} ms；倍速=$_speed；'
+          '当前媒体内从关键帧恢复，不重新解析播放入口',
+          level: LogLevel.warning,
+        );
+        try {
+          await _beginFastBuffer('解码恢复');
+          if (!active()) return;
+          _cachedTransport?.seek();
+          _disc?.resetReadAhead();
+          // Reuse the existing bounded native restart/frame verifier. A
+          // successful property write alone is not successful video recovery.
+          _decoderRecovery.codecFailed('运行中硬件解码失败，等待解码重建');
+          _armBufferPhase();
+          await repairHardwareFallback(
+            action: action,
+            hardware: _hardwareFallback.hardware!,
+            position: target,
+            active: active,
+            write: native.setProperty,
+            seek: player.seek,
+          );
+        } catch (_) {
+          if (active()) {
+            _failPlayback('解码失败后的重建未完成，已保留观看位置，请重试');
+          }
+        } finally {
+          _runtimeRepairBusy = false;
+          if (!_disposed) emit();
+        }
+      });
+    } finally {
+      _hardwareRepairQueued = false;
+    }
+  }
+
+  @override
+  Future<void> open(PlaybackRoute route, Duration start) async {
+    await _stopPacketTrace();
+    _networkFile = const {
+      'http',
+      'https',
+    }.contains(Uri.tryParse(route.url)?.scheme);
+    _cancelBufferPhase();
+    _bufferPhase.begin();
+    ++_runtimeEpoch;
+    _runtimeWatch.reset();
+    _discPtsLoad = null;
+    _discMissingVideoPts = false;
+    _audioDecode.cancel();
+    _hardwareFallback.reset();
+    _dolbyRecovery.reset();
+    _observation.invalidate();
+    _runtimePosition.reset(start);
+    _videoSamples = 0;
+    _positionRejected = false;
+    _seekSince = null;
+    _fastSeekIntent = null;
+    diagnostics.clear();
+    _videoDiagnostics.clear();
+    _videoTimer?.cancel();
+    _lastFailure = null;
+    _readEofReported = false;
+    _decoderOpeningError = null;
+    sourceNotice = '';
+    _discInterrupted = false;
+    _opening = true;
+    _openFailure = Completer<void>();
+    unawaited(_openFailure!.future.catchError((Object _) {}));
+    final detected = Completer<({DiscKind kind, String address})>();
+    var opened = false;
+    try {
+      var mediaAddress = route.url;
+      final discKind = forcedDiscKind ?? route.discKind;
+      if (discKind != DiscKind.none) {
+        final disc = await _newDiscTransport(route, discKind);
+        if (_disposed) {
+          await disc.close();
+          throw const AppFailure('播放已退出');
+        }
+        _disc = disc;
+        mediaAddress = await disc.start(playlist: discPlaylist);
+      } else if (route.sameOriginHeaders.isNotEmpty) {
+        final origin = EmbyOriginTransport(
+          route,
+          log: log,
+          onDisc: (kind, address) {
+            if (!detected.isCompleted) {
+              detected.complete((kind: kind, address: address));
+            }
+          },
+        );
+        _origin = origin;
+        mediaAddress = await origin.start();
+      }
+      if (_disposed) throw const AppFailure('播放已退出');
+      if (_disc == null && _persistentCache != null && _networkFile) {
+        final cached = CachedPlaybackTransport(
+          address: mediaAddress,
+          headers: route.headers,
+          cache: _persistentCache!,
+          scope: _cacheScope,
+        );
+        _cachedTransport = cached;
+        mediaAddress = await cached.start();
+      }
+      Future<void> loadVideo(String address) async {
+        final serial = ++_loadSerial;
+        _beginDiscTimestampScope(serial);
+        final native = player.platform;
+        if (native is! NativePlayer) throw const AppFailure('MPV 原生后端未就绪');
+        final dolby = requestsDolbyMapping(route.streams);
+        {
+          if (dolby != _dolbyMapping) await player.stop();
+          final changed = await video.setDolbyMapping(dolby);
+          _dolbyMapping = dolby;
+          if (changed) {
+            log?.add(
+              LogArea.player,
+              dolby
+                  ? '杜比片源启用逐帧色彩映射；硬解须支持原始 YUV 交接，否则使用内核后备解码；不转码'
+                  : '已恢复普通媒体的原视频输出与解码设置',
+            );
+          }
+        }
+        final oldHook = _dolbyPreloadedHook;
+        if (oldHook != null) native.onPreloadedHooks.remove(oldHook);
+        _dolbyPreloadedHook = () async {
+          bool active() =>
+              !_disposed && serial == _loadSerial && _lastFailure == null;
+          if (!active()) return;
+          try {
+            final profile = await prepareOpenedDolby(
+              address: address,
+              read: (key) =>
+                  native.getProperty(key, waitForInitialization: false),
+              enable: () async {
+                await video.setDolbyMapping(true);
+                _dolbyMapping = true;
+              },
+              active: active,
+            );
+            if (!active()) return;
+            log?.add(
+              LogArea.player,
+              profile == null
+                  ? '实际媒体已解析：容器未提供可用杜比 Profile；保留已有片源设置，不能据此排除杜比'
+                  : '实际媒体识别：杜比视界 Profile $profile；已在解码前启用逐帧映射；复用本次取流',
+            );
+          } catch (_) {
+            if (!active()) return;
+            await native.setProperty(
+              'pause',
+              'yes',
+              waitForInitialization: false,
+            );
+            _failPlayback('已识别杜比资源，但杜比输出初始化失败，已保留观看进度');
+          }
+        };
+        native.onPreloadedHooks.add(_dolbyPreloadedHook!);
+        await native.setProperty('network-timeout', '30');
+        final fastResume = await _startupSeek.prepare(
+          read: (key) => native
+              .getProperty(key)
+              .timeout(const Duration(milliseconds: 600)),
+          write: (key, value) => native
+              .setProperty(key, value)
+              .timeout(const Duration(seconds: 2)),
+        );
+        if (fastResume) {
+          log?.add(LogArea.player, '首次精确定位：允许解码器跳过目标前的帧；目标位置与原画输出保持');
+        }
+        // Persistent raw ranges replace the unbounded temporary packet dump.
+        // The existing device-based packet RAM limit remains in force.
+        if (_persistentCache != null) {
+          await native.setProperty('cache-on-disk', 'no');
+        }
+        final audioSetup = await _rateAudio.prepare(
+          read: (key) => native
+              .getProperty(key)
+              .timeout(const Duration(milliseconds: 600)),
+          write: native.setProperty,
+        );
+        log?.add(LogArea.player, '切速音频准备：${audioSetup.join('；')}');
+        final probe = await _discProbe.prepare(
+          disc: _disc?.selected != null,
+          read: (key) => native
+              .getProperty(key)
+              .timeout(const Duration(milliseconds: 600)),
+          write: native.setProperty,
+        );
+        if (probe != null) log?.add(LogArea.player, probe);
+        if (_disc != null) {
+          final startup = await _discStartup.prepare(
+            hasPlaylistTimeline: _disc!.selected != null,
+            read: (key) => native
+                .getProperty(key)
+                .timeout(const Duration(milliseconds: 600)),
+            command: native.command,
+          );
+          log?.add(LogArea.player, startup);
+        }
+        await _rates.run(() => _beginFastBuffer('开播'));
+        final timestampSetup = await _discTimestamps.prepare(
+          disc: _disc?.selected != null,
+          read: (key) => native
+              .getProperty(key)
+              .timeout(const Duration(milliseconds: 600)),
+          command: (args) =>
+              native.command(args).timeout(const Duration(seconds: 2)),
+        );
+        if (timestampSetup != null) log?.add(LogArea.player, timestampSetup);
+        await _startPacketTrace(native);
+        final agent =
+            route.headers.entries
+                .where((e) => e.key.toLowerCase() == 'user-agent')
+                .map((e) => e.value)
+                .firstOrNull ??
+            playbackUserAgent;
+        await native.setProperty('user-agent', agent);
+        if (log?.enabled == true && _disc == null) {
+          _trace = HttpPlaybackTrace(
+            log: log!,
+            address: address,
+            headers: route.headers,
+            serverBase: route.serverBase,
+          );
+          // The public libmpv API only increases verbosity during opening.
+          // Raw native logs are classified in memory and never persisted.
+          _nativeLogLevel(native, 'trace');
+        }
+        // An explicit empty map clears media-kit's same-URL header cache.
+        final outputReady = _decoderRecovery.beginLoad();
+        _armBufferPhase();
+        await player.open(
+          Media(
+            address,
+            httpHeaders: _disc == null ? route.headers : const {},
+            start: start,
+            extras: _disc != null && _disc!.base == 'yingyu-disc://${_disc!.id}'
+                ? {'yingyuNativeDiscSession': _disc!.id}
+                : const {},
+          ),
+          play: false,
+        );
+        // In the fixed Android plugin this future also completes on surface
+        // dimensions. Require MPV restart and a frame in the real VO separately.
+        await video.waitUntilFirstFrameRendered;
+        await outputReady;
+        if (_disposed || serial != _loadSerial) {
+          throw const AppFailure('播放打开已取消');
+        }
+        if (player.state.width == null || player.state.width! <= 0) {
+          throw const AppFailure('MPV 未就绪');
+        }
+        log?.add(
+          LogArea.player,
+          'MPV 视频输出已就绪，输出持有帧；${player.state.width} × ${player.state.height}',
+        );
+      }
+
+      _setStage(_disc == null ? '正在连接媒体并等待首帧' : '原盘已解析，正在等待视频首帧');
+      final switched =
+          await Future.any<Object?>([
+            loadVideo(mediaAddress).then((_) => null),
+            _openFailure!.future.then((_) => null),
+            detected.future,
+          ]).timeout(
+            Duration(seconds: _disc == null ? 40 : 90),
+            onTimeout: () => throw AppFailure(
+              _describe(
+                '$_stage 超时；${_disc == null ? 40 : 90} 秒内未收到首帧${_decoderOpeningError == null ? "" : "；$_decoderOpeningError"}',
+              ),
+            ),
+          );
+      if (switched is ({DiscKind kind, String address})) {
+        _switching = true;
+        ++_loadSerial;
+        await player.stop();
+        await _cachedTransport?.close();
+        _cachedTransport = null;
+        await _origin?.close();
+        _origin = null;
+        _trace?.finish();
+        _trace = null;
+        diagnostics.clear();
+        final disc = await _newDiscTransport(
+          route,
+          switched.kind,
+          address: switched.address,
+        );
+        if (_disposed) {
+          await disc.close();
+          throw const AppFailure('播放已退出');
+        }
+        _disc = disc;
+        final discAddress = await disc.start(playlist: discPlaylist);
+        if (_disposed) throw const AppFailure('播放已退出');
+        _switching = false;
+        _openFailure = Completer<void>();
+        unawaited(_openFailure!.future.catchError((Object _) {}));
+        await Future.any([
+          loadVideo(discAddress),
+          _openFailure!.future,
+        ]).timeout(
+          const Duration(seconds: 90),
+          onTimeout: () => throw AppFailure(
+            _describe(
+              '原盘已解析，但 MPV 90 秒内未收到首帧${_decoderOpeningError == null ? "" : "；$_decoderOpeningError"}',
+            ),
+          ),
+        );
+      }
+      final finishing = Stopwatch()..start();
+      await _recordOutput(route);
+      log?.add(
+        LogArea.player,
+        '开播收尾：显示信息与色彩设置=${finishing.elapsedMilliseconds} ms',
+      );
+      finishing.reset();
+      // Metadata uses MPV's in-memory track properties and the title information
+      // already parsed by VideoLAN. No additional media probe is performed.
+      try {
+        await _refreshTracks();
+      } catch (_) {
+        log?.add(LogArea.player, '轨道元数据暂不可用，可手动选择', level: LogLevel.warning);
+      }
+      _tracksReady = true;
+      log?.add(LogArea.player, '开播收尾：轨道资料=${finishing.elapsedMilliseconds} ms');
+      if (_openFailure?.isCompleted == true) await _openFailure!.future;
+      if (_disposed) throw const AppFailure('播放已退出');
+      opened = true;
+      {
+        unawaited(_recordVideoHealth());
+        _videoTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+          if (_disposed || _lastFailure != null) {
+            timer.cancel();
+          } else {
+            unawaited(_recordVideoHealth());
+          }
+        });
+      }
+      if (_disc != null) {
+        _bufferWatch.reset();
+        _discClock.start();
+        _discTimer?.cancel();
+        _discTimer = Timer.periodic(
+          const Duration(seconds: 5),
+          (_) => _sampleDiscHealth(),
+        );
+      }
+    } finally {
+      if (!opened) {
+        await _stopPacketTrace();
+        _cancelBufferPhase();
+        _decoderRecovery.cancel();
+        ++_loadSerial;
+        await _origin?.close();
+        await _disc?.close();
+        await _cachedTransport?.close();
+        if (!_disposed) {
+          try {
+            await player.stop().timeout(const Duration(seconds: 5));
+          } catch (_) {}
+        }
+      }
+      _opening = false;
+      _switching = false;
+      _trace?.finish();
+      _trace = null;
+      final native = player.platform;
+      if (native is NativePlayer &&
+          !native.disposed &&
+          native.ctx.address != 0) {
+        if (_packetTrace == null) _nativeLogLevel(native, 'warn');
+        await _startupSeek.restore(
+          read: (key) => native
+              .getProperty(key)
+              .timeout(const Duration(milliseconds: 600)),
+          write: (key, value) => native
+              .setProperty(key, value)
+              .timeout(const Duration(seconds: 2)),
+        );
+      }
+      if (opened) {
+        // Persistence owns its serialized write queue and reports failures.
+        // A ready picture must not wait for up to 5000 log records on disk.
+        unawaited(log?.flush());
+      } else {
+        await log?.flush();
+      }
+    }
+  }
+
+  int _nativeLogLevel(NativePlayer native, String level) {
+    final value = level.toNativeUtf8();
+    try {
+      return native.mpv.mpv_request_log_messages(native.ctx, value.cast());
+    } finally {
+      calloc.free(value);
+    }
+  }
+
+  @override
+  PlaybackMediaFacts get mediaFacts {
+    final native = player.platform;
+    final epoch = _runtimeEpoch;
+    if (native is! NativePlayer ||
+        _disposed ||
+        _opening ||
+        native.disposed ||
+        native.ctx.address == 0) {
+      return const PlaybackMediaFacts();
+    }
+    // These are the same in-memory properties used by NativePlayer.getProperty.
+    // The decoder already populated them while producing the frame. Reading
+    // them synchronously lets the panel paint immediately: no HTTP, probe,
+    // separate information cache, background collector or polling timer.
+    String read(String key) {
+      final name = key.toNativeUtf8();
+      try {
+        final value = native.mpv.mpv_get_property_string(
+          native.ctx,
+          name.cast(),
+        );
+        if (value.address == 0) return '';
+        try {
+          return value.cast<Utf8>().toDartString();
+        } finally {
+          native.mpv.mpv_free(value.cast());
+        }
+      } finally {
+        calloc.free(name);
+      }
+    }
+
+    return readPlaybackMediaFacts(
+      read: read,
+      active: () => !_disposed && !_opening && epoch == _runtimeEpoch,
+    );
+  }
+
+  Future<void> _recordOutput(PlaybackRoute route) async {
+    final native = player.platform;
+    if (native is! NativePlayer || _disposed) return;
+    final serial = _loadSerial;
+    final values = await openingOutputProperties(
+      native.getProperty,
+      active: () => !_disposed && serial == _loadSerial,
+    );
+    if (_disposed || serial != _loadSerial) return;
+    _hardwareFallback.observeHardware(values['hwdec-current'] ?? '');
+    log?.add(
+      LogArea.player,
+      '实际解码信息：${values.entries.map((e) => '${e.key}=${e.value}').join('；')}',
+    );
+    sourceNotice = mediaNotice(
+      bluray: _disc?.selected != null,
+      streams: route.streams,
+      decoded: {
+        ...values,
+        'dolby-vision-profile':
+            values['current-tracks/video/dolby-vision-profile'] ?? '',
+      },
+    );
+    log?.add(LogArea.player, '片源格式提示已准备：$sourceNotice');
+    if (values['video-params/colormatrix'] == 'dolbyvision') {
+      log?.add(
+        LogArea.player,
+        '检测到杜比视界色彩标记；逐帧映射=${_dolbyMapping ? '已启用' : '未启用'}；不代表设备原生杜比显示或完整 FEL 增强层处理',
+        level: LogLevel.warning,
+      );
+    }
+    if (const {'pq', 'hlg'}.contains(values['video-params/gamma'])) {
+      // The existing Flutter texture pipeline has no verified Android HDR
+      // surface contract. Use MPV's documented SDR tone mapping explicitly.
+      for (final entry in const {
+        'target-prim': 'bt.709',
+        'target-trc': 'bt.1886',
+        'tone-mapping': 'bt.2390',
+        'dither': 'fruit',
+        'dither-depth': '8',
+      }.entries) {
+        try {
+          await native.setProperty(entry.key, entry.value);
+          final actual = await native.getProperty('options/${entry.key}');
+          log?.add(
+            LogArea.player,
+            'HDR 显示参数：${entry.key}=$actual（目标为 SDR 兼容显示）',
+          );
+        } catch (_) {
+          log?.add(
+            LogArea.player,
+            'HDR 显示参数未能设置：${entry.key}',
+            level: LogLevel.warning,
+          );
+        }
+      }
+    }
+    log?.add(LogArea.player, '音频采用解码输出；TrueHD／E-AC-3 不等同于 Atmos 对象输出，未启用直通');
+    if (log?.enabled == true) {
+      unawaited(
+        displayDiagnostics(
+          native.getProperty,
+          active: () => !_disposed && serial == _loadSerial,
+        ).then((values) {
+          if (values.isNotEmpty) {
+            log?.add(
+              LogArea.player,
+              '显示与缓存参数核对：${values.entries.map((e) => '${e.key}=${e.value}').join('；')}；磁盘缓存启用时字节上限仅约束包元数据',
+            );
+          }
+        }),
+      );
+    }
+  }
+
+  @override
+  Future<void> play() async {
+    _readAheadAllowed = true;
+    await player.play();
+    _updatePersistentReadAhead();
+  }
+
+  @override
+  Future<void> pause() async {
+    _readAheadAllowed = false;
+    _cachedTransport?.reader.stopWarming();
+    _disc?.stopPersistentReadAhead();
+    await player.pause();
+  }
+
+  @override
+  Future<void> seek(Duration position) {
+    final intent = ++_seekIntent;
+    _dolbyRecovery.cancel();
+    _audioDecode.cancel();
+    _hardwareFallback.cancel();
+    _cachedTransport?.seek();
+    _disc?.stopPersistentReadAhead();
+    _rateProbe.cancel();
+    _observation.invalidate();
+    // Invalidate a pending first-frame sample immediately, before waiting for
+    // an earlier rate operation. It must not promote the old seek's cache.
+    _cancelBufferPhase();
+    return _rates.run(() async {
+      if (_disposed || intent != _seekIntent) return;
+      _observation.invalidate();
+      ++_runtimeEpoch;
+      _runtimeWatch.seek();
+      final previous = _runtimePosition.value;
+      _runtimePosition.beginSeek(position);
+      _seekSince = _runtimeClock.elapsed;
+      _bufferWatch.reset();
+      try {
+        await _beginFastBuffer('定位');
+        if (_disposed || intent != _seekIntent) return;
+        final native = player.platform;
+        if (native is NativePlayer) {
+          _fastSeekIntent = intent;
+          await _startupSeek.prepare(
+            read: (key) => native
+                .getProperty(key)
+                .timeout(const Duration(milliseconds: 600)),
+            write: (key, value) => native
+                .setProperty(key, value)
+                .timeout(const Duration(seconds: 2)),
+          );
+        }
+        if (_disposed || intent != _seekIntent) return;
+        _disc?.resetReadAhead();
+        _armBufferPhase();
+        if (_dolbyMapping && native is NativePlayer) {
+          String hardware;
+          try {
+            hardware = await native
+                .getProperty('hwdec-current')
+                .timeout(const Duration(milliseconds: 600));
+          } catch (_) {
+            hardware = '';
+          }
+          if (_disposed || intent != _seekIntent) return;
+          _dolbyRecovery.beginSeek(
+            target: position,
+            now: _runtimeClock.elapsed,
+            hardware: hardware,
+            playing: player.state.playing,
+            speed: _speed,
+          );
+        }
+        await player.seek(position);
+      } catch (_) {
+        if (intent == _seekIntent) {
+          _runtimePosition.reset(previous);
+          _seekSince = null;
+          _dolbyRecovery.cancel();
+        }
+        rethrow;
+      }
+    });
+  }
+
+  @override
+  Future<void> rate(double value) {
+    // Invalidate a cache expiry before it can wait behind this new intent.
+    _discCacheRetention.cancel();
+    return _rates.set(value);
+  }
+
+  Future<void> _applyRate(double value) async {
+    if (_disposed) return;
+    if (!value.isFinite || value < .5 || value > 3) {
+      throw const AppFailure('播放倍速超出支持范围');
+    }
+    if (value == _speed) {
+      _retainDiscCache();
+      return;
+    }
+    _readAhead.speed(value);
+    _rateProbe.cancel();
+    final previousSpeed = _speed;
+    _observation.invalidate();
+    final previous = _appliedDiscPlan;
+    final previousStream = _streamBuffer.applied;
+    try {
+      if (_disc == null && _networkFile) {
+        await _streamBuffer.configure(value, fast: _bufferPhase.fast);
+      } else {
+        // Returning to a lower actual speed does not shrink warm prefetch here.
+        // Only its resume gate follows the actual speed, without a memory query.
+        final plan =
+            previous != null &&
+                !previous.fast &&
+                !_bufferPhase.fast &&
+                previous.tier >= discBufferTier(value)
+            ? previous.withPlaybackSpeed(value)
+            : await _discPlan(value, fast: _bufferPhase.fast);
+        await _setDiscPlan(plan);
+      }
+      if (_disposed) return;
+      await player.setRate(value);
+    } catch (_) {
+      _observation.invalidate();
+      if (!_disposed && _disc == null && _networkFile) {
+        try {
+          await _streamBuffer.restore(previousStream);
+        } catch (_) {
+          _failPlayback('倍速设置失败后的缓存参数恢复未完成');
+        }
+      }
+      if (!_disposed && previous != null) {
+        try {
+          await _setDiscPlan(previous);
+        } catch (_) {
+          log?.add(
+            LogArea.player,
+            '倍速设置失败后的缓冲参数恢复未完成',
+            level: LogLevel.warning,
+          );
+        }
+      }
+      _retainDiscCache();
+      rethrow;
+    }
+    _speed = value;
+    _dolbyRecovery.observeSpeed(value);
+    _readAhead.speed(value);
+    _updatePersistentReadAhead();
+    _retainDiscCache();
+    _observation.invalidate();
+    if (_bufferPhase.promotionFailed) {
+      _bufferPhase.promotionFailed = false;
+      _armBufferPhase();
+    }
+    _bufferWatch.reset();
+    log?.add(LogArea.player, '播放倍速已设置：$value；$_cacheDescription');
+    _rateProbe.start(previousSpeed, value);
+  }
+
+  void _retainDiscCache() {
+    if (_disposed || _lastFailure != null || _discInterrupted) return;
+    // The user explicitly retains the highest pre-read target after a hold.
+    // Actual speed and its resume gate still return immediately.
+    _discCacheRetention.cancel();
+    final plan = _appliedDiscPlan;
+    if (plan != null && !plan.fast && plan.tier > discBufferTier(_speed)) {
+      log?.add(
+        LogArea.player,
+        '实际倍速=$_speed；预读缓存档=${plan.tier} 保持至本次视频关闭；'
+        '恢复播放门槛=${plan.options["cache-pause-wait"]} 秒媒体时间',
+      );
+    }
+  }
+
+  Future<void> _releaseDiscCache(int generation, double tier) async {
+    bool current() =>
+        !_disposed &&
+        _lastFailure == null &&
+        !_discInterrupted &&
+        _disc != null &&
+        !_bufferPhase.fast &&
+        _discCacheRetention.isCurrent(generation);
+    try {
+      if (!current()) return;
+      // The optional device-memory query must not occupy the speed/seek queue.
+      final plan = (await _discPlan(
+        tier,
+        fast: false,
+      )).withPlaybackSpeed(_speed);
+      if (!current()) return;
+      await _rates.run(() async {
+        if (!current()) return;
+        await _setDiscPlan(plan);
+        if (!current()) return;
+        log?.add(LogArea.player, '预读缓存逐档回落；实际倍速=$_speed；$_discPlanDescription');
+        _retainDiscCache();
+      });
+    } catch (_) {
+      if (current()) {
+        log?.add(
+          LogArea.player,
+          '预读缓存回落失败，保留已恢复的缓存参数；实际倍速没有延迟或改变',
+          level: LogLevel.warning,
+        );
+      }
+    }
+  }
+
+  String get _discPlanDescription {
+    final plan = _appliedDiscPlan;
+    if (plan == null) return '原盘缓存尚未配置';
+    return '${plan.fast ? "快速出画面" : "持续预读"}；缓存档=${plan.tier}；'
+        '前向包缓存上限=${plan.bytes ~/ 1048576} MiB；'
+        '恢复播放目标=${plan.options["cache-pause-wait"]} 秒媒体时间';
+  }
+
+  Future<DiscBufferPlan> _discPlan(double speed, {required bool fast}) async {
+    var memoryMiB = 32;
+    if (_disc != null && !fast && speed > 1) {
+      try {
+        memoryMiB = await Device.memory().timeout(const Duration(seconds: 2));
+      } catch (_) {
+        // A failed optional query uses the conservative device tier.
+      }
+    }
+    return DiscBufferPlan(
+      speed: speed,
+      fast: fast,
+      baseBytes: _baseBufferBytes,
+      memoryMiB: memoryMiB,
+    );
+  }
+
+  Future<void> _setDiscPlan(DiscBufferPlan plan) async {
+    final native = player.platform;
+    if (_disposed || _disc == null || native is! NativePlayer) return;
+    final previous = _appliedDiscPlan;
+    final previousOptions = _discAppliedOptions;
+    final options = {
+      ...plan.options,
+      'cache-secs': '${plan.fast ? 10 : _readAhead.seconds}',
+    };
+    try {
+      for (final option in changedDiscOptions(
+        previousOptions,
+        options,
+      ).entries) {
+        if (_disposed) return;
+        await native.setProperty(option.key, option.value);
+      }
+      if (_disposed) return;
+      if (previous?.tier != plan.tier) _disc!.setSpeed(plan.tier);
+      _appliedDiscPlan = plan;
+      _discAppliedOptions = options;
+    } catch (_) {
+      if (!_disposed && previous != null) {
+        try {
+          for (final option in (previousOptions ?? previous.options).entries) {
+            await native.setProperty(option.key, option.value);
+          }
+          _disc?.setSpeed(previous.tier);
+        } catch (_) {
+          _failPlayback('原盘缓存参数调整失败，原参数也未能恢复');
+        }
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _beginFastBuffer(String reason) async {
+    if (!_usesBufferPolicy || _disposed) return;
+    _cancelBufferPhase();
+    _bufferPhase.begin();
+    if (_disc != null) {
+      await _setDiscPlan(await _discPlan(_speed, fast: true));
+    } else {
+      await _streamBuffer.configure(_speed, fast: true);
+    }
+    log?.add(LogArea.player, '播放缓存阶段：$reason；倍速=$_speed；$_cacheDescription');
+  }
+
+  void _updatePersistentReadAhead() {
+    if (_disposed || _bufferPhase.fast || !_readAheadAllowed) return;
+    final reader = _cachedTransport?.reader;
+    if (reader != null) {
+      reader.configureAhead(
+        _readAhead.bytes(total: reader.total, duration: _cacheDuration),
+      );
+    }
+    _disc?.configurePersistentReadAhead(_readAhead.seconds);
+  }
+
+  void _armBufferPhase() {
+    if (!_usesBufferPolicy || _disposed) return;
+    _bufferPhase.arm();
+    _bufferPhaseTimer?.cancel();
+    _bufferPhaseTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      unawaited(_probeBufferPhase());
+    });
+  }
+
+  void _cancelBufferPhase() {
+    _discCacheRetention.cancel();
+    _bufferPhaseTimer?.cancel();
+    _bufferPhaseTimer = null;
+    _bufferPhase.cancel();
+  }
+
+  Future<void> _probeBufferPhase() async {
+    final native = player.platform;
+    if (_disposed ||
+        _lastFailure != null ||
+        !_usesBufferPolicy ||
+        !_bufferPhase.fast ||
+        !_bufferPhase.armed ||
+        _bufferPhaseProbeBusy ||
+        _bufferPromotionQueued ||
+        native is! NativePlayer) {
+      return;
+    }
+    final epoch = _bufferPhase.epoch;
+    _bufferPhaseProbeBusy = true;
+    try {
+      final output = await _readVideoOutput();
+      final cache = await native
+          .getProperty('paused-for-cache')
+          .timeout(const Duration(milliseconds: 600));
+      if (_disposed ||
+          _lastFailure != null ||
+          !_bufferPhase.canPromote(
+            sampleEpoch: epoch,
+            outputReady: output.ready,
+            buffering: player.state.buffering,
+            cachePaused: cache != 'no',
+            seeking:
+                output.seeking ||
+                _runtimePosition.settling ||
+                _runtimeRepairBusy,
+          )) {
+        return;
+      }
+      _bufferPromotionQueued = true;
+      try {
+        await _rates.run(() async {
+          if (_disposed ||
+              _lastFailure != null ||
+              epoch != _bufferPhase.epoch ||
+              !_bufferPhase.fast ||
+              player.state.buffering) {
+            return;
+          }
+          // Read the latest selected rate inside the same queue as menu/hold
+          // changes and seeks. Never pause/play or reopen the media here.
+          final plan = _disc != null
+              ? await _discPlan(_speed, fast: false)
+              : null;
+          if (_disposed ||
+              _lastFailure != null ||
+              epoch != _bufferPhase.epoch ||
+              player.state.buffering) {
+            return;
+          }
+          if (plan != null) {
+            await _setDiscPlan(plan);
+          } else {
+            await _streamBuffer.configure(_speed, fast: false);
+          }
+          if (_disposed || epoch != _bufferPhase.epoch) return;
+          _readAhead.speed(_speed);
+          _bufferPhase.complete(epoch);
+          _updatePersistentReadAhead();
+          _bufferPhaseTimer?.cancel();
+          log?.add(
+            LogArea.player,
+            '播放缓存阶段：视频输出已就绪；倍速=$_speed；$_cacheDescription',
+          );
+        });
+      } catch (_) {
+        if (!_disposed && epoch == _bufferPhase.epoch) {
+          _bufferPhase.promotionFailed = true;
+          _bufferPhaseTimer?.cancel();
+          log?.add(
+            LogArea.player,
+            '倍速缓存扩展失败，保留已恢复的缓存参数；可用切速重新调整',
+            level: LogLevel.warning,
+          );
+        }
+      } finally {
+        _bufferPromotionQueued = false;
+      }
+    } catch (_) {
+      // A missing read-only sample is not first-frame evidence. The existing
+      // startup, seek, buffer and decoder deadlines remain authoritative.
+    } finally {
+      _bufferPhaseProbeBusy = false;
+    }
+  }
+
+  @override
+  Future<void> audio(TrackOption track) async {
+    _audioDecode.cancel();
+    final native = player.platform;
+    if (native is! NativePlayer || _disposed) throw const AppFailure('播放会话已关闭');
+    await player.setAudioTrack(track.value as AudioTrack);
+    final actual = await native.getProperty('aid');
+    if (track.id != 'auto' && actual != track.id ||
+        track.id == 'auto' && int.tryParse(actual) == null) {
+      throw const AppFailure('MPV 未确认音轨切换，请重试');
+    }
+    await _refreshTracks();
+  }
+
+  @override
+  Future<void> subtitle(TrackOption track) async {
+    final native = player.platform;
+    if (native is! NativePlayer || _disposed) throw const AppFailure('播放会话已关闭');
+    String? addedAddress;
+    final saved = _externalIds[track.id];
+    if (saved != null) {
+      await player.setSubtitleTrack(
+        SubtitleTrack(saved, track.title, track.language),
+      );
+    } else if (track.value case ExternalSubtitle(:final route)) {
+      final file = await _subtitleFiles.load(track.id, route, track.codec);
+      if (_disposed) throw const AppFailure('播放会话已关闭');
+      final address = file.uri.toString();
+      _subtitleFilePaths.addAll([file.path, address]);
+      addedAddress = address;
+      await player.setSubtitleTrack(
+        SubtitleTrack.uri(
+          address,
+          title: track.title,
+          language: track.language,
+        ),
+      );
+    } else {
+      await player.setSubtitleTrack(track.value as SubtitleTrack);
+    }
+    final actual = await native.getProperty('sid');
+    if (addedAddress != null) {
+      final count =
+          int.tryParse(await native.getProperty('track-list/count')) ?? 0;
+      var confirmed = false;
+      for (var i = 0; i < count && i < 512; i++) {
+        if (await native.getProperty('track-list/$i/id') == actual &&
+            await native.getProperty('track-list/$i/type') == 'sub' &&
+            await native.getProperty('track-list/$i/external-filename') ==
+                addedAddress) {
+          confirmed = true;
+          break;
+        }
+      }
+      if (!confirmed) throw const AppFailure('MPV 未确认外挂字幕加载，请重试');
+      _externalIds[track.id] = actual;
+    } else if (actual != (saved ?? track.id) && track.id != 'auto') {
+      throw const AppFailure('MPV 未确认字幕切换，请重试');
+    }
+    // Preserve the existing Flutter text subtitle renderer. Bitmap subtitles
+    // have no sub-text; render only those through MPV's existing video output.
+    final visible = track.bitmap && actual != 'no' ? 'yes' : 'no';
+    await native.setProperty('sub-visibility', visible);
+    if (await native.getProperty('sub-visibility') != visible) {
+      throw const AppFailure('MPV 未确认字幕显示设置，请重试');
+    }
+    await _refreshTracks();
+  }
+
+  NativePlayer _adjustmentPlayer() {
+    final native = player.platform;
+    if (_disposed || _opening || native is! NativePlayer || native.disposed) {
+      throw const AppFailure('播放器尚未就绪');
+    }
+    return native;
+  }
+
+  @override
+  Future<List<PlaybackChapter>> readChapters({
+    required bool Function() allowed,
+  }) {
+    final native = _adjustmentPlayer();
+    final serial = _loadSerial;
+    final disc = _disc;
+    final title = disc?.selected;
+    return readAvailableChapters(
+      read: (key) => native.getProperty(key, waitForInitialization: false),
+      active: () =>
+          allowed() &&
+          !_disposed &&
+          !_opening &&
+          serial == _loadSerial &&
+          identical(_disc, disc) &&
+          identical(disc?.selected, title),
+      duration: snapshot.duration,
+      origin: 'mpv:$serial',
+      discTicks: title == null ? null : List.of(title.chapters),
+      discDurationTicks: title?.duration,
+      discOrigin: title == null ? null : 'disc:${disc!.id}:${title.playlist}',
+    );
+  }
+
+  @override
+  Future<Duration> readSubtitleDelay({required bool Function() allowed}) {
+    final native = _adjustmentPlayer();
+    final serial = _loadSerial;
+    return readMpvSubtitleDelay(
+      read: (key) => native.getProperty(key, waitForInitialization: false),
+      active: () =>
+          allowed() && !_disposed && !_opening && serial == _loadSerial,
+    );
+  }
+
+  @override
+  Future<Duration> setSubtitleDelay(
+    Duration value, {
+    required bool Function() allowed,
+  }) {
+    final native = _adjustmentPlayer();
+    final serial = _loadSerial;
+    return writeMpvSubtitleDelay(
+      value: value,
+      read: (key) => native.getProperty(key, waitForInitialization: false),
+      write: (key, value) =>
+          native.setProperty(key, value, waitForInitialization: false),
+      active: () =>
+          allowed() && !_disposed && !_opening && serial == _loadSerial,
+    );
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _stopPacketTrace();
+    _audioDecode.cancel();
+    _hardwareFallback.cancel();
+    _dolbyRecovery.cancel();
+    _disposed = true;
+    final native = player.platform;
+    if (native is NativePlayer && _dolbyPreloadedHook != null) {
+      native.onPreloadedHooks.remove(_dolbyPreloadedHook);
+    }
+    _rateProbe.cancel();
+    _cancelBufferPhase();
+    ++_runtimeEpoch;
+    _runtimeWatch.reset();
+    _decoderRecovery.cancel();
+    _discTimer?.cancel();
+    ++_loadSerial;
+    _videoTimer?.cancel();
+    for (final sub in subscriptions) {
+      await sub.cancel();
+    }
+    await _origin?.close();
+    await _disc?.close();
+    await _cachedTransport?.close();
+    _subtitleFiles.cancel();
+    await player.dispose();
+    await _subtitleFiles.close();
+    await updates.close();
+    await failures.close();
+  }
+}
+
+String audioTrackLabel(AudioTrack track) {
+  final codec = switch (track.codec?.toLowerCase()) {
+    'ac3' => 'Dolby Digital',
+    'eac3' => 'Dolby Digital Plus',
+    'truehd' => 'Dolby TrueHD',
+    'dts' => 'DTS',
+    final value? => value.toUpperCase(),
+    _ => '',
+  };
+  return [
+    track.title ?? '音轨 ${track.id}',
+    ?track.language,
+    if (codec.isNotEmpty) codec,
+    if (track.channelscount != null) '${track.channelscount} 声道',
+  ].where((v) => v.isNotEmpty).join(' · ');
+}

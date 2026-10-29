@@ -1,0 +1,65 @@
+// Complete production admission/settle methods. Native/media IO is synthetic.
+// ignore_for_file: unused_element, unused_field, unused_import, override_on_non_overriding_member
+import 'dart:async';
+import 'package:yingyu/playback/diagnostic_budget.dart';
+import 'package:yingyu/core/models.dart';
+import 'package:yingyu/core/log.dart';
+import 'package:yingyu/playback/native_hdr.dart';
+import 'package:yingyu/playback/display_diagnostics.dart';
+import 'package:yingyu/playback/opening_output.dart';
+import 'package:yingyu/playback/opening_buffer.dart';
+
+class Admission {
+ final _diagnosticBudget=DiagnosticBudget();
+ void _beginLatency(String phase, Duration target) {}
+ final native=NativePlayer();late final player=(platform:native as Object,state:(position:Duration.zero));
+ late final _hdr=HdrIo(native);final video=VideoIo();
+ LogIo? log=LogIo();final nativeHdr=true;
+ final DiscIo? _disc=null;bool _disposed=false,_dolbyMapping=false;
+ int _loadSerial=1,_playIntent=0;String? _lastFailure;
+ final _hardwareFallback=HardwareIo();
+ bool _noticeBluray=false,_noticeReady=false;
+ List<Json> _noticeStreams=[];
+ Map<String,String> _noticeDecoded={};String get sourceNotice=>'synthetic';
+ void _failPlayback(String value){_lastFailure=value;}
+ void retire(){_disposed=true;_loadSerial++;_playIntent++;}
+ Future<void> record(PlaybackRoute route)=>_recordOutput(route);
+ void selectSubtitle(){native.calls.add('sid');native.selectionAfterRefill=_hdr.established;}
+ bool get cleanOpening=>!native.selectionAfterRefill;
+ bool get established=>_hdr.established;
+ List<String> get calls=>native.calls;
+ void _setStage(String value) {}
+ // METHODS
+}
+class NativePlayer {
+ final calls=<String>[];
+ bool selectionAfterRefill=false;
+ final values=<String,String>{
+ 'video-params/gamma':'pq','video-params/primaries':'bt.2020',
+ 'video-params/colormatrix':'bt.2020-ncl','video-params/pixelformat':'nv12',
+ 'yingyu-hdr-source-dv-profile':'0','file-format':'mkv','pause':'yes',
+ 'seeking':'no','paused-for-cache':'no','demuxer-cache-duration':'8',
+ 'demuxer-cache-idle':'no','eof-reached':'no',
+ };
+ Future<String> getProperty(String key)async=>values[key]??'';
+ Future<void> setProperty(String key,String value)async{values[key]=value;values['options/$key']=value;}
+}
+class HdrIo {
+ bool get dolbyEstablished=>false;String get dolbyHdrLabel=>'杜比映射 HDR10';
+ Future<bool> prepareDolby()=>prepare('pq');
+ bool get autoDolby=>false;bool get autoArmed=>false;Future<bool> confirmWarm()async=>false;Future<void> resetAuto()async{}
+ HdrIo(this.native);final NativePlayer native;
+ bool established=false;String get status=>'synthetic';
+ final capabilities=const OutputCapabilities(sdk:37,display:0,hdr:{2});
+ Future<void> start()async{}
+ Future<bool> prepare(String transfer)async{
+   native.calls.add('hdr-refill');native.selectionAfterRefill=false;established=true;return true;
+ }
+}
+class VideoIo {
+ Future<void> setDolbyMapping(bool value)async{}
+ Future<String> get nativeHdrStatus async=>'synthetic';
+}
+class LogIo {bool get enabled=>false;void add(LogArea area,String value,{LogLevel level=LogLevel.info}){}}
+class DiscIo {Object? get selected=>null;}
+class HardwareIo {void observeHardware(String value){}}

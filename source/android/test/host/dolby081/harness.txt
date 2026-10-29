@@ -1,0 +1,144 @@
+// ignore_for_file: library_private_types_in_public_api, prefer_final_fields, unnecessary_nullable_for_final_variable_declarations, unused_element_parameter, unused_field, unused_import
+// Generated complete production methods with native/player IO substitutes.
+// Nullable fields reproduce the production optional IO collaborators.
+import 'dart:async';
+import 'package:yingyu/playback/latency_probe.dart';
+import 'package:yingyu/playback/audio_refresh.dart';
+import 'package:yingyu/playback/disc_buffering.dart';
+import 'package:yingyu/playback/dolby_recovery.dart';
+import 'package:yingyu/playback/dolby_source.dart';
+import 'package:yingyu/playback/hardware_fallback.dart';
+import 'package:yingyu/playback/position_guard.dart';
+import 'package:yingyu/playback/runtime_health.dart';
+import 'package:yingyu/playback/disc_clock_recovery.dart';
+import 'package:yingyu/playback/startup_seek.dart';
+
+enum LogArea { player }
+enum LogLevel { warning }
+class AppFailure implements Exception {
+  const AppFailure(this.message);
+  final String message;
+}
+class _Log {
+  final rows=<String>[];
+  void add(LogArea area,String text,{LogLevel? level})=>rows.add(text);
+}
+class NativePlayer {
+  final values=<String,String>{
+    'hwdec-current':'mediacodec', 'hr-seek-framedrop':'no',
+    'vf':'[]', 'deinterlace':'no',
+  };
+  final commands=<String>[];
+  Future<void> Function(String)? beforeRead;
+  Future<void> Function(String,String)? beforeWrite;
+  Future<String> getProperty(String key) async {
+    commands.add('read:$key');
+    await beforeRead?.call(key);
+    return values[key]??'';
+  }
+  Future<void> setProperty(String key,String value) async {
+    commands.add('write:$key=$value');
+    await beforeWrite?.call(key,value);
+    values[key]=value;
+  }
+}
+class _State { bool playing=true; }
+class _Player {
+  _Player(this.platform);
+  final Object platform;
+  final state=_State();
+  final seeks=<Duration>[];
+  Future<void> Function(Duration)? beforeSeek;
+  int playCalls=0,pauseCalls=0,openCalls=0;
+  Future<void> seek(Duration target) async {
+    seeks.add(target);
+    await beforeSeek?.call(target);
+  }
+  Future<void> play() async { playCalls++; state.playing=true; }
+  Future<void> pause() async { pauseCalls++; state.playing=false; }
+  Future<void> open(Object _) async { openCalls++; }
+}
+class _Clock { Duration elapsed=Duration.zero; }
+class _Transport { int seeks=0; void seek()=>seeks++; }
+class _Disc {
+  int resets=0,stops=0;
+  void resetReadAhead()=>resets++;
+  void stopPersistentReadAhead()=>stops++;
+}
+class _Cancel { int calls=0; void cancel()=>calls++; }
+class _Observation { int generation=0; void invalidate()=>generation++; }
+abstract class _Harness {
+  PlaybackLatencyProbe? _latency;
+  void _beginLatency(String phase, Duration target) {}
+  _Harness({Object? platform}):player=_Player(platform??NativePlayer());
+  final _Player player;
+  final _runtimeClock=_Clock();
+  final _dolbyRecovery=DolbySeekRecovery();
+  final _runtimePosition=PlaybackPositionGuard();
+  final _runtimeWatch=RuntimeHealthWatch();
+  final _discClockFault=DiscClockRecoveryEvidence();
+  final _hardwareFallback=HardwareFallbackWatch();
+  final _audioDecode=_Cancel(),_rateProbe=_Cancel();
+  final _observation=_Observation();
+  final _startupSeek=StartupSeekSetup();
+  final _bufferWatch=DiscBufferWatch();
+  final _rates=PlaybackRateQueue((_) async {});
+  final _Log? log=_Log();
+  final _Transport? _cachedTransport=_Transport();
+  final _Disc? _disc=_Disc();
+  final failures=<String>[];
+  final bufferReasons=<String>[];
+  bool _disposed=false,_opening=false,_discInterrupted=false;
+  bool _runtimeRepairBusy=false,_dolbyMapping=true;
+  final double _speed=1;
+  int _runtimeEpoch=0,_seekIntent=0,_loadSerial=1,_playIntent=0,emits=0,armed=0,cancelledBuffer=0;
+  int _nativeSeekSerial=0,_nativeRestartSeekSerial=0;
+  bool _audioRefreshBroken=false;
+  int? _fastSeekNativeSerial;
+ int? _fastSeekIntent;
+  Duration? _seekSince;
+  String? _lastFailure;
+  Future<void> Function(String)? beforeBuffer;
+  NativePlayer get native=>player.platform as NativePlayer;
+  DolbySeekRecovery get recovery=>_dolbyRecovery;
+  Duration get position=>_runtimePosition.value;
+  Duration? get seekSince=>_seekSince;
+  bool get busy=>_runtimeRepairBusy;
+  String? get failure=>_lastFailure;
+  List<String> get logs=>log!.rows;
+  int get intent=>_seekIntent;
+  int get epoch=>_runtimeEpoch;
+  void at(int ms)=>_runtimeClock.elapsed=Duration(milliseconds:ms);
+  void setPlaying(bool value) {
+    player.state.playing=value;
+    _dolbyRecovery.playbackChanged(now:_runtimeClock.elapsed,playing:value);
+  }
+  void setOpening(bool value)=>_opening=value;
+  void invalidateMedia() {
+    _opening=true;
+    _runtimeEpoch++;
+    _loadSerial++;
+    _discClockFault.clear();
+    _dolbyRecovery.reset();
+  }
+  void close() { _disposed=true; _dolbyRecovery.cancel(); }
+  void interrupt()=>_discInterrupted=true;
+  void fatal(String message)=>_failPlayback(message);
+  void ordinaryMedia()=>_dolbyMapping=false;
+  Future<void> hold(Future<void> gate)=>_rates.run(()=>gate);
+  Future<void> fault(DolbyOutputFailure issue,{String code='hardware_mapping'}) =>
+      (this as DolbyBackendHarness)._handleDolbyOutputFailure(issue,code);
+  Future<void> seek(Duration position);
+  void emit()=>emits++;
+  void _armBufferPhase()=>armed++;
+  void _cancelBufferPhase()=>cancelledBuffer++;
+  Future<void> _beginFastBuffer(String reason) async {
+    bufferReasons.add(reason);
+    await beforeBuffer?.call(reason);
+  }
+  void _failPlayback(String message) {
+    if(_disposed||_discInterrupted||_lastFailure!=null)return;
+    _lastFailure=message;
+    failures.add(message);
+  }
+}

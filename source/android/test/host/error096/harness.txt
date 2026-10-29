@@ -1,0 +1,34 @@
+// ignore_for_file: unused_field, prefer_final_fields, library_private_types_in_public_api, unused_element_parameter
+import 'package:media_kit/media_kit.dart' show NativePlaybackEvent;
+import 'package:media_kit/generated/libmpv/bindings.dart' as mpv;
+import 'package:yingyu/playback/diagnostics.dart';
+import 'package:yingyu/playback/latency_probe.dart';
+enum LogArea {network,player}
+enum LogLevel {warning,error}
+class _Log {void add(LogArea area,String text,{LogLevel? level}){}}
+class _Message {const _Message(this.prefix,this.level,this.text);final String prefix,level,text;}
+class _State {Duration duration=const Duration(seconds:100);Duration position=const Duration(seconds:20);bool buffering=false;}
+class _Player {final state=_State();}
+class _Position {bool settling=false;Duration value=const Duration(seconds:20);}
+class _Recovery {void outputChanged({required bool seeking}){} void restarted(){} void restart(){}}
+class _Origin {bool discDetected=false;}
+class ErrorBackendHarness {
+ PlaybackLatencyProbe? _latency;
+ _Log? log=_Log();final player=_Player();final _runtimePosition=_Position();
+ final _decoderRecovery=_Recovery(),_dolbyRecovery=_Recovery(),_bufferPhase=_Recovery();
+ bool _disposed=false,_discInterrupted=false,_opening=false,_switching=false,_readEofReported=false;
+ _Origin? _origin;String? _lastFailure,_decoderOpeningError;
+ int _nativeSeekSerial=0,_nativeRestartSeekSerial=0;double _speed=1.5;
+ String get diagnosticState=>'synthetic cached playback';
+ final errors=<String>[];
+ void _failPlayback(String message){errors.add(message);_lastFailure=message;}
+ void _mpvError(String message,{required bool videoDecoder,bool audioDecoder=false,bool audioPacket=false})=>_failPlayback(message);
+ bool isAudioTrackInitError(String prefix,String level,String text)=>false;
+ bool isAudioPacketError(String prefix,String level,String text)=>false;
+ void route(String prefix,String level,String text){final log=_Message(prefix,level,text);
+ // ROUTING
+ }
+ void nativeEvent(NativePlaybackEvent e)=>_nativeEvent(e);
+ void position(Duration value){_runtimePosition.value=value;}
+ // NATIVE_EVENT
+}

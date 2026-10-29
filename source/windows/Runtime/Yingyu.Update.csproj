@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework><AssemblyName>Yingyu.Update</AssemblyName>
+    <Version>0.5.8</Version><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+    <NoWarn>CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Richasy.MpvKernel"><HintPath>../../../baseline/0.2.5-redline/installed/Richasy.MpvKernel.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Richasy.MpvKernel.Core"><HintPath>../../../baseline/0.2.5-redline/installed/Richasy.MpvKernel.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="FluentResults"><HintPath>../../../baseline/0.2.5-redline/installed/FluentResults.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Microsoft.Extensions.Logging.Abstractions"><HintPath>../../../baseline/0.2.5-redline/installed/Microsoft.Extensions.Logging.Abstractions.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Yingyu.Core"><HintPath>../../../baseline/0.2.5-redline/installed/Yingyu.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Microsoft.WinUI"><HintPath>../../../baseline/0.2.5-redline/installed/Microsoft.WinUI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Microsoft.Windows.SDK.NET"><HintPath>../../../baseline/0.2.5-redline/installed/Microsoft.Windows.SDK.NET.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="WinRT.Runtime"><HintPath>../../../baseline/0.2.5-redline/installed/WinRT.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Microsoft.InteractiveExperiences.Projection"><HintPath>../../../baseline/0.2.5-redline/installed/Microsoft.InteractiveExperiences.Projection.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

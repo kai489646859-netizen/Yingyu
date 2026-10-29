@@ -1,0 +1,25 @@
+{
+  "project": "dane-9/xbmc",
+  "commit": "5da44c2547bae530354524ddc0a00cc5b5bae0da",
+  "license": "GPL-2.0-or-later",
+  "sha256": {
+    "DvBlob.h": "8b3d6ca8be3638a54b4af02c859ec87e6fe80a65701006a5dd59841a53e8de95",
+    "DvGpuCarrier.cpp": "b7768a93f181bd1c52d8b9a21f21746ffe7bd6b19ffd351b77a18641248e24cf",
+    "DvGpuCarrier.h": "7b79aa6272dbe8eb16902333a61971706608c2e5a17157185346bf492f6055cf",
+    "DvMappingTables.cpp": "ea5d426fbbc2a3bb4860d90a81b5ad1f2de4db243be51f68d59dfdffa88fe19a",
+    "DvMappingTables.h": "c062ca2fb484efdbe04eb728131d2458a51852a78ce9c7b53487b5d49d0eb25c",
+    "DvRpuTransport.cpp": "590b8fe57875a7aba658d2911a1ae0ecdaffffbd73c7f5fab628dfcc52f51bc3",
+    "DvRpuTransport.h": "44dfed1067a271f96337732006087bb7d1778e260b00cdca80bc5aa2c42a6cb6",
+    "shaders/dovi_compose_chroma.hlsl": "ba8de9adaaf2a130512eefd33b83b6ec36630b9cad0ed7f3231c84d0aa02d4de",
+    "shaders/dovi_compose_luma.hlsl": "ee0b2a849319653321bba37e5a6815881841febfb85a4f375d82c8e95e62e2e1",
+    "shaders/dovi_copy_ps.hlsl": "2343fffa0ec0f08fb0487962a6c7372de83e6ec96db48d1e00d7bf6db48f7055",
+    "shaders/dovi_el_horizontal.hlsl": "a0afcfd416268c82f8d6e4dfe9ab719d3cbc090eccd9600d28ba3b1eb48009f3",
+    "shaders/dovi_el_vertical.hlsl": "fee0fcb807a351eff0c5708f2028ea1beb60448943d7830802c7d0de077a137f",
+    "shaders/dovi_fullscreen_vs.hlsl": "9ccb15c58b16f000920060ee097633c8394b8c2ce4bddbcca506bbef1125b3cc",
+    "shaders/dovi_gui_ps.hlsl": "94b4d4cc72f7084fd0046ed3d757e93dac6190053754eed1830bac54aaeb72cd",
+    "shaders/dovi_pack.hlsl": "2848a64f9d0faa3a9eed9e6bc21b694273db0ab2e38ae6cc9f2bde4b8ee58cac",
+    "shaders/dovi_reshape.hlsl": "d09a8286a49d7cc6ec99fb2d4574fb42f0cc69ff17540da43599d5df23ed74ef",
+    "shaders/dovi_scale.hlsl": "272c2b9caf534a6b52ce1c4263c355964017020cbc4136bcf519669ae75858df",
+    "shaders/dovi_unpack_p010.hlsl": "ee2f475b3e51c67ff05e7e3018b69351a2dca59a0a4fbe29eea9d556277f051b"
+  }
+}

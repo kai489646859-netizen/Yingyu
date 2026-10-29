@@ -1,0 +1,8 @@
+{
+  "commit": "78d43740f52db817d98bcf24fb30a76ab6fa13ff",
+  "source": "https://github.com/mpv-player/mpv",
+  "files": {
+    "client.h": "f46da37538ad97d67cb1d12ea2f4291f577a7faaf7a0df460f12e43588206e21",
+    "stream_cb.h": "188e58b6d14383e15a5dffdc4ecebbdfbf2e412b9c099ff21b571f747a8ce32d"
+  }
+}

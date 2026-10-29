@@ -1,0 +1,18 @@
+{
+  "project": "NVIDIA/nvapi",
+  "commit": "main",
+  "sha256": {
+    "nvapi.h": "76bbb71107c1388134d41712bed56bb6d80ec426f9bb2c168e2d6941b90f16ca",
+    "nvapi_interface.h": "d279f81e7f92f2743bfea2ec7ada693001805e13645eb1c6f2af44ef9c342834",
+    "nvapi_lite_common.h": "3904baab8e8501a53746ddf4e5b13a2e1d5acd6ee50f8c3c2eadd8e4d62c55f2",
+    "nvapi_lite_salstart.h": "9db770e52947b33d68b0c1f17bc21edd9d736b824ccecee2c5c527d48a89be93",
+    "nvapi_lite_salend.h": "92017f8e26f585601f4eaac475fa9e542eaa2f99a80e376dde52f2f73ab18e67",
+    "nvapi_lite_sli.h": "2a9c75faecb32bc7a5237a4b83cc28a6a488c75493e44bf28688abf3fec01a34",
+    "nvapi_lite_stereo.h": "bd6fe69136cff36c73a9967a7cef37186791d9b7c3eb3ae7ac61b4efa628325b",
+    "nvapi_lite_surround.h": "197ad1e4762b2243904b0a13418747436ae70e4824099bf56be4804c4c29956f",
+    "nvapi_lite_d3dext.h": "2322db28a2f7384ff6df6fd1110b48e99660fa29956a2cbcd28a9d7157017e1a",
+    "NvApiDriverSettings.h": "95ffda903832840343a81189e052a0756774bd92e4b37f2dc49598d493f951d4",
+    "amd64/nvapi64.lib": "901e479e548d41c30688c7481f0c6353c0be7fdee978796d27d87c32e19ce172",
+    "License.txt": "84726b60c17fe0f71f92a6c074c3d4087370886eba5d21ccc4ec55db37d6c8ba"
+  }
+}

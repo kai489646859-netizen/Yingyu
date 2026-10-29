@@ -1,1 +1,8 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
+contact_links:
+  - name: 使用咨询与兼容讨论
+    url: https://github.com/kai489646859-netizen/Yingyu/discussions
+    about: 不确定是否为缺陷、使用方法或设备兼容问题请先在 Discussions 交流
+  - name: 安全漏洞
+    url: https://github.com/kai489646859-netizen/Yingyu/security/advisories/new
+    about: 涉及令牌、认证、隐私或安全边界时请私下报告，不要公开提交

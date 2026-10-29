@@ -1,0 +1,106 @@
+// Complete production recovery methods; native/player and logging IO only are substitutes.
+// ignore_for_file: library_private_types_in_public_api
+import 'dart:async';
+import 'package:yingyu/playback/disc_buffering.dart';
+import 'package:yingyu/playback/hardware_fallback.dart';
+import 'package:yingyu/playback/position_guard.dart';
+import 'package:yingyu/playback/runtime_health.dart';
+import 'package:yingyu/playback/disc_clock_recovery.dart';
+
+enum LogArea { player }
+enum LogLevel { warning }
+class _Log {
+  final rows = <String>[];
+  void add(LogArea area, String text, {LogLevel? level}) => rows.add(text);
+}
+class NativePlayer {
+  final writes = <(String, String)>[];
+  Future<void> Function()? beforeWrite;
+  bool failWrite = false;
+  Future<void> setProperty(String key, String value) async {
+    writes.add((key, value));
+    await beforeWrite?.call();
+    if (failWrite) throw StateError('synthetic property failure');
+  }
+}
+class _State { bool playing = true, buffering = false; }
+class _Player {
+  final state = _State();
+  final seeks = <Duration>[];
+  Future<void> seek(Duration target) async => seeks.add(target);
+}
+class _Clock { Duration elapsed = Duration.zero; }
+class _Observation { int invalidations = 0; void invalidate() => invalidations++; }
+class _Cache { int seeks = 0; void seek() => seeks++; }
+class _Disc {
+  _Disc(this.selected);
+  Object? selected;
+  int resets = 0;
+  void resetReadAhead() => resets++;
+}
+
+abstract class BackendHarness {
+  final native = NativePlayer();
+  final player = _Player();
+  final _runtimeClock = _Clock();
+  final _runtimePosition = PlaybackPositionGuard();
+  final _runtimeWatch = RuntimeHealthWatch();
+  final _discClockFault = DiscClockRecoveryEvidence();
+  final _hardwareFallback = HardwareFallbackWatch();
+  final _observation = _Observation();
+  final _cache = _Cache();
+  _Cache? get _cachedTransport => _cache;
+  _Log? log = _Log();
+  late final _rates = PlaybackRateQueue((_) async {});
+  _Disc? _disc;
+  bool _disposed = false, _runtimeRepairBusy = false;
+  final _opening = false, _discInterrupted = false;
+  bool _dolbyMapping = false;
+  int _runtimeEpoch = 0, _seekIntent = 0, _loadSerial = 0;
+  int? _discPtsLoad;
+  bool _discMissingVideoPts = false;
+  String? _lastFailure;
+  Duration? _seekSince;
+  double _speed = 1;
+  Future<void> Function()? beforeBuffer;
+  int fastBuffers = 0, armed = 0, emits = 0;
+  String? get failure => _lastFailure;
+  bool get recovering => _runtimeWatch.recovering;
+  bool get attempted => _runtimeWatch.attempted;
+  Duration? get seekSince => _seekSince;
+  List<String> get logs => log!.rows;
+  void _failPlayback(String message) => _lastFailure ??= message;
+  void _armBufferPhase() => armed++;
+  void emit() => emits++;
+  Future<void> _beginFastBuffer(String reason) async {
+    fastBuffers++;
+    await beforeBuffer?.call();
+  }
+  void start({int serial = 1, bool disc = true, bool selected = true,
+      bool dolby = false, double speed = 1}) {
+    _loadSerial = serial;
+    _disc = disc ? _Disc(selected ? Object() : null) : null;
+    _dolbyMapping = dolby;
+    _speed = speed;
+    _runtimePosition.reset(const Duration(seconds: 6));
+    beginScope(serial);
+  }
+  void selectTimeline() => _disc!.selected = Object();
+  void manualSeek(int seconds) {
+    _seekIntent++;
+    _runtimeEpoch++;
+    _runtimeWatch.seek();
+    _runtimePosition.reset(Duration(seconds: seconds));
+  }
+  void disposeNow() => _disposed = true;
+  RuntimeAction sample({required int now, required int position,
+      int? audio, String hardware = 'no', bool ready = true}) =>
+      _runtimeWatch.sample(RuntimeSample(
+        now: Duration(seconds: now), position: Duration(seconds: position),
+        audioPosition: audio == null ? null : Duration(seconds: audio),
+        playing: true, buffering: false, seeking: false, cachePaused: false,
+        outputReady: ready, hardware: hardware), speed: _speed);
+  void beginScope(int serial);
+  void packet(String prefix, String level, String text);
+  Future<void> repair(String hardware);
+}
