@@ -37,6 +37,7 @@ public static class PlayerShortcuts
         readonly HashSet<VirtualKey> _held = new();
         readonly ConditionalWeakTable<KeyRoutedEventArgs, object> _processed = new();
         UIElement? _keyboardRoot;
+        Slider? _volumeKeys;
         [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
 
@@ -49,7 +50,7 @@ public static class PlayerShortcuts
             _hold.IsRepeating = false;
             _hold.Tick += (_, _) =>
             {
-                if (!DesktopTheme.Options.RightHoldBoost || !_right || (GetAsyncKeyState(0x27) & 0x8000) == 0 || GetForegroundWindow() != _foreground) return;
+                if (!_right || (GetAsyncKeyState(0x27) & 0x8000) == 0 || GetForegroundWindow() != _foreground) return;
                 if (!Access.Get<bool>(_overlay, "_isPlaying")) return;
                 _savedSpeed = Access.Get<double>(_overlay, "_currentSpeed");
                 _boosted = true;
@@ -110,12 +111,25 @@ public static class PlayerShortcuts
             _keyboardRoot.PreviewKeyDown += Preview;
             _keyboardRoot.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(Bubble), true);
             _keyboardRoot.AddHandler(UIElement.KeyUpEvent, new KeyEventHandler(Up), true);
+            // A Flyout has a separate event route. Its volume slider must use
+            // the same shortcuts and feedback as the main player surface.
+            _volumeKeys = Access.Get<Slider>(_overlay, "VolumeSlider");
+            _volumeKeys.PreviewKeyDown += Preview;
+            _volumeKeys.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(Bubble), true);
+            _volumeKeys.AddHandler(UIElement.KeyUpEvent, new KeyEventHandler(Up), true);
         }
         internal void Detach()
         {
             Release(false);
             KeyboardVolumeFeedback.Hide(_overlay);
             _held.Clear();
+            if (_volumeKeys != null)
+            {
+                _volumeKeys.PreviewKeyDown -= Preview;
+                _volumeKeys.RemoveHandler(UIElement.KeyDownEvent, new KeyEventHandler(Bubble));
+                _volumeKeys.RemoveHandler(UIElement.KeyUpEvent, new KeyEventHandler(Up));
+                _volumeKeys = null;
+            }
             if (_keyboardRoot == null) return;
             _keyboardRoot.PreviewKeyDown -= Preview;
             _keyboardRoot.RemoveHandler(UIElement.KeyDownEvent, new KeyEventHandler(Bubble));
@@ -130,15 +144,19 @@ public static class PlayerShortcuts
             if (e.Key == VirtualKey.Right && _right) { Release(true); e.Handled = true; }
         }
 
-        bool IsInput(KeyRoutedEventArgs e)
+        bool IsInput(KeyRoutedEventArgs e, int mapped)
         {
             if (Access.Get<bool>(_overlay, "_desktopDialogOpen")) return true;
-            if (Access.Get<HashSet<object>>(_overlay, "_openControlFlyouts").Count != 0) return true;
+            bool volumeCommand = mapped is (int)VirtualKey.Up or (int)VirtualKey.Down;
+            var flyouts = Access.Get<HashSet<object>>(_overlay, "_openControlFlyouts");
+            if (flyouts.Count != 0 && !(volumeCommand && flyouts.Count == 1
+                && flyouts.Contains(Access.Get<Flyout>(_overlay, "VolumeFlyout")))) return true;
             if (Access.Get<Border>(_overlay, "EpisodeDrawer").Visibility == Visibility.Visible) return true;
             var focused = Focused();
-            // A focused slider owns its native navigation keys. Leave Handled
-            // untouched so volume/position controls can process them; global
-            // playback commands such as F and Escape remain available.
+            // Volume bindings keep their meaning after seeking or opening the
+            // volume popup. Other slider navigation and text editing stay local.
+            if (volumeCommand && (Within(focused, Access.Get<Slider>(_overlay, "PositionSlider"))
+                || Within(focused, Access.Get<Slider>(_overlay, "VolumeSlider")))) return false;
             bool sliderInput = (focused is Slider || e.OriginalSource is Slider)
                 && e.Key is VirtualKey.Left or VirtualKey.Right or VirtualKey.Up or VirtualKey.Down
                     or VirtualKey.Home or VirtualKey.End or VirtualKey.PageUp or VirtualKey.PageDown;
@@ -152,8 +170,9 @@ public static class PlayerShortcuts
             if (_processed.TryGetValue(e, out _) || e.Handled) return true;
             // Stop the old player fallback as well, but leave Handled untouched
             // so editors, dialogs and menus retain their own keyboard behavior.
-            if ((GetAsyncKeyState(0x11) & 0x8000) != 0 || (GetAsyncKeyState(0x12) & 0x8000) != 0) return true;
-            if (e.Key == VirtualKey.Escape && !Access.Get<bool>(_overlay, "_desktopDialogOpen")
+            if ((GetAsyncKeyState(0x5B)&0x8000)!=0 || (GetAsyncKeyState(0x5C)&0x8000)!=0) return true;
+            int modifiers=ShortcutBinding.Modifiers();
+            if (modifiers==0 && e.Key == VirtualKey.Escape && !Access.Get<bool>(_overlay, "_desktopDialogOpen")
                 && Access.Get<HashSet<object>>(_overlay, "_openControlFlyouts").Count == 0
                 && Access.Get<Border>(_overlay, "EpisodeDrawer").Visibility == Visibility.Visible
                 && Focused() is not ComboBox { IsDropDownOpen: true }
@@ -166,11 +185,11 @@ public static class PlayerShortcuts
                 e.Handled = true;
                 return true;
             }
-            if (IsInput(e)) return true;
             var key = e.Key;
             var preferences = DesktopTheme.Options;
-            if (!preferences.KeyboardVolumeKeys && key is VirtualKey.Up or VirtualKey.Down) return true;
-            if (key == VirtualKey.Right)
+            int mapped = ShortcutBinding.Command(preferences, (int)key, modifiers);
+            if (IsInput(e, mapped)) return true;
+            if (key == VirtualKey.Right && modifiers==0)
             {
                 _processed.Add(e, new object());
                 PlaybackTelemetry.Key(_overlay, (int)key, false);
@@ -179,23 +198,14 @@ public static class PlayerShortcuts
                     _right = true;
                     _boosted = false;
                     _foreground = GetForegroundWindow();
-                    if (preferences.RightHoldBoost) _hold.Start();
+                    _hold.Start();
                     _watch.Start();
                 }
                 e.Handled = true;
                 return true;
             }
-            bool pauseBinding = (int)key == preferences.PauseKey || preferences.PauseKey == 32 && key == VirtualKey.K;
-            bool fullScreenBinding = (int)key == preferences.FullScreenKey;
-            bool muteBinding = (int)key == preferences.MuteKey;
-            // Consume inactive command bindings so the original player fallback
-            // cannot execute a second, conflicting shortcut after remapping.
-            if ((int)key is 32 or 75 or 80 or 70 or 122 or 71 or 77 or 86
-                && !pauseBinding && !fullScreenBinding && !muteBinding) return true;
-            var command = pauseBinding ? VirtualKey.Space : fullScreenBinding ? VirtualKey.F : muteBinding ? VirtualKey.M : key;
-            bool recognized = command is VirtualKey.Left or VirtualKey.Up or VirtualKey.Down or VirtualKey.M or VirtualKey.J or VirtualKey.L or VirtualKey.Back
-                or VirtualKey.Space or VirtualKey.F or VirtualKey.Escape || (int)key is 219 or 221;
-            if (!recognized) return false;
+            if(mapped==0 && (modifiers!=0 || key is not (VirtualKey.Left or VirtualKey.J or VirtualKey.L or VirtualKey.Back or VirtualKey.Escape) && (int)key is not (219 or 221)))return true;
+            var command=mapped==0?key:(VirtualKey)mapped;
             _processed.Add(e, new object());
             bool singlePress = command is VirtualKey.M or VirtualKey.Back or VirtualKey.Space or VirtualKey.F or VirtualKey.Escape || (int)key is 219 or 221;
             // Recover if key-up was delivered to a popup/another window.
@@ -207,8 +217,8 @@ public static class PlayerShortcuts
                 case VirtualKey.Left: Seek(-preferences.SeekStepSeconds); break;
                 case VirtualKey.J: Seek(-10); break;
                 case VirtualKey.L: Seek(10); break;
-                case VirtualKey.Up: Volume(5); break;
-                case VirtualKey.Down: Volume(-5); break;
+                case VirtualKey.Up: Volume(10); break;
+                case VirtualKey.Down: Volume(-10); break;
                 case VirtualKey.M:
                     var slider = Access.Get<Slider>(_overlay, "VolumeSlider");
                     if (slider.Value > 0) { _unmutedVolume = slider.Value; slider.Value = 0; }
@@ -224,7 +234,7 @@ public static class PlayerShortcuts
                     var speed = Math.Clamp(Access.Get<double>(_overlay, "_currentSpeed") + ((int)key == 221 ? .25 : -.25), .25, 3);
                     Speed(speed); Feedback($"倍速 {speed:0.##}×"); break;
             }
-            if (key is not (VirtualKey.Up or VirtualKey.Down))
+            if (command is not (VirtualKey.Up or VirtualKey.Down))
                 Access.Call(_overlay, "ShowControlsTemporarily");
             e.Handled = true;
             return true;

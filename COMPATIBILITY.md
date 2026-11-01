@@ -2,7 +2,7 @@
 
 | Area | Android | Windows |
 | --- | --- | --- |
-| Current release | 1.9.6 / code224 | 0.5.8 |
+| Current release | 2.1.3 / code242 | 0.8.5 |
 | Supported OS | Android 8.0+ | Windows 10/11 x64 |
 | Primary UI | phone and tablet touch layouts | desktop window, mouse and keyboard |
 | Server | user-provided Emby service | user-provided Emby service |
@@ -12,6 +12,6 @@
 | HDR / Dolby | detection and compatibility processing; not Dolby certification | detection and compatibility processing; not Dolby certification |
 | Update model | cover-install; do not uninstall first | close the app and cover-install |
 
-Both current releases have been used on real hardware. Results can still differ by Emby version, reverse proxy, storage provider, network throughput, codec/profile, bitrate, decoder, GPU driver, refresh rate and display.
+Both platforms have real-hardware usage history. Release-specific checks and remaining risks are recorded on each release page. Results can still differ by Emby version, reverse proxy, storage provider, network throughput, codec/profile, bitrate, decoder, GPU driver, refresh rate and display.
 
 Successful file opening is not proof that every color, enhancement layer, subtitle, audio track, seek, speed and long-play path is supported. Report reproducible incompatibilities using the platform-specific Issue form.

@@ -5,8 +5,8 @@
   <p>原文件播放 · 媒体库管理 · 多账号 · 观看进度 · 手机/平板/桌面适配</p>
   <p><a href="README_EN.md">English</a></p>
   <p>
-    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v1.9.6"><img src="https://img.shields.io/badge/Android-1.9.6-19A974?style=for-the-badge&logo=android" alt="Android 1.9.6"></a>
-    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.5.8"><img src="https://img.shields.io/badge/Windows-0.5.8-0078D4?style=for-the-badge&logo=windows11" alt="Windows 0.5.8"></a>
+    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.1.3"><img src="https://img.shields.io/badge/Android-2.1.3-19A974?style=for-the-badge&logo=android" alt="Android 2.1.3"></a>
+    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.8.5"><img src="https://img.shields.io/badge/Windows-0.8.5-0078D4?style=for-the-badge&logo=windows11" alt="Windows 0.8.5"></a>
     <a href="https://github.com/kai489646859-netizen/Yingyu/releases"><img src="https://img.shields.io/github/downloads/kai489646859-netizen/Yingyu/total?style=for-the-badge&logo=github&label=Downloads" alt="GitHub 下载量"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue?style=for-the-badge" alt="GPL-3.0"></a>
   </p>
@@ -17,12 +17,12 @@
 
 ## 项目简介
 
-映屿把 Emby 媒体库浏览、搜索、个人状态、观看记录和应用内播放整合在同一个界面中。Android 版面向手机和平板，Windows 版针对鼠标、键盘和桌面窗口重新适配。两个平台分别发布、分别编号，可在同一仓库的 Releases 中下载。当前公开版本均已经过作者实机使用验证，但不同服务器、设备、驱动、网络和片源仍可能存在兼容差异。
+映屿把 Emby 媒体库浏览、搜索、个人状态、观看记录和应用内播放整合在同一个界面中。Android 版面向手机和平板，Windows 版针对鼠标、键盘和桌面窗口重新适配。两个平台分别发布、分别编号，可在同一仓库的 Releases 中下载。两个平台均有作者实机使用记录；每个最终构建的实际验证范围以对应 Release 为准，不同服务器、设备、驱动、网络和片源仍可能存在兼容差异。
 
 | 平台 | 当前公开版本 | 安装要求 | 下载 |
 | --- | --- | --- | --- |
-| Android | **1.9.6 / code224** | Android 8.0+ | [Android 1.9.6](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v1.9.6) |
-| Windows | **0.5.8** | Windows 10/11 x64 | [Windows 0.5.8](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.5.8) |
+| Android | **2.1.3 / code242** | Android 8.0+ | [Android 2.1.3](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.1.3) |
+| Windows | **0.8.5** | Windows 10/11 x64 | [Windows 0.8.5](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.8.5) |
 
 ## 主要功能
 
@@ -39,22 +39,22 @@
 
 ## 最新版本摘要
 
-### Android 1.9.6
+### Android 2.1.3
 
-- 新增聚合搜索、演员即时搜索、按字扩展搜索与头像/作品关系优化，减少等待完整目录后才能检索的情况。
-- 改善继续观看、跨设备进度、提示文字、视频截图及播放器控制栏显示。
-- 增加可选的杜比/HDR 兼容映射与更明确的回退边界，不把兼容映射宣称为原生杜比认证输出。
-- 保留用户已确认正常的 2× 播放；针对 3× 播放持续修正输入、追赶、有效画面保留及呈现时限。1.9.6 修复了“已有后继画面但仍按过短时限处理”的路径。
-- 已完成实机使用、构建、静态/隔离检查、签名、16 KiB、原生库和符号核对；3× 表现仍可能随设备、片源和刷新率变化。
+- 支持影片多版本选择、跨已保存账号搜索、演员/作品关系检索、底栏拖动交互和可选人声增强。
+- 改善网络切换和可靠文件断流续读，修复部分 302/字幕签名地址、并发字幕缓存及异常资料响应问题。
+- 修复部分普通 50/60 帧影片长播后的追赶不足，并减少诊断、日志保存、系统查询和底层命令失败带来的资源开销。
+- 加强 HLS/DASH/RTSP 等媒体解析安全检查；保留已确认的 2× 基线及现有 3×、定位、字幕、HDR/杜比和原盘策略。
+- 2.1.3 修复大媒体库图片引用记录超过旧日志窗口或写入中断时可能误删仍在使用图片的问题；记录不完整时改为保守保留缓存。
 
 完整累计变化见 [Android 更新历史](CHANGELOG-Android.md)。
 
-### Windows 0.5.8
+### Windows 0.8.5
 
-- 延续桌面媒体库、详情、选集、内置播放、主题、缓存和本地资料搜索能力。
-- 修复搜索页输入后仍停留在“猜你喜欢”、没有开始显示结果的问题。
-- 进入搜索页后自动把光标交给输入框；停笔约 280ms 自动搜索，同时保留回车、搜索按钮、快速改词和取消旧任务。
-- 已完成实机使用验证；浅色/深色各 81 项搜索流程检查及各 39 项侧栏/音量检查通过。检查结果不代表所有 Windows、GPU、服务器和输入法组合都绝对一致。
+- 完成首页双图、桌面标题区、详情大图与滚动衔接、紧凑设置、深浅主题和海报间距等桌面布局调整。
+- 改善随机推荐、共享图片缓存、详情背景、缺图与 HTTP 415 图片兼容；首屏直接预留最终双图布局，内容加载后不再突然整体下移。
+- 0.8.5 修复首页双图延后挂载、标题约 2 DIP 跳动、确认框可能重复弹出，以及滚动过程中误打开详情。
+- 最终 1093 项运行/隔离检查与 2237 项静态包核对通过；一次隔离设置页底层退出未稳定复现、根因未确认，仍作为已知风险保留。
 
 完整累计变化见 [Windows 更新历史](CHANGELOG-Windows.md)。
 
@@ -62,17 +62,17 @@
 
 ### Android
 
-在 [Android 1.9.6 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v1.9.6) 下载 `Yingyu-1.9.6.apk`。从旧版升级时直接覆盖安装，**不要先卸载**，否则本机账号、设置和缓存可能丢失。
+在 [Android 2.1.3 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.1.3) 下载 `Yingyu-2.1.3.apk`。从旧版升级时直接覆盖安装，**不要先卸载**，否则本机账号、设置和缓存可能丢失。
 
 ### Windows
 
-在 [Windows 0.5.8 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.5.8) 下载 `Yingyu-Setup-x64-0.5.8.exe`。关闭正在运行的映屿后覆盖安装；安装程序沿用既有应用身份和目录，不要求卸载旧版或清空个人数据。
+在 [Windows 0.8.5 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.8.5) 下载 `Yingyu-Setup-x64-0.8.5.exe`。关闭正在运行的映屿后覆盖安装；安装程序沿用既有应用身份和目录，不要求卸载旧版或清空个人数据。
 
 每个发布页同时提供与二进制对应的源码归档、调试符号、SHA-256 校验文件，以及累计更新说明和验证边界。
 
 ```powershell
-Get-FileHash .\Yingyu-1.9.6.apk -Algorithm SHA256
-Get-FileHash .\Yingyu-Setup-x64-0.5.8.exe -Algorithm SHA256
+Get-FileHash .\Yingyu-2.1.3.apk -Algorithm SHA256
+Get-FileHash .\Yingyu-Setup-x64-0.8.5.exe -Algorithm SHA256
 ```
 
 ## 快速开始

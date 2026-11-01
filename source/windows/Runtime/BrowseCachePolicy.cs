@@ -49,7 +49,7 @@ public static class BrowseCachePolicy
         {
             if (Volatile.Read(ref _minutes) != 0) return _minutes;
             try { _minutes = int.Parse(File.ReadAllText(Path.Combine(CachePaths.UserDataRoot, "browse-refresh.txt"))); }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or FormatException) { _minutes = 15; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or FormatException or OverflowException) { _minutes = 15; }
             if (_minutes is not (5 or 15 or 30)) _minutes = 15;
             return _minutes;
         }

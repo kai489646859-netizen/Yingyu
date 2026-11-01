@@ -104,12 +104,12 @@ public static class PlayerMenus
         {
             Attach();
             var result = new TaskCompletionSource<ContentDialogResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (dialog.Content is not UIElement content) return dialog.ShowAsync().AsTask();
+            if (dialog.Content is not UIElement content) return ModalProtection.Show(dialog);
             PlayerDesktopStyle.GroupTools(content);SubtitlePlacement.Tools(_overlay,content);
             dialog.Content = null;
             bool subtitlesFirst=_subtitleTools;_subtitleTools=false;
             content=AndroidPlayerTools.Build(session,_overlay,content,subtitlesFirst);
-            if (_tools == null){dialog.Content=content;return dialog.ShowAsync().AsTask();}
+            if (_tools == null){dialog.Content=content;return ModalProtection.Show(dialog);}
             var flyout = new Flyout { Content = content, Placement = FlyoutPlacementMode.Top };
             NativeDolby.Popup(_overlay,flyout);
             PlayerDesktopStyle.StyleTools(flyout);
@@ -132,7 +132,7 @@ public static class PlayerMenus
                 _tools.Unbind();
                 Tools.Remove(dialog);
                 dialog.Content = content;
-                return dialog.ShowAsync().AsTask();
+                return ModalProtection.Show(dialog);
             }
             return result.Task;
         }

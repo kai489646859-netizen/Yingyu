@@ -9,6 +9,7 @@ import 'package:yingyu/core/log.dart';
 import 'package:yingyu/core/models.dart';
 import 'package:yingyu/playback/disc_cache.dart';
 import 'package:yingyu/playback/disc_stream.dart';
+import 'package:yingyu/playback/network_route.dart';
 import 'package:yingyu/playback/disc_ordered_reader.dart';
 import 'package:yingyu/playback/tracks.dart';
 import 'package:yingyu/playback/byte_cache.dart';
@@ -360,7 +361,7 @@ class DiscTransport {
         _openRange(path, start, end, identity, token),
     onDiagnostic: record,
     onResume: () {
-      record('原盘媒体连接中断；仅向已解析的外部目标从断点续读一次，不重新访问 STRM 入口');
+      record('原盘媒体连接中断；向已解析的外部目标从断点续读，不重新访问 STRM 入口');
     },
   );
   static const channel = MethodChannel('yingyu/disc');
@@ -988,6 +989,7 @@ class DiscTransport {
     DiscStreamIdentity? expected,
     DiscReadCancellation cancellation,
   ) async {
+    final revision = PlaybackNetworkRoutes.shared.revision;
     final target = kind == DiscKind.iso
         ? source
         : discChildAddress(_folder!, relative);
@@ -1058,6 +1060,7 @@ class DiscTransport {
       }
       return DiscStreamSource(
         start: start,
+        networkRevision: revision,
         total: total,
         bytes: upstream,
         canResume: external,

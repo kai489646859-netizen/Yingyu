@@ -1,23 +1,15 @@
 # Yingyu Android source snapshot
 
-This is the directly browsable application-layer snapshot for **Yingyu Android 1.9.6 / code224**.
+This is the directly browsable application-layer snapshot for **Yingyu Android 2.1.3 / code242**.
 
 Included:
 
-- `lib/`: Flutter application, Emby integration, UI and playback orchestration.
-- `android/`: Android host, Java/C++ bridge and build configuration.
-- `test/`: unit, scenario and host-side regression tests.
-- Flutter package metadata and analysis configuration.
+- `lib/`: Flutter application, account, library, playback and UI source.
+- `android/`: Android host, Java bridge and bounded native integration source.
+- `test/`: application, regression and host-scenario tests retained by the release.
+- `pubspec.yaml`, `pubspec.lock` and analysis metadata.
 
-Not duplicated in Git:
+Large pinned upstream dependency trees, generated build products, release evidence, binaries, symbols and signing material are intentionally excluded from Git history. The authoritative complete archive is `Yingyu-2.1.3-source.zip` on the [Android 2.1.3 release](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.1.3); its SHA-256 is published on the same page.
 
-- the large pinned third-party dependency source tree;
-- release APK, native libraries and symbols;
-- local validation evidence and private build staging.
-
-The complete corresponding archive is `Yingyu-1.9.6-source.zip` on the [Android 1.9.6 release](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v1.9.6). Its SHA-256 is published on the same page.
-
-The retained `UPSTREAM_LICENSE-MIT.txt` records the upstream MIT notice. Yingyu project changes are distributed under the repository GPL-3.0 license; bundled third-party components retain their own licenses.
-
-See [`BUILDING.md`](../../BUILDING.md), [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md) and [`OPEN_SOURCE_AND_DISCLAIMER.md`](../../OPEN_SOURCE_AND_DISCLAIMER.md).
+The upstream MIT notice is retained as [`UPSTREAM_LICENSE-MIT.txt`](UPSTREAM_LICENSE-MIT.txt). Project modifications and third-party components remain subject to the license boundaries described in [`OPEN_SOURCE_AND_DISCLAIMER.md`](../../OPEN_SOURCE_AND_DISCLAIMER.md).
 

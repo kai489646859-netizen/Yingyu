@@ -25,6 +25,7 @@ public static class PlaybackTransport
     {
         var client = Access.Get<MpvClient?>(session, "_mpvClient");
         if (client == null || !States.TryGetValue(client, out var state)) return;
+        state.PrepareNetwork(client);
         NetworkBluray.Probing(session, true);
         double target = (Access.Get<EmbyItem>(session, "_item").UserData?.PlaybackPositionTicks ?? 0) / 10000000.0;
         // Resume seeks happen inside loadfile rather than the UI SeekAsync path.
@@ -54,7 +55,7 @@ public static class PlaybackTransport
         PlayerFeedback.Bind(session);
         PlaybackOutput.Configure(session, client);
         PlaybackTelemetry.Start(session, client);
-        // Keep the new renderer/decoder, but use the HTTP backend used by 0.5.8/6.
+        // Keep the new renderer/decoder, but use the HTTP backend used by 0.8.5/6.
         // curl takes unescaped URLs literally; FFmpeg normalizes them and retains
         // the existing 302/Range, proxy and HTTP-header behavior.
         int result = Native.Value.Set(Handle(client), "curl-enabled", "no");
@@ -100,6 +101,7 @@ public static class PlaybackTransport
             state.Buffering(client);
         else if (e.Id == MpvClientEventId.SpeedChanged && e.Data is double speed)
             state.Speed(speed, client);
+        else if (e.Id == MpvClientEventId.PositionChanged) state.NetworkProgress();
         else if (e.Id == MpvClientEventId.StateChanged && e.Data is MpvPlayerState.Paused or MpvPlayerState.Seeking)
         {
             if (e.Data is MpvPlayerState.Seeking) NetworkBluray.Probing(session, true);
@@ -130,6 +132,23 @@ public static class PlaybackTransport
         string? _originalForwardBytes;
         string? _originalCacheSeconds, _originalReadAheadSeconds;
         int _budgetWarnings;
+        NetworkBufferRecovery? _networkRecovery;
+        static double Now => (double)Stopwatch.GetTimestamp() / Stopwatch.Frequency;
+        public void PrepareNetwork(MpvClient client)
+        {
+            lock (_gate)
+            {
+                if (!_session.TryGetTarget(out var session)) return;
+                var source = Access.Get<MediaSourceInfo>(session, "_source");
+                if (!NetworkBufferRecovery.Eligible(Access.Get<Uri>(session, "_playbackUri"),
+                    source.IsInfiniteStream == true, source.Container, Access.Get<string?>(session, "_nativeDiscPath") != null)) return;
+                _networkRecovery = new NetworkBufferRecovery(
+                    () => Native.Value.Get(Handle(client), "cache-pause-wait"),
+                    value => Native.Value.Set(Handle(client), "cache-pause-wait", value),
+                    message => Write("Info", "Playback.Buffer", message));
+            }
+        }
+        public void NetworkProgress() { lock (_gate) _networkRecovery?.Progress(Now); }
         public void ArmNotice()
         {
             if (_session.TryGetTarget(out var session)) MediaNotice.Arm(session);
@@ -142,6 +161,7 @@ public static class PlaybackTransport
                 _firstRestart = false; _cacheSamples = _bufferSamples = 0; _lastBufferSample = 0;
                 _firstPlayingAt = 0; _earlyRefillRaised = _earlyRefillSuppressed = false; _speed = 1; _originalForwardBytes = null;
                 _originalCacheSeconds = _originalReadAheadSeconds = null; _budgetWarnings = 0;
+                _networkRecovery = null;
             }
         }
         public void Begin(double target, MpvClient client)
@@ -153,6 +173,7 @@ public static class PlaybackTransport
                     && NetworkIsoMount.IsRemoteIso(Access.Get<MediaSourceInfo>(current, "_source")))) return;
             lock (_gate)
             {
+                _networkRecovery?.Interrupt();
                 var handle = Handle(client);
                 if (_firstPlayingAt != 0) _earlyRefillSuppressed = true;
                 bool bluray = uri.Scheme == "yingyu-bd";
@@ -206,6 +227,7 @@ public static class PlaybackTransport
         {
             lock (_gate)
             {
+                _networkRecovery?.Playing(Now);
                 if (!_session.TryGetTarget(out var current) || !IsBluray(current)) return;
                 NetworkBluray.Probing(current, false);
                 if (_firstPlayingAt == 0) _firstPlayingAt = Stopwatch.GetTimestamp();
@@ -219,7 +241,7 @@ public static class PlaybackTransport
         static bool IsBluray(object session) => Access.Get<Uri>(session, "_playbackUri").Scheme == "yingyu-bd";
         public void InterruptStartup()
         {
-            lock (_gate) { if (_firstPlayingAt != 0) _earlyRefillSuppressed = true; }
+            lock (_gate) { _networkRecovery?.Interrupt(); if (_firstPlayingAt != 0) _earlyRefillSuppressed = true; }
         }
         string MediaSeconds(double seconds) => PlaybackSpeedPolicy.WaitSeconds(seconds, _speed).ToString("0.###", CultureInfo.InvariantCulture);
         public void Speed(double speed, MpvClient client)
@@ -228,6 +250,7 @@ public static class PlaybackTransport
             {
                 if (!double.IsFinite(speed) || speed <= 0) return;
                 _speed = speed;
+                _networkRecovery?.Speed(speed);
                 if (_session.TryGetTarget(out var current) && IsBluray(current))
                 {
                     NetworkBluray.Speed(current, speed);
@@ -271,6 +294,7 @@ public static class PlaybackTransport
         {
             lock (_gate)
             {
+                if (_started == 0) _networkRecovery?.Buffering(Now, _speed);
                 if (!_session.TryGetTarget(out var current) || !IsBluray(current)) return;
                 if (!_earlyRefillRaised && !_earlyRefillSuppressed && _firstPlayingAt != 0 && _started == 0
                     && Stopwatch.GetElapsedTime(_firstPlayingAt).TotalSeconds <= 15 && Math.Abs(_speed - 1) < .001)
@@ -291,6 +315,8 @@ public static class PlaybackTransport
         public void Restore()
         {
             lock (_gate)
+            {
+                _networkRecovery?.Interrupt();
                 if (_session.TryGetTarget(out var current) && Access.Get<MpvClient?>(current, "_mpvClient") is { } client)
                 {
                     NetworkBluray.Probing(current, false);
@@ -303,6 +329,7 @@ public static class PlaybackTransport
                         if (_originalReadAheadSeconds != null) SetBudget(handle, "demuxer-readahead-secs", _originalReadAheadSeconds, "restore");
                     }
                 }
+            }
         }
         void RestoreCore(MpvClient client)
         {

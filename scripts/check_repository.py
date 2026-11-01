@@ -97,7 +97,7 @@ def main() -> int:
             fail(f"missing required file: {name}", errors)
 
     readme = (ROOT / "README.md").read_text("utf-8")
-    for expected in ("Android 1.9.6", "Windows 0.5.8", "COMPATIBILITY.md", "SECURITY.md"):
+    for expected in ("Android 2.1.3", "Windows 0.8.5", "COMPATIBILITY.md", "SECURITY.md"):
         if expected not in readme:
             fail(f"README missing current reference: {expected}", errors)
     if "界面预览" in readme:

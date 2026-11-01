@@ -36,6 +36,7 @@ public class MainActivity extends FlutterActivity {
     private SubtitleImportBridge subtitleImport;
     private TranslationBridge translation;
     private PlayerStatusBridge playerStatus;
+    private PlaybackNetworkBridge playbackNetwork;
     private PlaybackFrameRateBridge frameRate;
     private NativeHdrBridge nativeHdr;
     private MethodChannel orientationChannel;
@@ -129,6 +130,7 @@ public class MainActivity extends FlutterActivity {
         });
         translation = new TranslationBridge(this, engine);
         playerStatus = new PlayerStatusBridge(this, engine);
+        playbackNetwork = new PlaybackNetworkBridge(this, engine);
         frameRate = new PlaybackFrameRateBridge(getWindow());
         nativeHdr = new NativeHdrBridge(this, engine);
         discBridge = new DiscBridge(engine);
@@ -142,6 +144,17 @@ public class MainActivity extends FlutterActivity {
         channel.setMethodCallHandler((call, result) -> {
             try {
                 switch (call.method) {
+                    case "identity": {
+                        // Public build declarations, not a serial or an inferred retail name.
+                        HashMap<String, Object> identity = new HashMap<>();
+                        identity.put("manufacturer", Build.MANUFACTURER);
+                        identity.put("brand", Build.BRAND);
+                        identity.put("model", Build.MODEL);
+                        identity.put("androidRelease", Build.VERSION.RELEASE);
+                        identity.put("sdk", Build.VERSION.SDK_INT);
+                        result.success(identity);
+                        break;
+                    }
                     case "previousExit": result.success(ProcessExit.read(this)); break;
                     case "anrTrace": AnrTrace.readAsync(getApplicationContext(), result); break;
                     case "nativeCrashTrace": NativeCrash.readAsync(getApplicationContext(), result); break;
@@ -265,6 +278,7 @@ public class MainActivity extends FlutterActivity {
         if (orientationChannel != null) { orientationChannel.setMethodCallHandler(null); orientationChannel = null; }
         if (translation != null) translation.destroy();
         if (playerStatus != null) playerStatus.destroy();
+        if (playbackNetwork != null) playbackNetwork.close();
         if (nativeHdr != null) nativeHdr.close();
         if (logExport != null) logExport.destroy();
         if (subtitleImport != null) subtitleImport.destroy();

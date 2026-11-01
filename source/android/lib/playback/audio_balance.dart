@@ -6,7 +6,8 @@ enum AudioBalance {
   original('原始声音', '保留影片原有的声音强弱'),
   gentle('轻柔均衡', '适当缩小对白与大场面的音量差'),
   standard('标准均衡', '提高轻声对白，压低突出的响声'),
-  night('夜间模式', '进一步缩小音量差，适合低音量观看');
+  night('夜间模式', '进一步缩小音量差，适合低音量观看'),
+  voice('人声增强', '突出对白频段，适当平衡响声；不分离人声与背景音');
 
   const AudioBalance(this.label, this.description);
   final String label, description;
@@ -17,10 +18,14 @@ enum AudioBalance {
       AudioBalance.gentle => ('0.125', '2', '1.4', '300'),
       AudioBalance.standard => ('0.09', '3', '2', '350'),
       AudioBalance.night => ('0.063', '5', '2.4', '450'),
+      AudioBalance.voice => ('0.125', '2', '1.4', '300'),
     };
     // Link all channels so compression does not move the surround image.
     // Lookahead limiter compensates its latency; no automatic output makeup.
-    return 'acompressor=threshold=$threshold:ratio=$ratio:attack=8:'
+    final speech = this == AudioBalance.voice
+        ? 'equalizer=f=2000:t=o:w=2:g=4,'
+        : '';
+    return '${speech}acompressor=threshold=$threshold:ratio=$ratio:attack=8:'
         'release=$release:makeup=$makeup:knee=2.828:link=maximum:detection=rms,'
         'alimiter=limit=0.94:attack=5:release=80:level=false:latency=true';
   }

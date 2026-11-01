@@ -12,6 +12,7 @@ namespace Yingyu.Update;
 
 public static class PlayerHover
 {
+    static readonly System.Reflection.PropertyInfo? CursorProperty=typeof(UIElement).GetProperty("ProtectedCursor",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Public);
     static readonly ConditionalWeakTable<object, State> States = new();
     public static void Configure(object overlay) => States.GetValue(overlay, x => new State(x));
     public static bool KeepVisible(object overlay) => States.TryGetValue(overlay, out var state) && state.InBottomBand;
@@ -98,8 +99,18 @@ public static class PlayerHover
             // The existing five-second control timer is the sole idle clock.
             // Both windowed CursorGrid and the existing fullscreen shield
             // follow this event; movement restores through the original path.
-            if(_cursorRoot is {} root&&root.GetType().GetMethod(visible?"ShowCursor":"HideCursor",Type.EmptyTypes) is {} method)
-                method.Invoke(root,null);
+            if(_cursorRoot is not {} root)return;
+            if(!visible&&CursorProperty?.GetSetMethod(true)!=null)
+            {
+                // Disposing an InputCursor alone leaves a disposed cursor in
+                // ProtectedCursor. Clear the local cursor first so windowed
+                // video actually hides it; the original show path restores it.
+                var previous=CursorProperty.GetValue(root) as IDisposable;
+                CursorProperty.SetValue(root,null);
+                try{previous?.Dispose();}catch(ObjectDisposedException){}
+                return;
+            }
+            if(root.GetType().GetMethod(visible?"ShowCursor":"HideCursor",Type.EmptyTypes) is {} method)method.Invoke(root,null);
         }
         void DetachPointerRoot()
         {

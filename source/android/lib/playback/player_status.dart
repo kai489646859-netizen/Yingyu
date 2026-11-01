@@ -94,6 +94,7 @@ class PlayerStatusController extends ChangeNotifier {
   Timer? _deadline;
   Completer<Map<Object?, Object?>?>? _pending;
   bool _active = false, _busy = false, _disposed = false;
+  bool _reading = false;
   bool _warm = false;
   int _generation = 0;
   static Future<Map<Object?, Object?>?> _nativeRead() =>
@@ -133,7 +134,17 @@ class PlayerStatusController extends ChangeNotifier {
 
   Future<void> sample() async {
     if (_disposed || (!_active && !_warm) || _busy) return;
+    if (_reading) {
+      // The native request is still alive after its display deadline. Keep the
+      // wall clock current, but do not show stale measurements or enqueue IO.
+      if (_active) {
+        value = PlayerStatusData(time: DateTime.now());
+        notifyListeners();
+      }
+      return;
+    }
     _busy = true;
+    _reading = true;
     final generation = _generation;
     // All visible status refreshes at 1 Hz. Hidden controls only keep the
     // receive counter warm; native code averages actual recent byte deltas.
@@ -147,9 +158,11 @@ class PlayerStatusController extends ChangeNotifier {
     unawaited(
       Future.sync(full ? _read : _readRate).then(
         (values) {
+          _reading = false;
           if (!pending.isCompleted) pending.complete(values);
         },
         onError: (Object _, StackTrace _) {
+          _reading = false;
           if (!pending.isCompleted) pending.complete(null);
         },
       ),

@@ -64,6 +64,21 @@ public static class DesktopPeople
         CancellationToken photoRefreshToken;
         string? term;
         string? selectedPerson;
+        sealed record DetailOrigin(EmbyItem Item,BitmapImage? Poster,string? Episode,string? Season,EmbyApiClient Client,EmbySession Session);
+        DetailOrigin? origin;
+        bool returning;
+        bool HasOrigin=>origin is {} back&&ReferenceEquals(Client,back.Client)&&ReferenceEquals(Session,back.Session);
+        async void ReturnToDetail(Button button)
+        {
+            if(returning||!HasOrigin||origin is not {} back||Find<Grid>("LibraryView")?.Visibility!=Visibility.Visible||Find<StackPanel>("SearchResultsPanel")?.Visibility!=Visibility.Visible)return;
+            returning=true;button.IsEnabled=false;
+            try{
+                searchCts?.Cancel();filmCts?.Cancel();PosterTap.Cancel(page);
+                await (Task)Access.Call(page,"ShowDetailAsync",back.Item,back.Poster,null,back.Episode,back.Season)!;
+                if(ReferenceEquals(origin,back)&&Find<Grid>("DetailView")?.Visibility==Visibility.Visible)origin=null;
+            }catch(Exception error){Report(error);}
+            finally{returning=false;if(button.IsLoaded)button.IsEnabled=true;}
+        }
         bool settingsBuilt,searchAttached;
         readonly Dictionary<string,int> filmOffsets=new();
         readonly HashSet<string> filmIds=new(StringComparer.OrdinalIgnoreCase);
@@ -257,6 +272,8 @@ public static class DesktopPeople
         }
         void OpenPerson(EmbyPerson person)
         {
+            origin=Find<Grid>("DetailView")?.Visibility==Visibility.Visible&&Access.Get<EmbyItem?>(page,"_currentDetailItem") is {} item&&Client is {} client&&Session is {} session
+                ?new(item,Find<Image>("DetailPosterImage")?.Source as BitmapImage,Access.Get<string?>(page,"_detailFocusEpisodeId"),Access.Get<string?>(page,"_detailFocusSeasonId"),client,session):null;
             Access.Set(page,"_searchResults",Array.Empty<EmbyItem>());((System.Collections.IList)Access.Call(page,"get_LatestItems")!).Clear();
             Access.Get<CancellationTokenSource?>(page,"_searchCancellation")?.Cancel();Access.Set(page,"_lastSearchLibraryId",null);Access.Set(page,"_lastSearchFavoritesOnly",false);Access.Call(page,"ShowLibraryView");Access.Set(page,"_activeSnapshotKey",null);Access.Set(page,"_lastSearchTerm",person.Name);
             Find<StackPanel>("SearchResultsPanel")!.Visibility=Visibility.Visible;
@@ -276,12 +293,14 @@ public static class DesktopPeople
         }
         public void Edit(bool clear)
         {
+            origin=null;
             searchCts?.Cancel();filmCts?.Cancel();
             if(!clear)return;
             titleResults=titleMatches=Array.Empty<EmbyItem>();actorResults.Clear();matchedPeople.Clear();filmOffsets.Clear();filmIds.Clear();searchActors.Children.Clear();films.Children.Clear();
         }
         void StartSearch(string value,bool direct,EmbyPerson? person)
         {
+            if(!direct)origin=null;
             searchCts?.Cancel();searchCts?.Dispose();searchCts=direct?new():CancellationTokenSource.CreateLinkedTokenSource(hostSearch?.Token??CancellationToken.None);filmCts?.Cancel();
             var client=Client;var session=Session;if(client==null||session==null||AndroidCacheRuntime.IsPaused)return;
             searchClient=client;term=value;selectedPerson=null;peopleOffset=0;filmIds.Clear();filmOffsets.Clear();matchedPeople.Clear();actorResults.Clear();titleResults=titleMatches=Access.Get<IReadOnlyList<EmbyItem>>(page,"_searchResults");
@@ -335,7 +354,10 @@ public static class DesktopPeople
         {
             if(!SearchCurrent(client,token,session))return;
             films.Children.Clear();
-            if(person!=null)films.Children.Add(Action(person.Name+"的作品 · 返回片名结果",()=>{if(searchCts is {IsCancellationRequested:false})Select(null,client,session,searchCts.Token);}));
+            if(person!=null&&HasOrigin){
+                var back=Action("← 返回原影片详情",()=>{});back.Name="ActorReturnToDetail";
+                back.Click+=(_,_)=>ReturnToDetail(back);films.Children.Add(back);
+            }else if(person!=null)films.Children.Add(Action(person.Name+"的作品 · 返回片名结果",()=>{if(searchCts is {IsCancellationRequested:false})Select(null,client,session,searchCts.Token);}));
             if(person!=null&&Find<TextBlock>("ContentSectionTitle") is {} heading)heading.Text=person.Name+"的作品";
             var note=Text("正在读取演员作品…");films.Children.Add(note);
             try

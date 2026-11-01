@@ -11,6 +11,7 @@ import 'package:yingyu/core/emby.dart';
 import 'package:yingyu/core/models.dart';
 import 'package:yingyu/core/store.dart';
 import 'package:yingyu/playback/info.dart';
+import 'package:yingyu/playback/device.dart';
 import 'package:yingyu/playback/media_facts.dart';
 import 'package:yingyu/playback/menu.dart';
 import 'package:yingyu/playback/session.dart';
@@ -67,6 +68,19 @@ void main() {
   late _Backend backend;
   var requests = 0;
   setUp(() async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          Device.channel,
+          (call) async => call.method == 'identity'
+              ? {
+                  'model': 'V-test-A',
+                  'brand': 'iQOO',
+                  'manufacturer': 'vivo',
+                  'androidRelease': '16',
+                  'sdk': 36,
+                }
+              : null,
+        );
     SharedPreferences.setMockInitialValues({});
     store = AppStore(await SharedPreferences.getInstance());
     requests = 0;
@@ -102,7 +116,26 @@ void main() {
     api.close();
     store.log.dispose();
     store.dispose();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(Device.channel, null);
   });
+  testWidgets(
+    'device panel uses session facts without network or model guessing',
+    (tester) async {
+      final before = requests;
+      await tester.pumpWidget(
+        MaterialApp(home: PlaybackInfoPage(session: session)),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('设备型号'), 300);
+      expect(find.text('V-test-A'), findsOneWidget);
+      expect(find.text('iQOO 16'), findsNothing);
+      await tester.scrollUntilVisible(find.text('系统版本'), 100);
+      expect(find.text('Android 16 · API 36'), findsOneWidget);
+      expect(requests, before);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
   testWidgets(
     'unknown resource container explains its scope while keeping current HDR facts',
     (tester) async {

@@ -9,7 +9,6 @@ import 'core/log.dart';
 import 'core/account_controller.dart';
 import 'core/accounts.dart';
 import 'ui/accounts.dart';
-import 'ui/federated_search_page.dart';
 import 'ui/account_avatar_scope.dart';
 import 'core/home_feed.dart';
 import 'core/interface_preferences.dart';
@@ -480,25 +479,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     child: child,
   );
 
-  Future<void> aggregateSearch(String query) => Navigator.push(
-    context,
-    CupertinoPageRoute<void>(
-      builder: (_) => FederatedSearchPage(
-        api: widget.api,
-        store: widget.store,
-        initialQuery: query,
-        onOpen: (source, entry) async {
-          if (source.id == accountKey(widget.api.session!)) {
-            await item(entry);
-          } else if (widget.openSearchItem != null) {
-            await widget.openSearchItem!(source, entry);
-          } else {
-            throw const AppFailure('请先在账号页面切换到该来源');
-          }
-        },
-      ),
-    ),
-  );
+  Future<void> openSearchResult(SavedAccount source, MediaItem entry) async {
+    if (source.id == accountKey(widget.api.session!)) {
+      await item(entry);
+    } else if (widget.openSearchItem != null) {
+      await widget.openSearchItem!(source, entry);
+    } else {
+      throw const AppFailure('请先在账号页面切换到该来源');
+    }
+  }
 
   void openPendingSearch() {
     final entry = widget.searchEntry, revision = widget.searchRevision;
@@ -520,25 +509,41 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> searchFromHome() => Navigator.push(
     context,
     CupertinoPageRoute<void>(
-      builder: (_) => posterActions(
-        Scaffold(
-          resizeToAvoidBottomInset: false,
-          body: SafeArea(
-            child: LibraryPage(
-              api: widget.api,
-              browse: browse,
-              onRefreshAll: homeFeed.refreshAll,
-              refreshFeed: homeFeed,
-              searchMode: true,
-              onAggregateSearch: aggregateSearch,
-              onItem: item,
-              display: phoneLayout(context)
-                  ? LibraryDisplay.posters
-                  : interfacePreferences.libraryDisplay,
-              reducedMotion: interfacePreferences.reducedMotion,
+      builder: (_) => ListenableBuilder(
+        listenable: widget.api.backgroundWork,
+        builder: (_, _) {
+          // A successful account switch retires this client before replacing
+          // HomePage. The outgoing route can still animate for another frame.
+          if (!mounted ||
+              (widget.api.backgroundWork.paused &&
+                  widget.store.accounts.selected?.id !=
+                      accountKey(widget.api.session!))) {
+            return const Scaffold(
+              body: Center(child: CupertinoActivityIndicator()),
+            );
+          }
+          return posterActions(
+            Scaffold(
+              resizeToAvoidBottomInset: false,
+              body: SafeArea(
+                child: LibraryPage(
+                  api: widget.api,
+                  browse: browse,
+                  onRefreshAll: homeFeed.refreshAll,
+                  refreshFeed: homeFeed,
+                  searchMode: true,
+                  searchStore: widget.store,
+                  onSearchItem: openSearchResult,
+                  onItem: item,
+                  display: phoneLayout(context)
+                      ? LibraryDisplay.posters
+                      : interfacePreferences.libraryDisplay,
+                  reducedMotion: interfacePreferences.reducedMotion,
+                ),
+              ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     ),
   );
@@ -975,7 +980,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                   refreshFeed: homeFeed,
                                   onItem: item,
                                   active: index == 1,
-                                  onAggregateSearch: aggregateSearch,
+                                  searchStore: widget.store,
+                                  onSearchItem: openSearchResult,
                                   requestedLibrary: requestedLibrary,
                                   libraryRequest: libraryRequest,
                                   reducedMotion:

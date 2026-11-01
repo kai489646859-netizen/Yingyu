@@ -16,6 +16,7 @@ class SubtitleFiles {
   final _clients = <HttpClient>{};
   final _files = <String, Future<File>>{};
   final _directories = <Directory>[];
+  // Includes in-flight writes as well as completed files, across all tracks.
   int _retainedBytes = 0;
   bool _closed = false;
 
@@ -36,6 +37,7 @@ class SubtitleFiles {
     final deadline = Timer(timeout, () => client.close(force: true));
     Directory? directory;
     var complete = false;
+    var reserved = 0;
     try {
       var target = route.url;
       final visited = <String>{};
@@ -58,7 +60,7 @@ class SubtitleFiles {
               ? location
               : location.startsWith('//')
               ? '${uri.scheme}:$location'
-              : uri.parsed.resolve(location).toString();
+              : uri.resolve(location).toString();
           continue;
         }
         if (response.statusCode != 200) {
@@ -81,10 +83,15 @@ class SubtitleFiles {
         try {
           await for (final chunk in response.timeout(timeout)) {
             if (_closed) throw const AppFailure('字幕会话已关闭');
-            size += chunk.length;
-            if (size > maxBytes || _retainedBytes + size > 128 * 1024 * 1024) {
+            if (chunk.length > maxBytes - size ||
+                chunk.length > 128 * 1024 * 1024 - _retainedBytes) {
               throw const AppFailure('外挂字幕缓存达到上限');
             }
+            // Reserve before the asynchronous disk write, so another track
+            // cannot spend the same remaining bytes while this sink flushes.
+            size += chunk.length;
+            reserved += chunk.length;
+            _retainedBytes += chunk.length;
             sink.add(chunk);
             // Apply disk backpressure without retaining the full subtitle.
             await sink.flush();
@@ -93,7 +100,6 @@ class SubtitleFiles {
           await sink.close();
         }
         if (size == 0) throw const AppFailure('外挂字幕内容为空');
-        _retainedBytes += size;
         complete = true;
         return file;
       }
@@ -110,6 +116,8 @@ class SubtitleFiles {
         await directory.delete(recursive: true);
         _directories.remove(directory);
       }
+      // Keep failed files counted if cleanup throws and leaves bytes on disk.
+      if (!complete) _retainedBytes -= reserved;
     }
   }
 

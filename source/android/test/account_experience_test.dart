@@ -340,7 +340,7 @@ void main() {
     },
   );
   testWidgets(
-    'version row opens readable current and previous release notes and copies only version',
+    'version row shows only this release and copies only its version',
     (tester) async {
       await start(tester, const Size(412, 915));
       await accountPage(tester);
@@ -359,9 +359,10 @@ void main() {
       await tester.tap(find.byKey(const Key('app-version-row')));
       await settleOffline(tester);
       expect(find.text('更新说明'), findsOneWidget);
-      expect(find.textContaining('0.7.0–0.7.9'), findsWidgets);
+      expect(find.textContaining('0.7.0–0.7.9'), findsNothing);
+      expect(find.text(releaseNotes.first.title), findsOneWidget);
       expect(find.text('多个账号随时切换'), findsNothing);
-      expect(find.byType(ExpansionTile), findsNWidgets(3));
+      expect(find.byType(ExpansionTile), findsOneWidget);
       String? clipboard;
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         SystemChannels.platform,
@@ -382,12 +383,9 @@ void main() {
       await settleOffline(tester);
       expect(clipboard, '映屿安卓播放器 $appVersion');
       expect(find.byKey(const Key('toggle-release-history')), findsNothing);
-      expect(displayedReleaseNotes.length, 3);
-      expect(displayedReleaseNotes.map((e) => e.version), [
-        appVersion,
-        '0.7.9',
-        '0.6.9',
-      ]);
+      expect(displayedReleaseNotes.length, 1);
+      expect(displayedReleaseNotes.single, same(releaseNotes.first));
+      expect(displayedReleaseNotes.map((e) => e.version), [appVersion]);
       await tester.pumpWidget(const SizedBox());
     },
   );

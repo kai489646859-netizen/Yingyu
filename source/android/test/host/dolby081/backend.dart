@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'package:yingyu/playback/latency_probe.dart';
 import 'package:yingyu/playback/audio_refresh.dart';
+import 'package:yingyu/playback/network_recovery.dart';
 import 'package:yingyu/playback/disc_buffering.dart';
 import 'package:yingyu/playback/dolby_recovery.dart';
 import 'package:yingyu/playback/dolby_source.dart';
@@ -266,6 +267,7 @@ class DolbyBackendHarness extends _Harness {
     Duration position, {
     bool cancelPlay = false,
     bool freshAudio = false,
+    bool refreshNetwork = false,
     bool Function()? allowed,
   }) {
     // Internal audio priming must not cancel an already requested initial play.
@@ -343,7 +345,17 @@ class DolbyBackendHarness extends _Harness {
         // A command reply is not a completed seek. Keep pre-target discard
         // until this seek has emitted a real SEEK followed by PLAYBACK_RESTART.
         _fastSeekNativeSerial = _nativeSeekSerial;
-        if (freshAudio && native is NativePlayer) {
+        if (refreshNetwork && native is NativePlayer) {
+          final seekSerial = _nativeSeekSerial;
+          await freshNetworkSeek(
+            read: native.getProperty,
+            write: native.setProperty,
+            seek: () => player.seek(position),
+            restarted: () => _nativeRestartSeekSerial > seekSerial,
+            active: () =>
+                !_disposed && intent == _seekIntent && allowed?.call() != false,
+          );
+        } else if (freshAudio && native is NativePlayer) {
           final seekSerial = _nativeSeekSerial;
           await freshAudioSeek(
             read: native.getProperty,
@@ -359,6 +371,10 @@ class DolbyBackendHarness extends _Harness {
         } else {
           await player.seek(position);
         }
+      } on NetworkSeekRestoreFailure {
+        _audioRefreshBroken = true;
+        if (!_disposed) _failPlayback('网络恢复参数未能还原，已保留观看进度');
+        rethrow;
       } on AudioRefreshRestoreFailure catch (error) {
         // Fail inside the queue before another seek/load can use dirty options.
         _audioRefreshBroken = true;

@@ -33,7 +33,7 @@ internal static class PlayerInfoData
         {
             string id=Get(type=="sub"?"sid":"aid");if(id=="no")return "关闭";
             string title=Get($"current-tracks/{type}/title"),language=Get($"current-tracks/{type}/lang"),codec=Get($"current-tracks/{type}/codec");
-            return string.Join(" · ",new[]{title,language,codec}.Where(v=>v!="未提供")) is {Length:>0} text?text:"未提供";
+            return TrackLabels.Format(language,title,codec,type=="audio"?Get("audio-params/channels"):null,type=="audio");
         }
         var item=Access.Get<EmbyItem>(session,"_item");var source=Access.Get<MediaSourceInfo>(session,"_source");
         var api=Access.Get<EmbyApiClient>(session,"_embyClient");var result=new List<Section>();

@@ -186,17 +186,14 @@ class _LoginPageState extends State<LoginPage> {
     ),
     child: Row(
       children: [
-        Container(
-          width: phoneValue(context, 44, 56),
-          height: phoneValue(context, 44, 56),
-          decoration: BoxDecoration(
-            color: accentColor(context).withValues(alpha: .12),
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: Icon(
-            CupertinoIcons.play_rectangle_fill,
-            color: accentColor(context),
-            size: 29,
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Image.asset(
+            'assets/yingyu.png',
+            key: const Key('login-yingyu-icon'),
+            width: phoneValue(context, 44, 56),
+            height: phoneValue(context, 44, 56),
+            semanticLabel: '映屿',
           ),
         ),
         const SizedBox(width: 16),

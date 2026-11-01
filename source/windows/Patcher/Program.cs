@@ -8,8 +8,8 @@ using Mono.Cecil.Rocks;
 Console.OutputEncoding = Encoding.UTF8;
 string root = Path.GetFullPath(args[0]);
 string baseline = Path.Combine(root, "baseline", "0.2.5-redline", "installed");
-string stage = Path.Combine(root, "updates", "0.5.8-desktop", "payload");
-string runtime = Path.Combine(root, "updates", "0.5.8-desktop", "runtime-build", "Yingyu.Update.dll");
+string stage = Path.Combine(root, "updates", "0.8.5-desktop", "payload");
+string runtime = Path.Combine(root, "updates", "0.8.5-desktop", "runtime-build", "Yingyu.Update.dll");
 var expected = new Dictionary<string, string>
 {
     ["Yingyu.dll"] = "e5b9984ac2f0d3f832b9498db1f091f2d434316a4be1985ffe76a0ddf155e313",
@@ -41,11 +41,18 @@ using var windowUi = AssemblyDefinition.ReadAssembly(Path.Combine(baseline, "Ric
     new ReaderParameters { AssemblyResolver = resolver, InMemory = true, ReadSymbols = false });
 using var kernelCore = AssemblyDefinition.ReadAssembly(Path.Combine(baseline, "Richasy.MpvKernel.Core.dll"),
     new ReaderParameters { AssemblyResolver = resolver, InMemory = true, ReadSymbols = false });
+using var kernelNative = AssemblyDefinition.ReadAssembly(Path.Combine(baseline, "Richasy.MpvKernel.dll"),
+    new ReaderParameters { AssemblyResolver = resolver, InMemory = true, ReadSymbols = false });
 var touched = new HashSet<string>();
 IEnumerable<TypeDefinition> Types(IEnumerable<TypeDefinition> list) { foreach (var t in list) { yield return t; foreach (var n in Types(t.NestedTypes)) yield return n; } }
 MethodDefinition Method(AssemblyDefinition assembly, string type, string name) => Types(assembly.MainModule.Types).Single(t => t.FullName == type).Methods.Single(m => m.Name == name && (type != "EmbyDesktop.MainPage" || name != ".ctor" || m.Parameters.Count == 2));
 MethodReference Helper(ModuleDefinition module, string type, string name) => module.ImportReference(Method(helper, "Yingyu.Update." + type, name));
 void Mark(MethodDefinition method) { touched.Add(method.FullName); method.Body.SimplifyMacros(); }
+// Alphabetical browsing is now an always-on product behavior. The original
+// setter/storage shape remains compatible with existing preference files.
+var alphabetDefault=Method(core,"EmbyDesktop.Core.Services.UserPreferences","get_AlphabeticalLibraryNavigation");
+Mark(alphabetDefault);alphabetDefault.Body.Instructions.Clear();alphabetDefault.Body.ExceptionHandlers.Clear();alphabetDefault.Body.Variables.Clear();
+alphabetDefault.Body.Instructions.Add(Instruction.Create(OpCodes.Ldc_I4_1));alphabetDefault.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
 void Prefix(MethodDefinition method, Instruction at, params Instruction[] inserted)
 {
     var original = method.Body.Instructions.ToArray();
@@ -124,7 +131,7 @@ Prefix(activity,activity.Body.Instructions[0],Instruction.Create(OpCodes.Ldarg_0
 var activityOwner=activityBody.DeclaringType.Fields.Single(f=>f.FieldType.FullName=="EmbyDesktop.MainPage");var activityArgs=activityBody.DeclaringType.Fields.Single(f=>f.FieldType.FullName=="EmbyDesktop.Services.PlaybackActivityEventArgs");
 Mark(activityBody);var activityStart=activityBody.Body.Instructions[0];
 Prefix(activityBody,activityStart,Instruction.Create(OpCodes.Ldarg_0),Instruction.Create(OpCodes.Ldfld,activityOwner),Instruction.Create(OpCodes.Ldarg_0),Instruction.Create(OpCodes.Ldfld,activityArgs),Instruction.Create(OpCodes.Call,Helper(app.MainModule,"ResumeDeviceSync","CanApplyActivity")),Instruction.Create(OpCodes.Brtrue,activityStart),Instruction.Create(OpCodes.Ret));
-// 0.5.8: episode-list items become local resume cards after playback. Request
+// 0.8.5: episode-list items become local resume cards after playback. Request
 // the same parent artwork metadata as GetResumeAsync in the existing request.
 var episodeArtwork = Types(core.MainModule.Types).Single(t => t.Name.StartsWith("<GetEpisodesAsync>", StringComparison.Ordinal))
     .Methods.Single(m => m.Name == "MoveNext");
@@ -174,7 +181,7 @@ foreach(string name in new[]{"MediaCard_Loaded","MediaCard_DataContextChanged"})
     foreach(var ret in method.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray())
         Prefix(method,ret,Instruction.Create(OpCodes.Ldarg_0),Instruction.Create(OpCodes.Ldarg_1),Instruction.Create(OpCodes.Call,Helper(app.MainModule,"AndroidCacheCards","Attach")));
 }
-// 0.5.8 background log lifecycle starts with the main page, before settings open.
+// 0.8.5 background log lifecycle starts with the main page, before settings open.
 BeforeReturns(Method(app, "EmbyDesktop.MainPage", ".ctor"), "LogCenterLauncher", "StartBackground", preserveExclusiveEnds: true);
 // Cache recovery receives only containers measured by this viewport pass.
 var browseViewport = Method(app, "EmbyDesktop.MainPage", "RefreshBrowsePosterViewport");
@@ -215,7 +222,7 @@ foreach (var (name, function) in new[] { ("SettingsCategoryButton_Click", "Leave
     Prefix(entry, entry.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
         Instruction.Create(OpCodes.Call, Helper(app.MainModule, "LogCenterLauncher", function)));
 }
-// 0.5.8: retain the user-confirmed 0.5.8 original player window initialization.
+// 0.8.5: retain the user-confirmed 0.8.5 original player window initialization.
 var detailPlay = Method(app, "EmbyDesktop.MainPage", "DetailPlayButton_Click");
 Mark(detailPlay);
 Prefix(detailPlay, detailPlay.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
@@ -239,16 +246,16 @@ reuseResumePoster.Operand = Helper(app.MainModule, "ResumeArtwork", "CanReuse");
 BeforeReturns(Method(app, "EmbyDesktop.Controls.PlayerOverlay", ".ctor"), "PlayerShortcuts", "Configure");
 BeforeReturns(Method(app, "EmbyDesktop.Controls.PlayerOverlay", ".ctor"), "PlayerHover", "Configure");
 BeforeReturns(Method(app, "EmbyDesktop.Controls.PlayerOverlay", ".ctor"), "PlayerFeedback", "Configure");
-// 0.5.8 loading readiness guard; original state handlers remain intact.
+// 0.8.5 loading readiness guard; original state handlers remain intact.
 var loadingState = Method(app, "EmbyDesktop.Controls.PlayerOverlay", "UpdatePlayerState");
 Mark(loadingState);
 foreach (var ret in loadingState.Body.Instructions.Where(i => i.OpCode == OpCodes.Ret).ToArray())
     Prefix(loadingState, ret, Instruction.Create(OpCodes.Ldarg_0), Instruction.Create(OpCodes.Ldarg_1),
         Instruction.Create(OpCodes.Call, Helper(app.MainModule, "PlayerFeedback", "KeepStartupVisible")));
-// End 0.5.8 loading readiness guard.
-// 0.5.8 first-frame confirmation resolves an earlier preliminary Playing event.
+// End 0.8.5 loading readiness guard.
+// 0.8.5 first-frame confirmation resolves an earlier preliminary Playing event.
 BeforeReturns(Method(app, "EmbyDesktop.Services.MpvPlaybackSession", "MarkPlaybackStarted"), "PlayerFeedback", "Ready", preserveExclusiveEnds: true);
-// End 0.5.8 first-frame confirmation.
+// End 0.8.5 first-frame confirmation.
 
 BeforeReturns(Method(app, "EmbyDesktop.Controls.PlayerOverlay", ".ctor"), "PlayerMenus", "Configure");
 BeforeReturns(Method(app, "EmbyDesktop.Controls.PlayerOverlay", ".ctor"), "EpisodeLabels", "ConfigureVolume");
@@ -442,7 +449,7 @@ Prefix(moveInit, overlayLoad.Previous, Instruction.Create(OpCodes.Ldloc, pageLoc
 var endLoad = Instruction.Create(OpCodes.Ldloc, pageLocal);
 initIl.InsertAfter(stores[1], endLoad);
 initIl.InsertAfter(endLoad, Instruction.Create(OpCodes.Call, Helper(app.MainModule, "BackgroundArtwork", "End")));
-// 0.5.8 incremental initialization: reuse the existing async wait and original
+// 0.8.5 incremental initialization: reuse the existing async wait and original
 // download loop. Filter only after existing artwork registration completes.
 var planField = initState.Fields.Single(f => f.Name.StartsWith("<plan>"));
 var totalField = initState.Fields.Single(f => f.Name.StartsWith("<total>"));
@@ -464,7 +471,7 @@ Prefix(moveInit, estimateNew.Previous,
 BeforeReturns(Method(app, "EmbyDesktop.MainPage", "UpdateArtworkInitializationUi"), "ArtworkInitializationReuse", "Annotate", preserveExclusiveEnds: true);
 foreach (var text in moveInit.Body.Instructions.Where(i => i.OpCode == OpCodes.Ldstr && Equals(i.Operand, "正在优先初始化海报墙图片…")))
     text.Operand = "正在补齐缺失的海报墙图片…";
-// End 0.5.8 incremental initialization.
+// End 0.8.5 incremental initialization.
 var playback = Method(app, "EmbyDesktop.MainPage", "StartPlaybackSafelyAsync");
 Mark(playback);
 Prefix(playback, playback.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
@@ -651,7 +658,7 @@ Prefix(nativeProperty, nativeProperty.Body.Instructions[0], Instruction.Create(O
 var prematureReady = notifyMpv.Body.Instructions.Where(i => i.Operand is MethodReference m && m.Name == "MarkPlaybackStarted").ToArray();
 if (prematureReady.Length != 3) throw new InvalidOperationException("Unexpected playback readiness shape");
 prematureReady[0].OpCode = OpCodes.Pop; prematureReady[0].Operand = null;
-// 0.5.8: progress-aware bounded startup and synchronous native end-reason gate.
+// 0.8.5: progress-aware bounded startup and synchronous native end-reason gate.
 var startupWatch = Types(app.MainModule.Types).Single(t => t.Name.StartsWith("<WatchForFirstFrameAsync>d__")).Methods.Single(m => m.Name == "MoveNext");
 Mark(startupWatch);
 var startupDelay = startupWatch.Body.Instructions.Single(i => i.Operand is MethodReference m && m.DeclaringType.FullName == "System.Threading.Tasks.Task" && m.Name == "Delay");
@@ -664,7 +671,7 @@ Mark(endEventEntry);
 Prefix(endEventEntry, endEventEntry.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
     Instruction.Create(OpCodes.Ldarg_1), Instruction.Create(OpCodes.Call, Helper(kernelCore.MainModule, "BlurayStartup", "IgnoreControlEnd")),
     Instruction.Create(OpCodes.Brfalse, endEventEntry.Body.Instructions[0]), Instruction.Create(OpCodes.Ret));
-// End 0.5.8 startup hooks.
+// End 0.8.5 startup hooks.
 var retryIso = Method(app, "EmbyDesktop.Services.MpvPlaybackSession", "RefreshPlaybackRouteAsync");
 Mark(retryIso);
 Prefix(retryIso, retryIso.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
@@ -780,7 +787,7 @@ foreach (var routeReturn in constructServerRoute.Body.Instructions.Where(i => i.
     Prefix(constructServerRoute, routeReturn, Instruction.Create(OpCodes.Ldarg_0),
         Instruction.Create(OpCodes.Call, Helper(core.MainModule, "PlaybackRouteIdentity", "WithCurrent")));
 
-// 0.5.8: same-origin media authentication and redirect boundary.
+// 0.8.5: same-origin media authentication and redirect boundary.
 // Insert before final OptimizeMacros/write, after the existing route hooks.
 // This snippet uses Program's Types, Method, Mark, Prefix and Helper locals.
 var mediaPreflightState = Types(core.MainModule.Types).Single(t =>
@@ -840,7 +847,7 @@ Mark(mediaErrorMove);
 var mediaForbidden = mediaErrorMove.Body.Instructions.Single(i => i.OpCode == OpCodes.Ldstr && Equals(i.Operand, "媒体路线请求被拒绝（403），可能是直链已失效或上游校验不一致。"));
 mediaForbidden.OpCode = OpCodes.Ldloc; mediaForbidden.Operand = mediaErrorMove.Body.Variables[3];
 mediaErrorMove.Body.GetILProcessor().InsertAfter(mediaForbidden, Instruction.Create(OpCodes.Call, Helper(core.MainModule, "MediaFailureDiagnostics", "Forbidden")));
-// End 0.5.8 media-authentication patch.
+// End 0.8.5 media-authentication patch.
 
 MpvHttpHeadersPatch.Apply(kernelCore, helper, Mark);
 WallPosterPatch.Apply(app, helper, Mark);
@@ -864,7 +871,7 @@ Prefix(logWriter, logWriter.Body.Instructions[0], Instruction.Create(OpCodes.Lda
     Instruction.Create(OpCodes.Call, Helper(app.MainModule, "LogVersions", "Annotate")),
     Instruction.Create(OpCodes.Starg, logWriter.Parameters[2]));
 
-const string shortcuts = "空格 / K：播放或暂停   ← / →：快退或快进 5 秒\n长按 →：临时 3 倍速，松开恢复原速度   ↑ / ↓：音量 ±5%\nM：静音   J / L：快退或快进 10 秒   [ / ]：倍速 ±0.25\nBackspace：恢复 1 倍速   F：全屏   Esc：退出全屏\n输入框、字幕/音轨菜单和选集面板内保留原有键盘操作。";
+const string shortcuts = "点击下方按键可自定义播放／暂停、静音、全屏及音量快捷键。\n← / →：定位；长按 → 临时 3 倍速，松开恢复。J / L：定位 10 秒。\n[ / ]：倍速 ±0.25；Backspace：恢复 1 倍速；Esc：退出全屏。\n输入框、字幕/音轨菜单和选集面板内保留原有键盘操作。";
 foreach (var assembly in new[] { app, core })
 foreach (var method in Types(assembly.MainModule.Types).SelectMany(t => t.Methods).Where(m => m.HasBody))
 {
@@ -872,7 +879,7 @@ foreach (var method in Types(assembly.MainModule.Types).SelectMany(t => t.Method
     {
         if (ins.OpCode != OpCodes.Ldstr || ins.Operand is not string value) continue;
         if (value.StartsWith("空格：播放/暂停") && value.Contains("进度条")) { ins.Operand = shortcuts; touched.Add(method.FullName); }
-        else if (value is "0.2.5" or "0.2.5.0") { ins.Operand = value.Replace("0.2.5", "0.5.8"); touched.Add(method.FullName); }
+        else if (value is "0.2.5" or "0.2.5.0") { ins.Operand = value.Replace("0.2.5", "0.8.5"); touched.Add(method.FullName); }
     }
 }
 AudioControlPatch.Apply(app, helper);
@@ -922,6 +929,13 @@ Prefix(verticalChanged,verticalFirst,Instruction.Create(OpCodes.Ldarg_0),Instruc
 var cardHover=Method(app,"EmbyDesktop.MainPage","PosterCard_PointerEntered");
 foreach(var zoom in cardHover.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ldc_R4 && Equals(i.Operand,1.02f)).ToArray()){Mark(cardHover);zoom.Operand=1.0f;}
 
+BeforeReturns(Method(app,"EmbyDesktop.MainWindow","RestoreWindowPlacement"),"StartupWindow","Apply",preserveExclusiveEnds:true);
+BeforeReturns(Method(app,"EmbyDesktop.MainPage","UpdateDesktopDetailButtons"),"UserStatePresentation","Refresh",preserveExclusiveEnds:true);
+BeforeReturns(Method(app,"EmbyDesktop.MainPage","RefreshAccountPanel"),"ProfileOrder","Decorate",preserveExclusiveEnds:true);
+var profileLoad=Types(app.MainModule.Types).Single(t=>t.Name.StartsWith("<RefreshServerProfilesAsync>" )).Methods.Single(m=>m.Name=="MoveNext");
+var loadProfiles=profileLoad.Body.Instructions.Single(i=>i.Operand is MethodReference m&&m.DeclaringType.Name=="ServerProfileStore"&&m.Name=="LoadAsync");
+Mark(profileLoad);loadProfiles.OpCode=OpCodes.Call;loadProfiles.Operand=Helper(app.MainModule,"ProfileOrder","Load");
+
 // The requested tooltip policy covers original host calls and dynamic adapter
 // controls. XBF/native automatic tips are suppressed at root attachment as well.
 foreach(var inputAssembly in new[]{app,helper})
@@ -930,23 +944,38 @@ foreach(var inputCall in inputMethod.Body.Instructions.Where(i=>i.Operand is Met
     inputCall.OpCode=OpCodes.Call;inputCall.Operand=Helper(inputAssembly.MainModule,"DesktopInputBehavior","SetToolTip");
 }
 
-foreach (var assembly in new[] { app, core, helper, windowUi, kernelCore })
+// Share one confirmation slot per XamlRoot. Duplicate requests return None,
+// never queue a stale destructive action or share another dialog's Primary result.
+// PlayerMenus already awaits the same Task<ContentDialogResult> signature.
+var modalAwaiter=helperToolsAwaiter.Operand as MethodReference ?? throw new InvalidDataException("Missing dialog Task awaiter");
+int protectedDialogs=0;
+foreach(var method in Types(app.MainModule.Types).Where(t=>t.FullName=="EmbyDesktop.MainPage"||t.FullName.StartsWith("EmbyDesktop.MainPage/")).SelectMany(t=>t.Methods).Where(m=>m.HasBody))
+foreach(var call in method.Body.Instructions.Where(i=>i.Operand is MethodReference m&&m.DeclaringType.FullName=="Microsoft.UI.Xaml.Controls.ContentDialog"&&m.Name=="ShowAsync").ToArray()){
+    if(((MethodReference)call.Operand).Parameters.Count!=0||call.Next?.Operand is not MethodReference awaiter||awaiter.Name!="GetAwaiter")throw new InvalidDataException("Unexpected modal await pattern: "+method.FullName);
+    Mark(method);call.Next.OpCode=OpCodes.Callvirt;call.Next.Operand=app.MainModule.ImportReference(modalAwaiter);
+    call.OpCode=OpCodes.Call;call.Operand=Helper(app.MainModule,"ModalProtection","Show");protectedDialogs++;
+}
+if(protectedDialogs==0)throw new InvalidDataException("No confirmation dialogs protected");
+Console.WriteLine("Protected confirmation entries: "+protectedDialogs);
+
+ResponseSafetyPatch.Apply(core, kernelNative, helper, Mark);
+foreach (var assembly in new[] { app, core, helper, windowUi, kernelCore, kernelNative })
 {
     foreach (var reference in assembly.MainModule.AssemblyReferences)
-        if (reference.Name is "Yingyu" or "Yingyu.Core") reference.Version = new Version(0, 5, 8, 0);
+        if (reference.Name is "Yingyu" or "Yingyu.Core") reference.Version = new Version(0, 8, 5, 0);
     if (assembly == app || assembly == core)
     {
-        assembly.Name.Version = new Version(0, 5, 8, 0);
+        assembly.Name.Version = new Version(0, 8, 5, 0);
         foreach (var attribute in assembly.CustomAttributes)
             if (attribute.AttributeType.Name is "AssemblyFileVersionAttribute" or "AssemblyInformationalVersionAttribute")
                 attribute.ConstructorArguments[0] = new CustomAttributeArgument(assembly.MainModule.TypeSystem.String,
-                    attribute.AttributeType.Name == "AssemblyFileVersionAttribute" ? "0.5.8.0" : "0.5.8");
+                    attribute.AttributeType.Name == "AssemblyFileVersionAttribute" ? "0.8.5.0" : "0.8.5");
     }
     foreach (var method in Types(assembly.MainModule.Types).SelectMany(t => t.Methods).Where(m => m.HasBody && touched.Contains(m.FullName))) method.Body.OptimizeMacros();
     var regionErrors = Types(assembly.MainModule.Types).SelectMany(t => t.Methods).SelectMany(ExceptionRegions.Check).ToArray();
     if (regionErrors.Length != 0)
         throw new InvalidOperationException("Invalid exception-region control flow; payload rejected:\n" + string.Join("\n", regionErrors));
-    assembly.Write(Path.Combine(stage, assembly.Name.Name + ".dll"), new WriterParameters { WriteSymbols = assembly != windowUi && assembly != kernelCore });
+    assembly.Write(Path.Combine(stage, assembly.Name.Name + ".dll"), new WriterParameters { WriteSymbols = assembly != windowUi && assembly != kernelCore && assembly != kernelNative });
 }
 
 string depsFile = Path.Combine(stage, "Yingyu.deps.json");
@@ -957,45 +986,45 @@ foreach (var target in deps["targets"]!.AsObject())
     foreach (string name in new[] { "Yingyu", "Yingyu.Core" })
     {
         var item = libraries[name + "/0.2.5"];
-        if (item != null) { libraries.Remove(name + "/0.2.5"); libraries[name + "/0.5.8"] = item; }
+        if (item != null) { libraries.Remove(name + "/0.2.5"); libraries[name + "/0.8.5"] = item; }
     }
     foreach (var item in libraries.ToArray())
     {
         var dependencies = item.Value?["dependencies"]?.AsObject();
         if (dependencies == null) continue;
-        if (dependencies.ContainsKey("Yingyu.Core")) dependencies["Yingyu.Core"] = "0.5.8";
-        if (dependencies.ContainsKey("Yingyu.Core.Reference")) dependencies["Yingyu.Core.Reference"] = "0.5.8.0";
-        if (item.Key is "Yingyu/0.5.8" or "Yingyu.Core/0.5.8") dependencies["Yingyu.Update"] = "0.5.8";
+        if (dependencies.ContainsKey("Yingyu.Core")) dependencies["Yingyu.Core"] = "0.8.5";
+        if (dependencies.ContainsKey("Yingyu.Core.Reference")) dependencies["Yingyu.Core.Reference"] = "0.8.5.0";
+        if (item.Key is "Yingyu/0.8.5" or "Yingyu.Core/0.8.5") dependencies["Yingyu.Update"] = "0.8.5";
     }
     var referenceInfo = libraries["Yingyu.Core.Reference/0.2.5.0"];
-    if (referenceInfo != null) { libraries.Remove("Yingyu.Core.Reference/0.2.5.0"); libraries["Yingyu.Core.Reference/0.5.8.0"] = referenceInfo; }
+    if (referenceInfo != null) { libraries.Remove("Yingyu.Core.Reference/0.2.5.0"); libraries["Yingyu.Core.Reference/0.8.5.0"] = referenceInfo; }
     foreach (var item in libraries)
     {
         if (item.Value?["runtime"] is not System.Text.Json.Nodes.JsonObject files) continue;
         foreach (var dll in files)
             if (dll.Key is "Yingyu.dll" or "Yingyu.Core.dll")
             {
-                dll.Value!["assemblyVersion"] = "0.5.8.0";
-                dll.Value["fileVersion"] = "0.5.8.0";
+                dll.Value!["assemblyVersion"] = "0.8.5.0";
+                dll.Value["fileVersion"] = "0.8.5.0";
             }
     }
-    libraries["Yingyu.Update/0.5.8"] = new System.Text.Json.Nodes.JsonObject
+    libraries["Yingyu.Update/0.8.5"] = new System.Text.Json.Nodes.JsonObject
     {
-        ["runtime"] = new System.Text.Json.Nodes.JsonObject { ["Yingyu.Update.dll"] = new System.Text.Json.Nodes.JsonObject { ["assemblyVersion"] = "0.5.8.0", ["fileVersion"] = "0.5.8.0" } }
+        ["runtime"] = new System.Text.Json.Nodes.JsonObject { ["Yingyu.Update.dll"] = new System.Text.Json.Nodes.JsonObject { ["assemblyVersion"] = "0.8.5.0", ["fileVersion"] = "0.8.5.0" } }
     };
 }
 var libraryInfo = deps["libraries"]!.AsObject();
 foreach (string name in new[] { "Yingyu", "Yingyu.Core" })
 {
     var item = libraryInfo[name + "/0.2.5"];
-    if (item != null) { libraryInfo.Remove(name + "/0.2.5"); libraryInfo[name + "/0.5.8"] = item; }
+    if (item != null) { libraryInfo.Remove(name + "/0.2.5"); libraryInfo[name + "/0.8.5"] = item; }
 }
-libraryInfo["Yingyu.Update/0.5.8"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "project", ["serviceable"] = false, ["sha512"] = "" };
+libraryInfo["Yingyu.Update/0.8.5"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "project", ["serviceable"] = false, ["sha512"] = "" };
 var referenceLibraryInfo = libraryInfo["Yingyu.Core.Reference/0.2.5.0"];
-if (referenceLibraryInfo != null) { libraryInfo.Remove("Yingyu.Core.Reference/0.2.5.0"); libraryInfo["Yingyu.Core.Reference/0.5.8.0"] = referenceLibraryInfo; }
+if (referenceLibraryInfo != null) { libraryInfo.Remove("Yingyu.Core.Reference/0.2.5.0"); libraryInfo["Yingyu.Core.Reference/0.8.5.0"] = referenceLibraryInfo; }
 File.WriteAllText(depsFile, deps.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
 
-void UpdateNativeVersion(string hostPath,bool required)=>VersionResourcePatch.Apply(hostPath,new Version(0,5,8,0),required);
+void UpdateNativeVersion(string hostPath,bool required)=>VersionResourcePatch.Apply(hostPath,new Version(0,8,5,0),required);
 UpdateNativeVersion(Path.Combine(stage, "Yingyu.exe"), true);
 UpdateNativeVersion(Path.Combine(stage, "Yingyu.dll"), false);
 UpdateNativeVersion(Path.Combine(stage, "Yingyu.Core.dll"), false);
@@ -1021,9 +1050,9 @@ foreach (var file in Directory.EnumerateFiles(dolbySource, "*", SearchOption.Top
     if (!file.EndsWith(".a", StringComparison.OrdinalIgnoreCase)) File.Copy(file, Path.Combine(dolbyTarget, Path.GetFileName(file)), true);
 // One private native core for all sessions. Keep the prior 90 native files as
 // delivered; the resolver always selects this complete rebuilt dependency set.
-var nativeSource037=Path.Combine(root,"updates","0.5.8-desktop","Native","runtime");
+var nativeSource037=Path.Combine(root,"updates","0.8.5-desktop","Native","runtime");
 var nativeTarget037=Path.Combine(stage,"Components","NativeDolby");
-using(var nativeManifest=JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"updates","0.5.8-desktop","Native","native-runtime-manifest.json"))))
+using(var nativeManifest=JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"updates","0.8.5-desktop","Native","native-runtime-manifest.json"))))
     foreach(var entry in nativeManifest.RootElement.GetProperty("files").EnumerateArray()) {
         var file=Path.Combine(nativeSource037,entry.GetProperty("file").GetString()!);
         if(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(file)))!=entry.GetProperty("sha256").GetString())
@@ -1033,7 +1062,7 @@ foreach(var file in Directory.EnumerateFiles(nativeSource037,"*",SearchOption.Al
     var destination=Path.Combine(nativeTarget037,Path.GetRelativePath(nativeSource037,file));
     Directory.CreateDirectory(Path.GetDirectoryName(destination)!);File.Copy(file,destination,true);
 }
-var manifest = new { version = "0.5.8", baselineVersion = "0.2.5", baselineFingerprints = expected, changedMethods = touched.OrderBy(x => x).ToArray(), functionalTests = "User will test manually; not run by agent" };
-File.WriteAllText(Path.Combine(root, "updates", "0.5.8-desktop", "patch-manifest.json"), JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
+var manifest = new { version = "0.8.5", baselineVersion = "0.2.5", baselineFingerprints = expected, changedMethods = touched.OrderBy(x => x).ToArray(), functionalTests = "User will test manually; not run by agent" };
+File.WriteAllText(Path.Combine(root, "updates", "0.8.5-desktop", "patch-manifest.json"), JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
 Console.WriteLine("Patched methods: " + touched.Count);
 foreach (var name in touched.OrderBy(x => x)) Console.WriteLine(name);

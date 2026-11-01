@@ -8,16 +8,18 @@ import urllib.request
 
 
 REQUIRED = {
-    "android-v1.9.6": {
-        "Yingyu-1.9.6.apk",
-        "Yingyu-1.9.6-source.zip",
-        "Yingyu-1.9.6-symbols.zip",
-        "android-1.9.6-SHA256SUMS.txt",
+    "android-v2.1.3": {
+        "Yingyu-2.1.3.apk",
+        "Yingyu-2.1.3-source.zip",
+        "Yingyu-2.1.3-symbols.zip",
+        "android-2.1.3.md",
+        "android-2.1.3-SHA256SUMS.txt",
     },
-    "windows-v0.5.8": {
-        "Yingyu-Setup-x64-0.5.8.exe",
-        "Yingyu-0.5.8-source-and-symbols.zip",
-        "windows-0.5.8-SHA256SUMS.txt",
+    "windows-v0.8.5": {
+        "Yingyu-Setup-x64-0.8.5.exe",
+        "Yingyu-0.8.5-source-and-symbols.zip",
+        "windows-0.8.5.md",
+        "windows-0.8.5-SHA256SUMS.txt",
     },
 }
 
@@ -40,6 +42,8 @@ def main() -> int:
     failures: list[str] = []
     for tag, expected in REQUIRED.items():
         release = get_json(f"https://api.github.com/repos/{repository}/releases/tags/{tag}")
+        if release.get("draft") or release.get("prerelease"):
+            failures.append(f"{tag}: release must be published and stable")
         assets = {asset["name"]: asset for asset in release["assets"]}
         missing = expected - set(assets)
         if missing:

@@ -1,4 +1,3 @@
-import '../core/version_groups.dart';
 import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -21,6 +20,7 @@ import 'offline_translation.dart';
 import 'watch_progress.dart';
 import '../core/personal_sync.dart';
 import 'poster_actions.dart';
+import 'media_versions.dart';
 
 class DetailPage extends StatefulWidget {
   const DetailPage({
@@ -52,7 +52,8 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
   late final personalAccount = widget.api.session;
   MediaItem? item;
   List<MediaItem> seasons = [], episodes = [];
-  String? error, episodeError, seasonError, season, source;
+  String? error, episodeError, seasonError, season;
+  final selectedSources = <String, String>{};
   bool busy = true, episodeBusy = false;
   bool episodesPaused = false;
   bool metadataBusy = true;
@@ -574,10 +575,15 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
   }
 
   Future<void> play(MediaItem entry, {bool fromBeginning = false}) async {
-    if (openingEntry != null) return;
+    if (openingEntry != null || widget.api.session != personalAccount) return;
     setState(() => openingEntry = entry);
     try {
-      await widget.play(entry, source, fromBeginning);
+      final versions = playableVersions(entry);
+      final selected = selectedSources[entry.id];
+      final sourceId =
+          selected ??
+          (versions.isEmpty ? null : versions.first['Id'].toString());
+      await widget.play(entry, sourceId, fromBeginning);
     } finally {
       if (mounted) {
         setState(() => openingEntry = null);
@@ -762,7 +768,6 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
     final genres = (entry.data['Genres'] as List? ?? [])
         .map((e) => '$e')
         .toList();
-    final sources = objects(entry.data['MediaSources']);
     Widget row(String name, String value) => value.isEmpty
         ? const SizedBox.shrink()
         : Padding(
@@ -944,6 +949,18 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
               ),
             ],
           ),
+          if (target != null && playableVersions(target).isNotEmpty)
+            MediaVersions(
+              sources: playableVersions(target),
+              selected: selectedSources[target.id],
+              enabled:
+                  openingEntry == null && widget.api.session == personalAccount,
+              onSelected: (id) {
+                if (widget.api.session == personalAccount) {
+                  setState(() => selectedSources[target.id] = id);
+                }
+              },
+            ),
           if (!phone) ...[
             const SizedBox(height: 16),
             Divider(color: color.withValues(alpha: .15)),
@@ -1059,40 +1076,6 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
               ),
           ],
           if (entry.playable) ...[
-            if (sources.length > 1) ...[
-              const SizedBox(height: 16),
-              SettingsRow(
-                '媒体版本',
-                subtitle: sourceDescription(
-                  sources.firstWhere(
-                    (s) => s['Id']?.toString() == source,
-                    orElse: () => sources.first,
-                  ),
-                ),
-                onTap: () async {
-                  final selected = await showSurface<String>(
-                    context,
-                    (context) => SelectionMenu(
-                      label: '媒体版本',
-                      children: [
-                        for (final value in sources)
-                          SelectionRow(
-                            sourceDescription(value),
-                            selected:
-                                value['Id']?.toString() ==
-                                (source ?? sources.first['Id']?.toString()),
-                            onTap: () =>
-                                Navigator.pop(context, value['Id']?.toString()),
-                          ),
-                      ],
-                    ),
-                  );
-                  if (mounted && selected != null) {
-                    setState(() => source = selected);
-                  }
-                },
-              ),
-            ],
             const SizedBox(height: 16),
             Wrap(
               spacing: 12,

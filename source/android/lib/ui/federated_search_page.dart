@@ -9,6 +9,7 @@ import '../core/store.dart';
 import 'library_layout.dart';
 import '../core/interface_preferences.dart';
 import 'style.dart';
+import 'poster_actions.dart';
 
 class FederatedSearchPage extends StatefulWidget {
   const FederatedSearchPage({
@@ -17,10 +18,24 @@ class FederatedSearchPage extends StatefulWidget {
     required this.store,
     required this.onOpen,
     this.initialQuery = '',
-  });
+  }) : embedded = false,
+       active = true;
+
+  /// Additional account results in the ordinary search scroll view. The
+  /// current account is already searched by LibraryPage, with its filters.
+  const FederatedSearchPage.sliver({
+    super.key,
+    required this.api,
+    required this.store,
+    required this.onOpen,
+    required String query,
+    required this.active,
+  }) : initialQuery = query,
+       embedded = true;
   final EmbyClient api;
   final AppStore store;
   final String initialQuery;
+  final bool embedded, active;
   final Future<void> Function(SavedAccount, MediaItem) onOpen;
   @override
   State<FederatedSearchPage> createState() => _FederatedSearchPageState();
@@ -49,6 +64,9 @@ class _FederatedSearchPageState extends State<FederatedSearchPage>
     if (current != null && !accounts.any((a) => a.id == accountKey(current))) {
       accounts.insert(0, SavedAccount(current));
     }
+    if (widget.embedded && current != null) {
+      accounts.removeWhere((a) => a.id == accountKey(current));
+    }
     search = FederatedSearch(widget.api, accounts)..addListener(changed);
     setState(() {});
     submit();
@@ -56,6 +74,31 @@ class _FederatedSearchPageState extends State<FederatedSearchPage>
 
   void changed() {
     if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(covariant FederatedSearchPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.embedded && oldWidget.initialQuery != widget.initialQuery) {
+      text.text = widget.initialQuery;
+      search?.cancel();
+      debounce?.cancel();
+      debounce = Timer(const Duration(milliseconds: 350), submit);
+    } else if (!widget.active) {
+      debounce?.cancel();
+      search?.cancel();
+    } else if (!oldWidget.active) {
+      // Keep completed results and scroll position after opening a detail.
+      if (search?.query != text.text.trim()) {
+        submit();
+      } else {
+        for (final source in search?.sources ?? <SearchSource>[]) {
+          if (source.error == '搜索已暂停，点击重试') {
+            unawaited(search!.retry(source));
+          }
+        }
+      }
+    }
   }
 
   void workChanged() {
@@ -80,7 +123,12 @@ class _FederatedSearchPageState extends State<FederatedSearchPage>
 
   void submit() {
     debounce?.cancel();
-    if (!foreground || widget.api.backgroundWork.paused || opening) return;
+    if (!foreground ||
+        !widget.active ||
+        widget.api.backgroundWork.paused ||
+        opening) {
+      return;
+    }
     unawaited(search?.search(text.text));
   }
 
@@ -111,58 +159,93 @@ class _FederatedSearchPageState extends State<FederatedSearchPage>
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('聚合搜索')),
-    body: SafeArea(
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: CupertinoSearchTextField(
-              key: const Key('federated-search'),
-              controller: text,
-              placeholder: '搜索全部已保存账号的影视',
-              onChanged: (_) {
-                search?.cancel();
-                debounce?.cancel();
-                debounce = Timer(const Duration(milliseconds: 350), submit);
-              },
-              onSubmitted: (_) => submit(),
-              onSuffixTap: () {
-                text.clear();
-                submit();
-              },
+  Widget build(BuildContext context) => widget.embedded
+      ? SliverLayoutBuilder(
+          builder: (context, constraints) {
+            if (text.text.trim().isEmpty) return const SliverToBoxAdapter();
+            final results = SliverMainAxisGroup(
+              slivers: [
+                if (opening)
+                  const SliverToBoxAdapter(child: CupertinoActivityIndicator()),
+                if (openingError != null)
+                  SliverToBoxAdapter(child: Text(openingError!)),
+                for (final source in search?.sources ?? <SearchSource>[])
+                  ...sourceSlivers(
+                    context,
+                    source,
+                    constraints.crossAxisExtent,
+                  ),
+              ],
+            );
+            final scope = PosterActionsScope.maybeOf(context);
+            if (scope == null) return results;
+            // These items belong to other accounts. Their personal actions
+            // become available after opening the matching account's detail.
+            return PosterActionsScope(
+              sync: scope.sync,
+              preferences: scope.preferences,
+              feed: scope.feed,
+              onItem: scope.onItem,
+              enabled: false,
+              child: results,
+            );
+          },
+        )
+      : Scaffold(
+          appBar: AppBar(title: const Text('聚合搜索')),
+          body: SafeArea(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: CupertinoSearchTextField(
+                    key: const Key('federated-search'),
+                    controller: text,
+                    placeholder: '搜索全部已保存账号的影视',
+                    onChanged: (_) {
+                      search?.cancel();
+                      debounce?.cancel();
+                      debounce = Timer(
+                        const Duration(milliseconds: 350),
+                        submit,
+                      );
+                    },
+                    onSubmitted: (_) => submit(),
+                    onSuffixTap: () {
+                      text.clear();
+                      submit();
+                    },
+                  ),
+                ),
+                if (opening) const CupertinoActivityIndicator(),
+                if (openingError != null) Text(openingError!),
+                Expanded(
+                  child: search == null
+                      ? const Center(child: CupertinoActivityIndicator())
+                      : LayoutBuilder(
+                          builder: (context, constraints) => CustomScrollView(
+                            slivers: [
+                              if (text.text.trim().isEmpty)
+                                const SliverToBoxAdapter(
+                                  child: Padding(
+                                    padding: EdgeInsets.all(24),
+                                    child: Text('输入片名，同时搜索不同服务器和账号。结果按来源展示。'),
+                                  ),
+                                ),
+                              for (final source in search!.sources)
+                                ...sourceSlivers(
+                                  context,
+                                  source,
+                                  constraints.maxWidth,
+                                ),
+                            ],
+                          ),
+                        ),
+                ),
+              ],
             ),
           ),
-          if (opening) const CupertinoActivityIndicator(),
-          if (openingError != null) Text(openingError!),
-          Expanded(
-            child: search == null
-                ? const Center(child: CupertinoActivityIndicator())
-                : LayoutBuilder(
-                    builder: (context, constraints) => CustomScrollView(
-                      slivers: [
-                        if (text.text.trim().isEmpty)
-                          const SliverToBoxAdapter(
-                            child: Padding(
-                              padding: EdgeInsets.all(24),
-                              child: Text('输入片名，同时搜索不同服务器和账号。结果按来源展示。'),
-                            ),
-                          ),
-                        for (final source in search!.sources)
-                          ...sourceSlivers(
-                            context,
-                            source,
-                            constraints.maxWidth,
-                          ),
-                      ],
-                    ),
-                  ),
-          ),
-        ],
-      ),
-    ),
-  );
+        );
   List<Widget> sourceSlivers(
     BuildContext context,
     SearchSource source,
@@ -232,7 +315,10 @@ class _FederatedSearchPageState extends State<FederatedSearchPage>
               item: items[i],
               api: source.api,
               active:
-                  foreground && !opening && !widget.api.backgroundWork.paused,
+                  widget.active &&
+                  foreground &&
+                  !opening &&
+                  !widget.api.backgroundWork.paused,
               onTap: () => open(source, items[i]),
             ),
             childCount: items.length,

@@ -352,7 +352,7 @@ public static class AndroidCacheCards
                 || page is not FrameworkElement{IsLoaded:true}
                 ||!ReferenceEquals(ownerSession,Access.Get<EmbySession?>(page,"_session"))
                 ||!ReferenceEquals(ownerGeneration,Access.Get<CancellationTokenSource?>(page,"_posterLoadCts"))
-                || SourceKey(Get<EmbyItem>(card,"Item")) != demandSource) return;
+                || SourceKey(Get<EmbyItem>(card,"Item")) != demandSource||ArtworkKey(page,card)!=identity) return;
             // Unrealized offscreen cards warm the existing bounded decoder LRU.
             // Do not pin a bitmap in every model of a large catalogue.
             if(fromCache&&!Get<bool>(card,"IsInViewport")&&!remembered.Views.Any(v=>v.TryGetTarget(out var view)&&view.BoundFor(card)))return;
@@ -412,9 +412,20 @@ public static class AndroidCacheCards
         bool series = (item.Type.Equals("Episode", StringComparison.OrdinalIgnoreCase) || item.Type.Equals("Season", StringComparison.OrdinalIgnoreCase)) && !string.IsNullOrWhiteSpace(item.SeriesId);
         return series ? $"portrait:{item.SeriesId}:{item.SeriesPrimaryImageTag}:{item.Id}:{item.ImageTags.GetValueOrDefault("Primary")}" : $"portrait:{item.Id}:{item.ImageTags.GetValueOrDefault("Primary")}";
     }
+    internal static bool HasLandscape(EmbyItem item)=>MediaArtworkPolicy.GetLandscapeCandidates(item).Any(c=>c.ImageType is "Thumb" or "Backdrop"&&!string.IsNullOrWhiteSpace(c.ItemId)&&!string.IsNullOrWhiteSpace(c.ImageTag));
     static IReadOnlyList<MediaArtworkCandidate> Landscape(EmbyItem item, object page)
     {
-        var candidates = ResumeArtwork.Expand(item, id => (IEnumerable<EmbyItem>)Access.Call(page, "FindCachedItems", id)!);
+        var candidates=ResumeArtwork.Expand(item,_=>Array.Empty<EmbyItem>()).ToList();
+        var session=Access.Get<EmbySession?>(page,"_session");var snapshot=(LocalSearchIndexSnapshot?)Access.Call(page,"get__localSearchIndex");
+        if(session==null||snapshot==null||snapshot.ServerId!=session.ServerId||snapshot.UserId!=session.UserId)return candidates;
+        // Supplement missing slots from this account's current local catalogue.
+        // Never borrow a sibling episode, another show's art, or a portrait.
+        string target=item.Type is "Episode" or "Season"?item.SeriesId??"":item.Id;
+        string type=item.Type is "Episode" or "Season"?"Series":item.Type;
+        if(target.Length==0)return candidates;
+        foreach(var known in snapshot.Entries.Select(e=>e.Item).Where(i=>i.Id.Equals(target,StringComparison.OrdinalIgnoreCase)&&i.Type.Equals(type,StringComparison.OrdinalIgnoreCase)).Take(1))
+            foreach(var candidate in MediaArtworkPolicy.GetLandscapeCandidates(known).Where(c=>c.ItemId.Equals(target,StringComparison.OrdinalIgnoreCase)&&c.ImageType is "Thumb" or "Backdrop"&&!string.IsNullOrWhiteSpace(c.ImageTag)).OrderBy(c=>c.ImageType=="Thumb"?0:1))
+                if(!candidates.Any(c=>c.ItemId.Equals(candidate.ItemId,StringComparison.OrdinalIgnoreCase)&&c.ImageType==candidate.ImageType))candidates.Add(candidate);
         return candidates.Where(c => c.ImageType is "Thumb" or "Backdrop").ToArray();
     }
     internal static async Task<BitmapImage?> CachedDetailPoster(object page,EmbyItem item,CancellationToken token)
@@ -430,8 +441,24 @@ public static class AndroidCacheCards
         }
         return null;
     }
-    internal static Task<BitmapImage?> CachedDetailBackground(object page,EmbyItem item,CancellationToken token)
-        =>BitmapCore(page,item,"Backdrop",1280,token,item.Id,item.BackdropImageTags.FirstOrDefault(),PosterFetchPriority.Interactive,PosterCacheRetention.Detail,null,null,false,true);
+    internal static async Task<BitmapImage?> CachedHomeLandscape(object page,EmbyItem item,CancellationToken token)
+    {
+        foreach(var candidate in Landscape(item,page)){
+            var image=await BitmapCore(page,item,candidate.ImageType,1280,token,candidate.ItemId,candidate.ImageTag,PosterFetchPriority.Visible,PosterCacheRetention.Detail,null,null,false,true);
+            if(image is {PixelWidth:>0,PixelHeight:>0}&&ResumeArtwork.IsLandscape(image.PixelWidth,image.PixelHeight))return image;
+        }
+        return null;
+    }
+    internal static IReadOnlyList<MediaArtworkCandidate> DetailBackgroundCandidates(object page,EmbyItem item)
+        =>Landscape(item,page).Where(c=>!string.IsNullOrWhiteSpace(c.ItemId)&&!string.IsNullOrWhiteSpace(c.ImageTag)).OrderBy(c=>c.ImageType=="Backdrop"?0:1).ToArray();
+    internal static async Task<BitmapImage?> CachedDetailBackground(object page,EmbyItem item,CancellationToken token)
+    {
+        foreach(var candidate in DetailBackgroundCandidates(page,item)){
+            var image=await BitmapCore(page,item,candidate.ImageType,1280,token,candidate.ItemId,candidate.ImageTag,PosterFetchPriority.Interactive,PosterCacheRetention.Detail,null,null,false,true);
+            if(image is {PixelWidth:>0,PixelHeight:>0}&&ResumeArtwork.IsLandscape(image.PixelWidth,image.PixelHeight))return image;
+        }
+        return null;
+    }
     public static Task<BitmapImage?> Bitmap(object page, EmbyItem item, string imageType, int width, CancellationToken token,
         string? imageItemId, string? imageTag, PosterFetchPriority priority, PosterCacheRetention retention,
         Func<bool>? isStillNeeded, Func<PosterFetchPriority>? currentPriority)
@@ -461,6 +488,9 @@ public static class AndroidCacheCards
         {
             bool Needed() => (!card||!DesktopScroll.IsAnimating(page)) && (isStillNeeded?.Invoke() ?? true) && !token.IsCancellationRequested;
             if (client==null||!Needed() || AndroidCacheRuntime.IsPaused || !ReferenceEquals(session, Access.Get<EmbySession?>(page, "_session"))) return null;
+            // Home's two large slots get the initial network turns. Cache hits bypass this gate.
+            if(card)await HomePresentation.WaitForHero(page,token);
+            if(!Needed())return null;
             local = await cache.GetOrDownloadAsync(request, client.BuildImageUri(id, tag, width, imageType), token,
                 priority, false, Needed, currentPriority);
         }

@@ -24,6 +24,19 @@ internal static class DesktopCardSurface
             if(pair.Key.IsLoaded&&ReferenceEquals(pair.Value.Owner,page)&&pair.Value.Deferred)
                 pair.Value.Update(DesktopTheme.Options,ReferenceSurfaces.Palette(pair.Key));
     }
+    internal static void RefreshUserState(object page)
+    {
+        foreach(var pair in Surfaces){
+            if(!ReferenceEquals(pair.Value.Owner,page))continue;
+            try{
+                if(pair.Key.IsLoaded)pair.Value.Update(DesktopTheme.Options,ReferenceSurfaces.Palette(pair.Key));
+            }catch(ObjectDisposedException){
+                // WinUI can release a recycled native element before its managed
+                // weak-table entry is collected. It no longer needs repainting.
+                Surfaces.Remove(pair.Key);
+            }
+        }
+    }
     internal static bool Owns(DependencyObject node)
     {for(DependencyObject? current=node;current!=null;current=VisualTreeHelper.GetParent(current))if(current is Grid grid&&Surfaces.TryGetValue(grid,out _))return true;return false;}
     sealed class Surface
@@ -35,6 +48,7 @@ internal static class DesktopCardSurface
         readonly Border rounded=new(),track=new(){Height=6,VerticalAlignment=VerticalAlignment.Bottom},fill=new(){Height=6,HorizontalAlignment=HorizontalAlignment.Left};
         readonly FontIcon missing=new(){Glyph="\uEB9F",FontSize=28};
         readonly TextBlock title=new(){FontSize=14,TextTrimming=TextTrimming.CharacterEllipsis},subtitle=new(){FontSize=12,TextTrimming=TextTrimming.CharacterEllipsis};
+        readonly Border stateBadge=new(){Name="PosterUserState",HorizontalAlignment=HorizontalAlignment.Left,VerticalAlignment=VerticalAlignment.Top,Margin=new(10),Padding=new(6,4,6,4),CornerRadius=new(7),IsHitTestVisible=false};
         readonly Border rating=new(){HorizontalAlignment=HorizontalAlignment.Right,VerticalAlignment=VerticalAlignment.Bottom,Margin=new(10,10,10,12),Padding=new(7,4,7,4),CornerRadius=new(7)},count=new(){HorizontalAlignment=HorizontalAlignment.Right,VerticalAlignment=VerticalAlignment.Top,Margin=new(10),Padding=new(8,4,8,4),CornerRadius=new(7)};
         readonly Microsoft.UI.Composition.CompositionRoundedRectangleGeometry geometry;
         double radius,percentage;
@@ -79,13 +93,14 @@ internal static class DesktopCardSurface
             root.Clip=null;root.Height=double.NaN;root.MinHeight=0;root.MaxHeight=double.PositiveInfinity;root.BorderThickness=new Thickness(0);root.Background=null;
             picture.Children.Add(image);picture.Children.Add(shade);picture.Children.Add(track);track.Child=fill;rounded.Child=picture;frame.Children.Add(rounded);frame.Children.Add(missing);root.Children.Add(frame);
             picture.Children.Add(rating);picture.Children.Add(count);
+            picture.Children.Add(stateBadge);
             play.Content=new Microsoft.UI.Xaml.Shapes.Polygon{Width=16,Height=18,Margin=new(3,0,0,0),Stretch=Stretch.Uniform,Fill=DesktopVisuals.Brush(0xFFFFFFFF),Points=new PointCollection{new(0,0),new(0,18),new(15,9)}};
             more.Content=new FontIcon{Glyph="\uE712",FontSize=22,Foreground=DesktopVisuals.Brush(0xFFFFFFFF)};
             watched.Content=new Border{Width=18,Height=18,CornerRadius=new(9),BorderThickness=new(2),BorderBrush=DesktopVisuals.Brush(0xFFFFFFFF),Child=new FontIcon{Glyph="\uE73E",FontSize=12,Foreground=DesktopVisuals.Brush(0xFFFFFFFF)}};
             footer.Children.Add(watched);if(favorite!=null){Grid.SetRow(favorite,0);Grid.SetColumn(favorite,0);footer.Children.Add(favorite);}footer.Children.Add(more);
             frame.Children.Add(play);frame.Children.Add(footer);
             play.Click+=async (_,_)=>{if(Owner==null||root.DataContext==null)return;play.IsEnabled=false;try{await DesktopCardActions.Play(Owner,root.DataContext);}finally{play.IsEnabled=true;}};
-            more.Click+=(_,_)=>{if(Owner!=null&&root.DataContext!=null)DesktopCardActions.Menu(Owner,root,root.DataContext).ShowAt(more);};
+            more.Click+=(_,_)=>{if(Owner!=null&&root.DataContext!=null)DesktopCardActions.MoreMenu(Owner,root.DataContext).ShowAt(more);};
             watched.Click+=async(_,_)=>{if(Owner==null||root.DataContext==null)return;watched.IsEnabled=false;try{await DesktopCardActions.Watched(Owner,root.DataContext);}finally{watched.IsEnabled=true;}};
             foreach(var button in new[]{play,more,watched,favorite}.Where(b=>b!=null))button!.Tapped+=(_,e)=>e.Handled=true;
             root.PointerEntered+=(_,e)=>{if(e.Pointer.PointerDeviceType==Microsoft.UI.Input.PointerDeviceType.Mouse)SetHovered(true);};
@@ -139,7 +154,7 @@ internal static class DesktopCardSurface
             var fit=CardFit.Resolve(width,height,landscape?16:2,landscape?9:3);
             rounded.Width=fit.Width;rounded.Height=fit.Height;geometry.Size=new((float)fit.Width,(float)fit.Height);geometry.CornerRadius=new((float)Math.Min(radius,Math.Min(fit.Width,fit.Height)/2));
             picture.Width=image.Width=fit.Width;picture.Height=image.Height=fit.Height;
-            footer.Spacing=landscape?6:Math.Clamp((fit.Width*.66-96)/2,4,24);
+            footer.Spacing=12;
             footer.Margin=new(inset+10,inset+10,inset+10,inset+9);
             fill.Width=fit.Width*percentage/100;
         }
@@ -170,6 +185,15 @@ internal static class DesktopCardSurface
                 foreach(var icon in UiElements.Descendants(button).OfType<IconElement>())icon.Foreground=DesktopVisuals.Brush(0xFFFFFFFF);
                 foreach(var text in UiElements.Descendants(button).OfType<TextBlock>())text.Foreground=DesktopVisuals.Brush(0xFFFFFFFF);
             }
+            bool isPlayed=item.UserData?.Played==true,isFavorite=item.UserData?.IsFavorite==true;
+            stateBadge.Visibility=isPlayed||isFavorite?Visibility.Visible:Visibility.Collapsed;
+            stateBadge.Background=DesktopVisuals.Brush(palette.Selection);
+            if(stateBadge.Child is not TextBlock stateText){stateText=new TextBlock{FontSize=11,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold};stateBadge.Child=stateText;}
+            stateText.Text=(isPlayed?"✓":"")+(isPlayed&&isFavorite?" ":"")+(isFavorite?"♥":"");stateText.Foreground=DesktopVisuals.Brush(palette.Text);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(stateBadge,(isPlayed?"已观看 ":"")+(isFavorite?"已收藏":""));
+            watched.Background=DesktopVisuals.Brush(isPlayed?0xFF367555:0xCC101820);
+            if(watched.Content is Border check){check.Background=DesktopVisuals.Brush(isPlayed?0xFF367555:0);check.BorderBrush=DesktopVisuals.Brush(0xFFFFFFFF);}
+            if(favorite!=null){favorite.Background=DesktopVisuals.Brush(isFavorite?0xFF8A5752:0xCC101820);foreach(var icon in UiElements.Descendants(favorite).OfType<FontIcon>())icon.Glyph=isFavorite?"\uEB52":"\uEB51";}
             styled=true;styledOptions=options;styledPalette=palette;
             rating.VerticalAlignment=VerticalAlignment.Bottom;rating.Margin=new(10,10,10,12);
             image.Stretch=Stretch.UniformToFill;
@@ -188,9 +212,10 @@ internal static class DesktopCardSurface
             track.Background=DesktopVisuals.Brush(0xEE101018);track.BorderBrush=DesktopVisuals.Brush(0);track.BorderThickness=new Thickness(0);fill.Background=DesktopVisuals.Brush(DesktopReadability.Progress(palette));
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(frame,$"{title.Text}，已观看 {percentage:0}%");
             rating.Visibility=!landscape&&item.CommunityRating is >=0 and <=10?Visibility.Visible:Visibility.Collapsed;
-            if(themeChanged)rating.Background=DesktopVisuals.Brush(0xD91A2028);
+            if(themeChanged)rating.Background=DesktopVisuals.Brush(palette.Selection);
             if(rating.Child is not TextBlock ratingText){ratingText=new TextBlock{Foreground=DesktopVisuals.Brush(0xFFFFFFFF),FontSize=11,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold};rating.Child=ratingText;}
-            ratingText.Text=item.CommunityRating?.ToString("0.0")??"";
+            ratingText.Text="★ "+(item.CommunityRating?.ToString("0.0")??"");ratingText.Foreground=DesktopVisuals.Brush(palette.Text);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(rating,"Emby 社区评分 "+ratingText.Text+"，满分 10 分");
             bool hasCount=!landscape&&card.GetType().GetProperty("HasEpisodeCount")?.GetValue(card) is true;
             count.Visibility=hasCount?Visibility.Visible:Visibility.Collapsed;
             if(themeChanged)count.Background=DesktopVisuals.Brush(0xD91A2028);

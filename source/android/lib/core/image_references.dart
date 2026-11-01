@@ -6,14 +6,14 @@ import 'package:flutter/foundation.dart';
 import 'accounts.dart';
 import 'models.dart';
 import 'image_identity.dart';
-import 'log_storage.dart';
+import 'image_reference_storage.dart';
 
 /// Durable ownership, independent of display-cache LRU and visibility switches.
 /// Only opaque hashes, item IDs and ancestor IDs are stored, never credentials.
 class ImageReferences {
   ImageReferences({File? file})
-    : storage = file == null ? null : LogFileStorage(file, limit: 1000000000);
-  final LogFileStorage? storage;
+    : storage = file == null ? null : ImageReferenceStorage(file);
+  final ImageReferenceStorage? storage;
   final _owners = <String, Json>{};
   final _counts = <String, int>{};
   final _pins = <String, int>{};
@@ -30,7 +30,8 @@ class ImageReferences {
 
   Future<void> load() async {
     try {
-      for (final line in await storage?.read() ?? <String>[]) {
+      await for (final line
+          in storage?.readRows() ?? const Stream<String>.empty()) {
         final row = object(jsonDecode(line));
         if (row['pending'] is List) {
           _pending
@@ -244,14 +245,15 @@ class ImageReferences {
           ...changes.map(jsonEncode),
           jsonEncode({'pending': _pending.toList()}),
         ];
+        List<String> snapshot() => [
+          ..._owners.values.map(jsonEncode),
+          jsonEncode({'pending': _pending.toList()}),
+        ];
         if (storage!.rows > _owners.length * 3 + 1000 ||
             !await storage!.file.exists()) {
-          await storage!.replace([
-            ..._owners.values.map(jsonEncode),
-            rows.last,
-          ]);
+          await storage!.replace(snapshot());
         } else {
-          await storage!.append(rows, () => []);
+          await storage!.append(rows, snapshot);
         }
       }
       for (final row in changes) {

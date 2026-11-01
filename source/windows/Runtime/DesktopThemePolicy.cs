@@ -19,7 +19,11 @@ public sealed record DesktopThemeOptions
     public int PauseKey { get; init; } = 32;
     public int FullScreenKey { get; init; } = 70;
     public int MuteKey { get; init; } = 77;
-    public DesktopThemeOptions Validate() => this with
+    public int VolumeUpKey { get; init; } = 38;
+    public int VolumeDownKey { get; init; } = 40;
+    public int ShortcutVersion { get; init; }
+    public int CustomShortcutMask { get; init; }
+    public DesktopThemeOptions Validate() => ShortcutBinding.Normalize(this with
     {
         Mode = Mode is >= 0 and <= 2 ? Mode : 1,
         Preset = 0, // Legacy desktop presets migrate to the Android palette.
@@ -27,12 +31,9 @@ public sealed record DesktopThemeOptions
         Density = 1,
         Corners = Corners is >= 0 and <= 2 ? Corners : 0,
         SeekStepSeconds = SeekStepSeconds is 5 or 10 or 30 ? SeekStepSeconds : 5,
-        PauseKey = PauseKey is 32 or 75 or 80 ? PauseKey : 32,
-        FullScreenKey = FullScreenKey is 70 or 122 or 71 ? FullScreenKey : 70,
-        MuteKey = MuteKey is 77 or 86 ? MuteKey : 77,
-    };
+    });
     public double Radius => Corners switch { 1 => 8, 2 => 0, _ => 16 };
-    public double PosterWidth => 176;
+    public double PosterWidth => 200;
 }
 
 public readonly record struct DesktopThemeGrid(double ItemWidth, double ItemHeight, double CardWidth, double ArtworkHeight, int Columns)
@@ -45,7 +46,8 @@ public readonly record struct DesktopThemeGrid(double ItemWidth, double ItemHeig
         double scale = double.IsFinite(rasterizationScale) ? Math.Clamp(rasterizationScale, 1, 8) : 1;
         double item = Math.Max(1, Math.Floor((width / columns - 1) * scale) / scale);
         double card = Math.Max(1, item - 14), artwork = card * 1.5;
-        return new(item, artwork + 84, card, artwork, columns);
+        // Keep the accepted enlarged artwork aperture; remove only inter-item gutters.
+        return new(Math.Max(card,item-6), artwork + 78, card, artwork, columns);
     }
 }
 

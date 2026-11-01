@@ -24,6 +24,8 @@ import 'shadow_enhancement.dart';
 import 'audio_balance.dart';
 import 'opening_metadata.dart';
 import 'subtitle_position_memory.dart';
+import 'device.dart';
+import 'device_identity.dart';
 export 'observation.dart' show SpeedChangeSource, SeekSource, PauseSource;
 
 class PlaybackSession extends ChangeNotifier {
@@ -39,6 +41,18 @@ class PlaybackSession extends ChangeNotifier {
   final MediaItem item;
   final String? sourceId;
   final PlayerBackend backend;
+  DeviceIdentity deviceIdentity = const DeviceIdentity();
+  bool _deviceIdentityRequested = false;
+  Future<void> _readDeviceIdentity() async {
+    if (_deviceIdentityRequested) return;
+    _deviceIdentityRequested = true;
+    final identity = await Device.identity();
+    if (closed) return;
+    deviceIdentity = identity;
+    store.log.add(LogArea.player, identity.diagnostic);
+    notifyListeners();
+  }
+
   SubtitleViewport _subtitleViewport = SubtitleViewport.tablet;
   bool _subtitleViewportConfigured = false;
   SubtitlePositionTarget? _subtitlePositionTarget;
@@ -792,6 +806,7 @@ class PlaybackSession extends ChangeNotifier {
     OpeningMetadata? metadata,
   }) async {
     _sessionClock.start();
+    unawaited(_readDeviceIdentity());
     if (!_subtitleViewportConfigured) configureSubtitleViewport(phone: false);
     final watch = Stopwatch()..start();
     var phase = '读取最新进度与媒体资料';

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Buffers;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -176,8 +177,13 @@ public static class VideoCache
         {
             int count = (int)Math.Min(requested, (ulong)VideoCacheStore.BlockBytes);
             if (count == 0) return 0;
-            byte[] bytes = new byte[count]; int n = From(cookie).Reader.Read(bytes, 0, count);
-            Marshal.Copy(bytes, 0, buffer, n); return n;
+            byte[] bytes = ArrayPool<byte>.Shared.Rent(count);
+            try
+            {
+                int n = From(cookie).Reader.Read(bytes, 0, count);
+                Marshal.Copy(bytes, 0, buffer, n); return n;
+            }
+            finally { ArrayPool<byte>.Shared.Return(bytes); }
         }
         catch (OperationCanceledException) { return -1; }
         catch (Exception e) { Report(e); return -1; }

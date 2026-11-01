@@ -27,7 +27,7 @@ NVAPI能力先查询V3，仅NVAPI_INCOMPATIBLE_STRUCT_VERSION才重试V2；V2/V3
 
 原生输入/精确EL配对、源重建shader和动态metadata打包数学保持。杜比格式/回退提示经MPV OSD绘入画面，避免WinUI提示又造成reason1；控件显隐/前后台的临时拒绝不反复消耗通知，真实原生输出决定变化可通过既有事件通知，总数每媒体有界6次，无新轮询。
 
-构建工作目录由 `YINGYU_NATIVE_BUILD_ROOT` 指定，源码位于 `.tools/native-dolby-0310/source`；只读依赖由 `YINGYU_NATIVE_DEPS` 指定。`evidence/native-compile-inputs.json` 记录实际编译前的 40 个桥接/上游输入及 961 个 MPV 输入，完成后复核。只编译/静态核对不等于实机测试；版本的实机使用结论以对应 Release 记录为准。
+构建工作目录由 `YINGYU_NATIVE_BUILD_ROOT` 指定，源码位于 `.tools/native-dolby-0310/source`；只读依赖由 `YINGYU_NATIVE_DEPS` 指定。`evidence/native-compile-inputs.json` 记录实际编译前的 40 个桥接/上游输入及 961 个 MPV 输入，完成后复核。只编译/静态核对不等于实机测试；版本的设备使用结论以对应 Release 记录为准。
 
 以下为继承架构说明：
 

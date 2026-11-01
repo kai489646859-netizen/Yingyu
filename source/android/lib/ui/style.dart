@@ -6,6 +6,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../core/appearance.dart';
 import 'poster_press.dart';
+import 'navigation_scrub.dart';
 import 'device_layout.dart';
 import 'visual_effects.dart';
 export 'visual_effects.dart';
@@ -448,79 +449,55 @@ class GlassNavigation extends StatelessWidget {
                       ),
                     ),
                   );
-                  return Stack(
-                    children: [
-                      if (progress != null)
-                        Positioned(
-                          left: 0,
-                          top: 0,
-                          bottom: 0,
-                          width: width,
-                          child: ValueListenableBuilder<double>(
-                            valueListenable: progress!,
-                            child: indicator,
-                            builder: (context, page, child) =>
-                                Transform.translate(
-                                  offset: Offset(page.clamp(0, 3) * width, 0),
-                                  child: child,
-                                ),
-                          ),
-                        )
-                      else
-                        AnimatedPositioned(
-                          duration: reduce
-                              ? Duration.zero
-                              : const Duration(milliseconds: 340),
-                          curve: Curves.easeInOutCubic,
-                          left: index * width,
-                          top: 0,
-                          bottom: 0,
-                          width: width,
-                          child: indicator,
-                        ),
-                      Row(
-                        children: [
-                          for (var i = 0; i < 4; i++)
-                            Expanded(
-                              child: Semantics(
-                                selected: index == i,
-                                button: true,
-                                child: CupertinoButton(
-                                  key: ValueKey('navigation-tab-$i'),
-                                  padding: EdgeInsets.zero,
-                                  onPressed: () => onChanged(i),
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(
-                                        icons[i],
-                                        size: phoneValue(context, 21, 26),
+                  return NavigationScrub(
+                    index: index,
+                    progress: progress,
+                    itemWidth: width,
+                    reducedMotion: reduce,
+                    onChanged: onChanged,
+                    indicator: indicator,
+                    child: Row(
+                      children: [
+                        for (var i = 0; i < 4; i++)
+                          Expanded(
+                            child: Semantics(
+                              selected: index == i,
+                              button: true,
+                              child: CupertinoButton(
+                                key: ValueKey('navigation-tab-$i'),
+                                padding: EdgeInsets.zero,
+                                onPressed: () => onChanged(i),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      icons[i],
+                                      size: phoneValue(context, 21, 26),
+                                      color: index == i
+                                          ? accent
+                                          : secondaryColor(context),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      labels[i],
+                                      textScaler: TextScaler.noScaling,
+                                      style: TextStyle(
+                                        fontSize: phoneValue(context, 11, 13),
+                                        fontWeight: index == i
+                                            ? FontWeight.w700
+                                            : FontWeight.w500,
                                         color: index == i
                                             ? accent
                                             : secondaryColor(context),
                                       ),
-                                      const SizedBox(height: 3),
-                                      Text(
-                                        labels[i],
-                                        textScaler: TextScaler.noScaling,
-                                        style: TextStyle(
-                                          fontSize: phoneValue(context, 11, 13),
-                                          fontWeight: index == i
-                                              ? FontWeight.w700
-                                              : FontWeight.w500,
-                                          color: index == i
-                                              ? accent
-                                              : secondaryColor(context),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ),
-                        ],
-                      ),
-                    ],
+                          ),
+                      ],
+                    ),
                   );
                 },
               ),

@@ -5,8 +5,11 @@ Json object(dynamic value) =>
     value is Map ? Map<String, dynamic>.from(value) : {};
 List<Json> objects(dynamic value) =>
     value is List ? value.map(object).toList() : [];
-int integer(dynamic value) =>
-    value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+int integer(dynamic value) => value is num
+    ? value.isFinite
+          ? value.toInt()
+          : 0
+    : int.tryParse('$value') ?? 0;
 Duration fromTicks(dynamic value) =>
     Duration(microseconds: integer(value) ~/ 10);
 int ticks(Duration value) => value.inMicroseconds * 10;
@@ -55,7 +58,9 @@ class MediaItem {
   String get overview =>
       (data['Overview']?.toString() ?? '').replaceAll(RegExp('<[^>]+>'), '');
   String get year => data['ProductionYear']?.toString() ?? '';
-  String get rating => data['CommunityRating'] is num
+  String get rating =>
+      data['CommunityRating'] is num &&
+          (data['CommunityRating'] as num).isFinite
       ? (data['CommunityRating'] as num).toStringAsFixed(1)
       : '';
   String get imageTag => object(data['ImageTags'])['Primary']?.toString() ?? '';

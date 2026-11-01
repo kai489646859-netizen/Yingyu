@@ -6,6 +6,7 @@ import 'byte_cache.dart';
 import 'cached_reader.dart';
 import 'disc_cache.dart';
 import 'disc_stream.dart';
+import 'network_route.dart';
 import 'disc_transport.dart' show ExactHttpUri, discByteRange;
 
 /// Opt-in raw-file caching around the original authenticated local transport.
@@ -56,6 +57,7 @@ class CachedPlaybackTransport {
     DiscReadCancellation cancellation,
   ) async {
     if (failure != null) throw AppFailure(failure!);
+    final revision = PlaybackNetworkRoutes.shared.revision;
     final client = HttpClient()
       ..autoUncompress = false
       ..connectionTimeout = const Duration(seconds: 30);
@@ -99,7 +101,7 @@ class CachedPlaybackTransport {
               ? location
               : location.startsWith('//')
               ? '${uri.scheme}:$location'
-              : uri.parsed.resolve(location).toString();
+              : uri.resolve(location).toString();
           await response.listen((_) {}).cancel();
           continue;
         }
@@ -157,8 +159,13 @@ class CachedPlaybackTransport {
         return DiscStreamSource(
           start: start,
           total: total,
+          networkRevision: revision,
           bytes: response,
           validator: validator,
+          canResume: validator?.startsWith('etag:') == true,
+          identity: validator?.startsWith('etag:') == true
+              ? DiscStreamIdentity(target, validator!, total)
+              : null,
           close: (_) => close(),
         );
       }

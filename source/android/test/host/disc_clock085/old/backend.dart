@@ -3,6 +3,7 @@
 import 'dart:async';
 import 'package:yingyu/playback/latency_probe.dart';
 import 'package:yingyu/playback/audio_refresh.dart';
+import 'package:yingyu/playback/network_recovery.dart';
 import 'lib/playback/runtime_health.dart';
 import 'lib/playback/position_guard.dart';
 import 'lib/playback/hardware_fallback.dart';

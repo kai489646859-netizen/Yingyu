@@ -25,8 +25,9 @@ internal static class DesktopLogin
         readonly ScrollViewer scroll=new(){VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled,HorizontalScrollMode=ScrollMode.Disabled,Padding=new Thickness(32)};
         readonly StackPanel brand=new(){Spacing=18,VerticalAlignment=VerticalAlignment.Center};
         readonly Border form=new(){Padding=new Thickness(28),CornerRadius=new(24),BorderThickness=new(1)};
-        readonly Border mark=new(){Width=64,Height=64,CornerRadius=new(20),HorizontalAlignment=HorizontalAlignment.Left};
-        readonly TextBlock name=new(){Text="映屿",FontSize=42,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold};
+        readonly Border mark=new(){Width=64,Height=64,CornerRadius=new(20),HorizontalAlignment=HorizontalAlignment.Center};
+        readonly StackPanel identity=new(){Spacing=18,HorizontalAlignment=HorizontalAlignment.Left};
+        readonly TextBlock name=new(){Name="LoginBrandName",HorizontalAlignment=HorizontalAlignment.Center,Text="映屿",FontSize=42,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold};
         readonly TextBlock intro=new(){Text="连接你的媒体库",FontSize=26,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold};
         readonly TextBlock description=new(){Text="选择已保存的账号，或添加服务器。\n从这里，继续你的观影时光。",FontSize=15,LineHeight=25,TextWrapping=TextWrapping.Wrap};
         readonly TextBlock heading=new(){Text="欢迎回来",FontSize=26,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold};
@@ -49,7 +50,7 @@ internal static class DesktopLogin
             var detachSaved=Removal(login,saved);var detachAdd=Removal(login,add);var detachStatus=Removal(login,status);
             if(detachSaved==null||detachAdd==null||detachStatus==null)return;
             detachStatus();detachAdd();detachSaved();
-            mark.Child=icon;brand.Children.Add(mark);brand.Children.Add(name);brand.Children.Add(intro);brand.Children.Add(description);
+            mark.Child=icon;identity.Children.Add(mark);identity.Children.Add(name);brand.Children.Add(identity);brand.Children.Add(intro);brand.Children.Add(description);
             var fields=new StackPanel{Spacing=18};fields.Children.Add(heading);fields.Children.Add(hint);
             fields.Children.Add(status);fields.Children.Add(saved);fields.Children.Add(add);fields.Children.Add(footer);form.Child=fields;
             add.Header="添加其他账号";add.HorizontalAlignment=HorizontalAlignment.Stretch;
@@ -126,6 +127,8 @@ internal static class DesktopLogin
                 uint foreground=primary?(Brightness(p.Accent)>160?0xFF202127:0xFFFFFFFF):p.Text;
                 button.MinHeight=44;button.CornerRadius=new(12);button.Padding=new Thickness(18,10,18,10);
                 button.Background=DesktopVisuals.Brush(primary?p.Accent:p.Hover);button.Foreground=DesktopVisuals.Brush(foreground);
+                if(button.Content is TextBlock direct)direct.Foreground=DesktopVisuals.Brush(foreground);
+                foreach(var text in UiElements.Descendants(button).OfType<TextBlock>())text.Foreground=DesktopVisuals.Brush(foreground);
                 foreach(var suffix in new[]{"","PointerOver","Pressed","Disabled"})button.Resources["ButtonForeground"+suffix]=DesktopVisuals.Brush(foreground);
                 button.Resources["ButtonBackgroundPointerOver"]=DesktopVisuals.Brush(primary?p.Accent:p.Selection);
                 button.Resources["ButtonBackgroundPressed"]=DesktopVisuals.Brush(primary?p.Accent:p.Selection);

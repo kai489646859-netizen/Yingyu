@@ -16,8 +16,8 @@ internal static partial class ReferenceAppearance
     static readonly ConditionalWeakTable<FrameworkElement, State> States = new();
     internal static void Apply(FrameworkElement page) => States.GetValue(page, p => new State(p)).Apply();
     internal static void FocusSearch(FrameworkElement page){var state=States.GetValue(page,p=>new State(p));state.ShowSearch();}
-    // Retain the backdrop loader for later use; current design uses its existing wash.
-    internal static bool WantsDetailBackground(FrameworkElement page)=>false;
+    // Re-enable the retained account/tag scoped backdrop cache for the authorized detail design.
+    internal static bool WantsDetailBackground(FrameworkElement page)=>true;
     internal static bool UsesInlineSearch(FrameworkElement page)=>States.TryGetValue(page,out var state)&&state.InlineSearch();
     internal static void Artwork(FrameworkElement page, Grid card)
     {
@@ -120,7 +120,7 @@ internal static partial class ReferenceAppearance
                 var bar=shell.Children.OfType<Border>().First(b=>b.Name=="DesktopAccountToolbar");
                 bool fullSearch=searchExpanded&&!detail;
                 bar.Visibility=fullSearch||settings?Visibility.Collapsed:Visibility.Visible;
-                if(shell.RowDefinitions.Count>0)shell.RowDefinitions[0].Height=fullSearch?new GridLength(0):GridLength.Auto;
+                if(shell.RowDefinitions.Count>0)shell.RowDefinitions[0].Height=fullSearch||detail?new GridLength(0):GridLength.Auto;
                 if(Find<Button>("DetailBackButton") is {} exit)
                 {
                     if(!toolbar.Children.Contains(exit))Move(shell,toolbar,exit);
@@ -164,6 +164,9 @@ internal static partial class ReferenceAppearance
                 capture.Source=wallpaper.Source=null;
                 DesktopRefinement.Apply(page,Palette,reference,detail,settings);
                 PlaceInlineSearch();
+                HomePresentation.Apply(page,Palette);
+                if(settings)SettingsPresentation.Apply(page);
+                DetailPresentation.Apply(page,Palette,detail&&!settings&&Find<Grid>("CollectionView")?.Visibility!=Visibility.Visible);
             }
             finally { applying = false; }
         }
@@ -183,7 +186,6 @@ internal static partial class ReferenceAppearance
             if (Find<Grid>("DetailView") is not { } view || Find<Grid>("DetailHeroLayout") is not { } hero || Find<StackPanel>("DetailHeroText") is not { } text ) return;
             foreach (var rectangle in UiElements.Descendants(view).OfType<Microsoft.UI.Xaml.Shapes.Rectangle>().Where(r => r.Fill is LinearGradientBrush)) rectangle.Opacity = 0;
             foreach (var name in new[] { "DetailBackdropImage", "DetailAmbientImage" }) if (Find<Image>(name) is { } image) image.Opacity = 0;
-            if (Find<Grid>("DetailPageLayout") is { } layout) layout.Padding = new(inset, 15, inset, 46);
             bool compact = page.ActualWidth < 760; double width = compact ? 184 : Math.Clamp(page.ActualWidth * .19, 220, 286);
             hero.Margin = new(0); hero.MinHeight = width * 1.5; hero.ColumnSpacing = compact ? 20 : 25;
             while (hero.ColumnDefinitions.Count < 2) hero.ColumnDefinitions.Add(new());
@@ -208,10 +210,11 @@ internal static partial class ReferenceAppearance
                 if(Find<Button>("DetailOverviewToggle") is {} toggle)
                 {
                     if(!text.Children.Contains(toggle))Move(view,text,toggle);
-                    if(text.Children.Contains(toggle))
+                    if(text.Children.Contains(toggle)&&text.Children.IndexOf(toggle)!=text.Children.IndexOf(synopsis)+1)
                     {
-                        text.Children.Remove(toggle);text.Children.Insert(text.Children.IndexOf(synopsis)+1,toggle);anchor=toggle;
+                        text.Children.Remove(toggle);text.Children.Insert(text.Children.IndexOf(synopsis)+1,toggle);
                     }
+                    if(text.Children.Contains(toggle))anchor=toggle;
                 }
                 int at = text.Children.IndexOf(anchor); int current = text.Children.IndexOf(actions);
                 if (at >= 0 && current != at+1) { text.Children.Remove(actions);text.Children.Insert(text.Children.IndexOf(anchor)+1,actions); }

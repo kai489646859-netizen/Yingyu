@@ -8,6 +8,7 @@ import 'package:yingyu/core/models.dart';
 import 'package:yingyu/core/store.dart';
 import 'package:yingyu/playback/backend.dart';
 import 'package:yingyu/playback/device.dart';
+import 'package:yingyu/playback/feedback.dart';
 import 'package:yingyu/playback/page.dart';
 import 'package:yingyu/playback/session.dart';
 import 'core_test.dart' show response, playbackData, syntheticSession;
@@ -87,6 +88,48 @@ void main() {
     await store.log.flush();
     store.log.dispose();
     store.dispose();
+  }
+
+  for (final left in [true, false]) {
+    for (final drift in [false, true]) {
+      testWidgets(
+        'level HUD hides on release, controls keep delay left=$left drift=$drift',
+        (tester) async {
+          await mount(tester);
+          try {
+            final gesture = await tester.startGesture(
+              Offset(left ? 240 : 800, 200),
+            );
+            await gesture.moveBy(
+              drift ? const Offset(20, -12) : const Offset(0, -20),
+            );
+            await gesture.moveBy(
+              drift ? const Offset(12, -18) : const Offset(0, -20),
+            );
+            await tester.pump(const Duration(milliseconds: 200));
+            expect(find.byType(PlaybackLevelFeedback), findsOneWidget);
+            await gesture.up();
+            await tester.pump();
+            await tester.pump(const Duration(milliseconds: 16));
+            expect(find.byType(PlaybackLevelFeedback), findsNothing);
+            expect(
+              find.byKey(const Key('playback-timeline')).hitTestable(),
+              findsOneWidget,
+            );
+            expect(backend.seeks, isEmpty);
+            expect(levelWrites, contains(left ? 'brightness' : 'volume'));
+            await tester.pump(const Duration(seconds: 1));
+            expect(find.byType(PlaybackLevelFeedback), findsNothing);
+            expect(
+              find.byKey(const Key('playback-timeline')).hitTestable(),
+              findsOneWidget,
+            );
+          } finally {
+            await finish(tester);
+          }
+        },
+      );
+    }
   }
 
   testWidgets(

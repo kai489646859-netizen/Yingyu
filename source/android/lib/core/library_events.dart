@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:crypto/crypto.dart';
 import 'emby.dart';
 import 'log.dart';
@@ -93,6 +95,10 @@ class LibraryEvents {
   StreamSubscription<dynamic>? _subscription;
   Timer? _retry, _batch;
   Future<void> _writes = Future.value();
+  final _queued = Queue<({Set<String> removed, Set<String> added})>();
+  bool _writing = false;
+  int _queuedIds = 0;
+  static const _batchIds = 20000, _queuedIdLimit = 100000, _batchLimit = 64;
   DateTime? _retryAt, _connectedAt;
   bool _active = false, _disposed = false, _connecting = false;
   bool _requested = false;
@@ -228,10 +234,25 @@ class LibraryEvents {
 
       final removed = ids('ItemsRemoved'), added = ids('ItemsAdded');
       // Preserve arrival order across messages; a removal wins within one batch.
-      _removed.removeAll(added);
-      _added.addAll(added);
-      _added.removeAll(removed);
-      _removed.addAll(removed);
+      final nextRemoved = Set<String>.of(_removed)
+        ..removeAll(added)
+        ..addAll(removed);
+      final nextAdded = Set<String>.of(_added)
+        ..addAll(added)
+        ..removeAll(removed);
+      if (nextRemoved.length + nextAdded.length > _batchIds) {
+        // Keep already accepted changes. Missed notifications after disconnect
+        // require the same manual refresh as an ordinary connection loss.
+        _flush();
+        _overloaded();
+        return;
+      }
+      _removed
+        ..clear()
+        ..addAll(nextRemoved);
+      _added
+        ..clear()
+        ..addAll(nextAdded);
       _batch ??= Timer(coalesce, _flush);
     } catch (_) {
       api.log?.add(LogArea.app, '资源变更通知格式无效，已保留缓存', level: LogLevel.warning);
@@ -245,18 +266,59 @@ class LibraryEvents {
     final removed = Set<String>.of(_removed), added = Set<String>.of(_added);
     _removed.clear();
     _added.clear();
+    // Only adjacent identical waiting batches are redundant. Never fold a
+    // removal followed by a re-add: removing cached rows is a real side effect.
+    if (_queued.isNotEmpty &&
+        setEquals(_queued.last.removed, removed) &&
+        setEquals(_queued.last.added, added)) {
+      return;
+    }
+    final size = removed.length + added.length;
+    if (_queued.length >= _batchLimit || _queuedIds + size > _queuedIdLimit) {
+      _overloaded();
+      return;
+    }
+    _queued.add((removed: removed, added: added));
+    _queuedIds += size;
+    if (_writing) return;
+    _writing = true;
     _writes = _writes.then((_) async {
-      if (!current) return;
       try {
-        await onChanges(removed, added);
-        api.log?.add(
-          LogArea.app,
-          '资源通知本机处理：删除=${removed.length}；新增标记=${added.length}；媒体查询=0',
-        );
-      } catch (_) {
-        api.log?.add(LogArea.app, '资源通知本机保存失败，请刷新重试', level: LogLevel.warning);
+        while (current && _queued.isNotEmpty) {
+          final batch = _queued.removeFirst();
+          _queuedIds -= batch.removed.length + batch.added.length;
+          try {
+            await onChanges(batch.removed, batch.added);
+            api.log?.add(
+              LogArea.app,
+              '资源通知本机处理：删除=${batch.removed.length}；新增标记=${batch.added.length}；媒体查询=0',
+            );
+          } catch (_) {
+            api.log?.add(
+              LogArea.app,
+              '资源通知本机保存失败，请刷新重试',
+              level: LogLevel.warning,
+            );
+          }
+        }
+      } finally {
+        _writing = false;
+        if (!current) {
+          _queued.clear();
+          _queuedIds = 0;
+        }
       }
     });
+  }
+
+  void _overloaded() {
+    if (_channel == null) return;
+    api.log?.add(
+      LogArea.app,
+      '资源通知积压达到上限，已断开通知连接；请手动刷新核对遗漏变更',
+      level: LogLevel.warning,
+    );
+    _lost();
   }
 
   Future<void> get settled => _writes;
@@ -265,5 +327,9 @@ class LibraryEvents {
     api.backgroundWork.removeListener(_workChanged);
     setActive(false);
     _disposed = true;
+    _queued.clear();
+    _queuedIds = 0;
+    _removed.clear();
+    _added.clear();
   }
 }

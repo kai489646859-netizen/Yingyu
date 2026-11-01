@@ -268,25 +268,23 @@ final _hdr=(changing:false);final _videoLoss=VideoOutputLossWatch(); final _diag
     final sampleGeneration = _observation.generation;
     final sampleSpeed = _speed;
     try {
-      final fields = <String>[];
+      final diagnosticEnabled = log?.enabled == true;
       final values = <String, String>{};
       for (final key in [
         'current-vo',
         'vo-configured',
         'hwdec-current',
         'video-frame-info/interlaced',
-        'video-out-params/pixelformat',
-        'video-dec-params/pixelformat',
-        'estimated-frame-number',
-        'decoder-frame-drop-count',
-        'frame-drop-count',
+        // These counters feed diagnostic snapshots, never recovery decisions.
+        if (diagnosticEnabled) 'decoder-frame-drop-count',
+        if (diagnosticEnabled) 'frame-drop-count',
         'time-pos',
         'audio-pts',
-        'avsync',
-        'speed',
+        if (diagnosticEnabled) 'avsync',
+        if (diagnosticEnabled) 'speed',
         'seeking',
         'paused-for-cache',
-        'demuxer-cache-duration',
+        if (diagnosticEnabled) 'demuxer-cache-duration',
       ]) {
         if (_disposed || _diagnosticBudget.stopped) return;
         try {
@@ -294,11 +292,8 @@ final _hdr=(changing:false);final _videoLoss=VideoOutputLossWatch(); final _diag
               .getProperty(key)
               .timeout(const Duration(milliseconds: 600));
           values[key] = value;
-          fields.add(
-            '$key=${RegExp(r'^[a-zA-Z0-9_.-]{1,40}$').hasMatch(value) ? value : "未提供"}',
-          );
         } catch (_) {
-          fields.add('$key=未提供');
+          // A missing property remains unknown to the existing health guards.
         }
       }
 
@@ -464,6 +459,15 @@ final _hdr=(changing:false);final _videoLoss=VideoOutputLossWatch(); final _diag
       );
       if (recordDiagnostic) {
         values.addAll(await readPlaybackCache(native.getProperty));
+        if (!_disposed && !_diagnosticBudget.stopped && log?.enabled == true) {
+          try {
+            values['video-out-params/pixelformat'] = await native
+                .getProperty('video-out-params/pixelformat')
+                .timeout(const Duration(milliseconds: 600));
+          } catch (_) {
+            // Optional log detail; never determines playback or recovery.
+          }
+        }
       }
       if (_disposed ||
           _diagnosticBudget.stopped ||
@@ -473,16 +477,20 @@ final _hdr=(changing:false);final _videoLoss=VideoOutputLossWatch(); final _diag
           sampleGeneration != _observation.generation) {
         return;
       }
-      final sampleAccepted = _observation.record(
-        sampleGeneration: sampleGeneration,
-        now: now,
-        speed: sampleSpeed,
-        values: values,
-      );
+      final sampleAccepted =
+          diagnosticEnabled &&
+          log?.enabled == true &&
+          _observation.record(
+            sampleGeneration: sampleGeneration,
+            now: now,
+            speed: sampleSpeed,
+            values: values,
+          );
       if (!recordDiagnostic) return;
       unawaited(_recordDiagnosticContext(native));
+      String? render;
       if (log?.enabled == true) {
-        final render = await readRenderMetrics(
+        render = await readRenderMetrics(
           read: native.getProperty,
           active: () =>
               !_disposed &&
@@ -495,13 +503,18 @@ final _hdr=(changing:false);final _videoLoss=VideoOutputLossWatch(); final _diag
               sampleGeneration == _observation.generation,
         );
         if (render == null) return;
-        fields.add(render);
       }
+      if (render == null) return;
+      String field(String key) {
+        final value = values[key] ?? '';
+        return '$key=${RegExp(r'^[a-zA-Z0-9_.-]{1,40}$').hasMatch(value) ? value : "未提供"}';
+      }
+
       log?.add(
         LogArea.player,
-        '画面链路采样：${[fields[0], fields[2], fields[4]].join("；")}；'
+        '画面链路采样：${['current-vo', 'hwdec-current', 'video-out-params/pixelformat'].map(field).join("；")}；'
         '${sampleAccepted ? _observation.describe(now) : "诊断采样跨越操作边界，不做区间比较"}；'
-        '${fields.last}',
+        '$render',
       );
     } finally {
       _videoProbeBusy = false;

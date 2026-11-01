@@ -14,6 +14,10 @@ import 'person_query_search.dart';
 
 dynamic _decodeMetadata(List<int> bytes) => jsonDecode(utf8.decode(bytes));
 
+class _MetadataTooLarge implements Exception {
+  const _MetadataTooLarge();
+}
+
 // Log only allowlisted operation names, never a URL, search text or real ID.
 String metadataOperation(Uri uri) {
   final path = uri.path.toLowerCase();
@@ -360,6 +364,9 @@ String mediaEntryCheckFacts(
 }
 
 class EmbyClient {
+  // Metadata only. Media streams and on-disk subtitle downloads have their own
+  // budgets. Count received (including decompressed) bytes, not just headers.
+  static const maxMetadataBytes = 64 * 1024 * 1024;
   EmbyClient({
     http.Client? client,
     this.timeout = const Duration(seconds: 18),
@@ -573,7 +580,27 @@ class EmbyClient {
           status: res.statusCode,
         );
       }
-      final bytes = await res.stream.toBytes().timeout(
+      if ((res.contentLength ?? 0) > maxMetadataBytes) {
+        // Do not read the body. Aborting in finally closes the actual request.
+        unawaited(
+          res.stream
+              .listen((_) {}, onError: (Object _, StackTrace _) {})
+              .cancel()
+              .catchError((Object _, StackTrace _) {}),
+        );
+        throw const _MetadataTooLarge();
+      }
+      var received = 0;
+      final bounded = http.ByteStream(
+        res.stream.map((chunk) {
+          if (chunk.length > maxMetadataBytes - received) {
+            throw const _MetadataTooLarge();
+          }
+          received += chunk.length;
+          return chunk;
+        }),
+      );
+      final bytes = await bounded.toBytes().timeout(
         operation == '在线字幕搜索' ? limit - watch.elapsed : limit,
       );
       if (optional != null && (optional.paused || abort.isCompleted)) {
@@ -605,6 +632,14 @@ class EmbyClient {
       if (decoded is! Map) throw const AppFailure('服务器返回的数据格式不正确');
       outcome(ServerStatus.connected, elapsed: watch.elapsedMilliseconds);
       return object(decoded);
+    } on _MetadataTooLarge {
+      outcome(ServerStatus.unavailable, detail: '服务器返回的资料过大');
+      log?.add(
+        LogArea.api,
+        '$requestId $operation：资料正文超过 64 MiB 上限，已停止读取；正文未导出',
+        level: LogLevel.error,
+      );
+      throw const AppFailure('服务器返回的资料过大（超过 64 MiB），请缩小查询范围或联系服主');
     } on http.RequestAbortedException {
       throw const BackgroundPaused();
     } on TimeoutException {

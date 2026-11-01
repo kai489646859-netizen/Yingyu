@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework><AssemblyName>Yingyu.Update</AssemblyName>
-    <Version>0.5.8</Version><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+    <Version>0.8.5</Version><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
     <NoWarn>CA1416</NoWarn>
   </PropertyGroup>
   <ItemGroup>

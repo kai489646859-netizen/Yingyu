@@ -40,6 +40,7 @@ import 'phone_fit.dart';
 import 'screen_fit.dart';
 import 'screen_subtitles.dart';
 import 'media_notice.dart';
+import 'network_recovery.dart';
 import 'dolby_source.dart';
 import 'dolby_recovery.dart';
 import 'decoder_recovery.dart';
@@ -139,6 +140,7 @@ abstract class InitialSubtitleBackend {
 class MpvBackend
     implements
         PlayerBackend,
+        NetworkRecoveryBackend,
         PlaybackDiagnosticLifecycle,
         InitialSubtitleBackend,
         DiscNavigationBackend,
@@ -1879,25 +1881,23 @@ class MpvBackend
     final sampleGeneration = _observation.generation;
     final sampleSpeed = _speed;
     try {
-      final fields = <String>[];
+      final diagnosticEnabled = log?.enabled == true;
       final values = <String, String>{};
       for (final key in [
         'current-vo',
         'vo-configured',
         'hwdec-current',
         'video-frame-info/interlaced',
-        'video-out-params/pixelformat',
-        'video-dec-params/pixelformat',
-        'estimated-frame-number',
-        'decoder-frame-drop-count',
-        'frame-drop-count',
+        // These counters feed diagnostic snapshots, never recovery decisions.
+        if (diagnosticEnabled) 'decoder-frame-drop-count',
+        if (diagnosticEnabled) 'frame-drop-count',
         'time-pos',
         'audio-pts',
-        'avsync',
-        'speed',
+        if (diagnosticEnabled) 'avsync',
+        if (diagnosticEnabled) 'speed',
         'seeking',
         'paused-for-cache',
-        'demuxer-cache-duration',
+        if (diagnosticEnabled) 'demuxer-cache-duration',
       ]) {
         if (_disposed || _diagnosticBudget.stopped) return;
         try {
@@ -1905,11 +1905,8 @@ class MpvBackend
               .getProperty(key)
               .timeout(const Duration(milliseconds: 600));
           values[key] = value;
-          fields.add(
-            '$key=${RegExp(r'^[a-zA-Z0-9_.-]{1,40}$').hasMatch(value) ? value : "未提供"}',
-          );
         } catch (_) {
-          fields.add('$key=未提供');
+          // A missing property remains unknown to the existing health guards.
         }
       }
 
@@ -2075,6 +2072,15 @@ class MpvBackend
       );
       if (recordDiagnostic) {
         values.addAll(await readPlaybackCache(native.getProperty));
+        if (!_disposed && !_diagnosticBudget.stopped && log?.enabled == true) {
+          try {
+            values['video-out-params/pixelformat'] = await native
+                .getProperty('video-out-params/pixelformat')
+                .timeout(const Duration(milliseconds: 600));
+          } catch (_) {
+            // Optional log detail; never determines playback or recovery.
+          }
+        }
       }
       if (_disposed ||
           _diagnosticBudget.stopped ||
@@ -2084,16 +2090,20 @@ class MpvBackend
           sampleGeneration != _observation.generation) {
         return;
       }
-      final sampleAccepted = _observation.record(
-        sampleGeneration: sampleGeneration,
-        now: now,
-        speed: sampleSpeed,
-        values: values,
-      );
+      final sampleAccepted =
+          diagnosticEnabled &&
+          log?.enabled == true &&
+          _observation.record(
+            sampleGeneration: sampleGeneration,
+            now: now,
+            speed: sampleSpeed,
+            values: values,
+          );
       if (!recordDiagnostic) return;
       unawaited(_recordDiagnosticContext(native));
+      String? render;
       if (log?.enabled == true) {
-        final render = await readRenderMetrics(
+        render = await readRenderMetrics(
           read: native.getProperty,
           active: () =>
               !_disposed &&
@@ -2106,13 +2116,18 @@ class MpvBackend
               sampleGeneration == _observation.generation,
         );
         if (render == null) return;
-        fields.add(render);
       }
+      if (render == null) return;
+      String field(String key) {
+        final value = values[key] ?? '';
+        return '$key=${RegExp(r'^[a-zA-Z0-9_.-]{1,40}$').hasMatch(value) ? value : "未提供"}';
+      }
+
       log?.add(
         LogArea.player,
-        '画面链路采样：${[fields[0], fields[2], fields[4]].join("；")}；'
+        '画面链路采样：${['current-vo', 'hwdec-current', 'video-out-params/pixelformat'].map(field).join("；")}；'
         '${sampleAccepted ? _observation.describe(now) : "诊断采样跨越操作边界，不做区间比较"}；'
-        '${fields.last}',
+        '$render',
       );
     } finally {
       _videoProbeBusy = false;
@@ -3344,6 +3359,7 @@ class MpvBackend
     Duration position, {
     bool cancelPlay = false,
     bool freshAudio = false,
+    bool refreshNetwork = false,
     bool Function()? allowed,
   }) {
     // Internal audio priming must not cancel an already requested initial play.
@@ -3421,7 +3437,17 @@ class MpvBackend
         // A command reply is not a completed seek. Keep pre-target discard
         // until this seek has emitted a real SEEK followed by PLAYBACK_RESTART.
         _fastSeekNativeSerial = _nativeSeekSerial;
-        if (freshAudio && native is NativePlayer) {
+        if (refreshNetwork && native is NativePlayer) {
+          final seekSerial = _nativeSeekSerial;
+          await freshNetworkSeek(
+            read: native.getProperty,
+            write: native.setProperty,
+            seek: () => player.seek(position),
+            restarted: () => _nativeRestartSeekSerial > seekSerial,
+            active: () =>
+                !_disposed && intent == _seekIntent && allowed?.call() != false,
+          );
+        } else if (freshAudio && native is NativePlayer) {
           final seekSerial = _nativeSeekSerial;
           await freshAudioSeek(
             read: native.getProperty,
@@ -3437,6 +3463,10 @@ class MpvBackend
         } else {
           await player.seek(position);
         }
+      } on NetworkSeekRestoreFailure {
+        _audioRefreshBroken = true;
+        if (!_disposed) _failPlayback('网络恢复参数未能还原，已保留观看进度');
+        rethrow;
       } on AudioRefreshRestoreFailure catch (error) {
         // Fail inside the queue before another seek/load can use dirty options.
         _audioRefreshBroken = true;
@@ -4338,6 +4368,46 @@ class MpvBackend
     await _subtitleFiles.close();
     await updates.close();
     await failures.close();
+  }
+
+  @override
+  Future<void> recoverNetwork(bool Function() current) async {
+    // Dart byte readers recover at the exact byte offset themselves.
+    if (_disc != null ||
+        _cachedTransport != null ||
+        !_networkFile ||
+        _disposed ||
+        _opening ||
+        _runtimeRepairBusy ||
+        _switching ||
+        _lastFailure != null ||
+        !current()) {
+      return;
+    }
+    final load = _loadSerial, playIntent = _playIntent;
+    final seekIntent = _seekIntent;
+    bool active() =>
+        !_disposed &&
+        !_opening &&
+        !_runtimeRepairBusy &&
+        !_switching &&
+        _lastFailure == null &&
+        load == _loadSerial &&
+        playIntent == _playIntent &&
+        current();
+    if (!active()) return;
+    final native = player.platform;
+    if (native is! NativePlayer ||
+        await native
+                .getProperty('seekable')
+                .timeout(const Duration(milliseconds: 600)) !=
+            'yes' ||
+        seekIntent != _seekIntent ||
+        !active()) {
+      return;
+    }
+    log?.add(LogArea.network, '默认网络已切换且持续缓冲；本次仅刷新同一媒体范围读取，保留倍速与轨道');
+    await _seek(_runtimePosition.value, refreshNetwork: true, allowed: active);
   }
 }
 

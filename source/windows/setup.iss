@@ -1,4 +1,4 @@
-#define AppVersion "0.5.8"
+#define AppVersion "0.8.5"
 #ifndef PayloadRoot
   #define PayloadRoot "payload"
 #endif
@@ -12,7 +12,7 @@ AppName=映屿
 AppVersion={#AppVersion}
 AppVerName=映屿 测试版 {#AppVersion}
 AppPublisher=映屿
-DefaultDirName=C:\Yingyu
+DefaultDirName=D:\Yingyu
 DefaultGroupName=映屿
 UsePreviousAppDir=yes
 UsePreviousGroup=yes
@@ -26,7 +26,7 @@ OutputBaseFilename=Yingyu-Setup-x64-{#AppVersion}
 SetupIconFile={#PayloadRoot}\Assets\YingyuAppIcon.ico
 UninstallDisplayIcon={app}\Yingyu.exe
 UninstallDisplayName=映屿 测试版 {#AppVersion}
-VersionInfoVersion=0.5.8.0
+VersionInfoVersion=0.8.5.0
 VersionInfoProductVersion={#AppVersion}
 VersionInfoDescription=映屿 测试版 {#AppVersion} 安装程序
 Compression=lzma2/normal
@@ -41,7 +41,7 @@ SetupLogging=yes
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Files]
-Source: "{#PayloadRoot}\*"; DestDir: "{app}"; Excludes: "Cache\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadRoot}\*"; DestDir: "{app}"; Excludes: "Cache\*,Data\*,.Data.migrating-v1-*\*,.yingyu-data-migration.lock"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\映屿"; Filename: "{app}\Yingyu.exe"; WorkingDir: "{app}"
@@ -135,7 +135,7 @@ begin
   AppRoot := Canonical(ExpandConstant('{app}'));
   if (Length(AppRoot) <= 3) or (Copy(AppRoot, 2, 2) <> ':\') then
     Result := '请选择本机磁盘上的映屿专用安装文件夹。'
-  else if not NoLinks(AppRoot) or not NoLinks(AddBackslash(AppRoot) + 'Cache') then
+  else if not NoLinks(AppRoot) or not NoLinks(AddBackslash(AppRoot) + 'Cache') or not NoLinks(AddBackslash(AppRoot) + 'Data') then
     Result := '安装路径包含目录链接，请选择普通文件夹。';
 end;
 
@@ -175,7 +175,7 @@ begin
     Explanation.Parent := Form;
     Explanation.SetBounds(ScaleX(20), ScaleY(18), ScaleX(400), ScaleY(65));
     Explanation.WordWrap := True;
-    Explanation.Caption := '卸载软件后，可保留账号、设置、观看进度及当前缓存。取消勾选将清除这些资料，下载的影片和旧缓存迁移源仍保留。';
+    Explanation.Caption := '卸载软件后，可保留账号、设置、观看进度及当前缓存。取消勾选将清除这些资料，下载的影片和旧版迁移备份仍保留。';
     Keep := TNewCheckBox.Create(Form);
     Keep.Parent := Form;
     Keep.SetBounds(ScaleX(20), ScaleY(91), ScaleX(400), ScaleY(24));
@@ -262,7 +262,7 @@ begin
   if (CurUninstallStep <> usUninstall) or KeepPersonalInformation then exit;
   AppRoot := Canonical(ExpandConstant('{app}'));
   CacheRoot := AddBackslash(AppRoot) + 'Cache';
-  DataRoot := Canonical(ExpandConstant('{localappdata}\映屿'));
+  DataRoot := AddBackslash(AppRoot) + 'Data';
   if (Length(AppRoot) <= 3) or not NoLinks(AppRoot) or not NoLinks(DataRoot) then
     RaiseException('当前安装或个人资料路径不安全，资料已保留。');
   if DirExists(CacheRoot) then
@@ -270,6 +270,12 @@ begin
     if not LoadStringFromFile(AddBackslash(CacheRoot) + CacheMarker, Owner) or (Owner <> CacheOwner) then
       RaiseException('无法确认当前 Cache 归属，已保留。');
     DeleteExactTree(AppRoot, 'Cache');
+  end;
+  if DirExists(DataRoot) then
+  begin
+    if not LoadStringFromFile(AddBackslash(DataRoot) + '.yingyu-data-owner-v1', Owner) or
+      (Pos('Yingyu:8E1C8179-C475-4BC7-A797-5E769E477C0C:data-v1', Owner) = 0) then
+      RaiseException('无法确认 Data 归属，资料已保留。');
   end;
   { Exact personal-data names only. Never delete Downloads or the whole app/data root. }
   DeletePersonalFile(DataRoot, 'server-profiles.json');
@@ -285,6 +291,8 @@ begin
   DeletePersonalFile(DataRoot, 'browse-refresh.txt');
   DeletePersonalFile(DataRoot, 'desktop-theme.json');
   DeletePersonalFile(DataRoot, 'actor-cache-settings.json');
+  DeletePersonalFile(DataRoot, 'profile-order.json');
+  DeleteExactTree(DataRoot, 'home-discovery');
   { Interrupted writes from the actual stores; no arbitrary *.tmp cleanup. }
   DeletePersonalFile(DataRoot, 'server-profiles.json.tmp');
   DeletePersonalFile(DataRoot, 'server-profiles.backup.json.tmp');
@@ -301,3 +309,4 @@ begin
   { PlaybackSync is personal progress despite its historical Cache parent. }
   DeleteExactTree(DataRoot, 'Cache\PlaybackSync');
 end;
+

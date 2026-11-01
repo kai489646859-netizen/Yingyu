@@ -10,7 +10,7 @@ public static class DesktopSettings
     static readonly ConditionalWeakTable<object,Selection> Pages=new();
     sealed class Selection
     {
-        public string Section="AppearanceSettingsSection";
+        public string Section="AccountSettingsSection";
         public bool LayingOut;
         ScrollViewer? scroll;
         WeakReference<object>? owner;
@@ -38,7 +38,13 @@ public static class DesktopSettings
     static readonly string[] Names=["AccountSettingsSection","AppearanceSettingsSection","ExperienceSettingsSection","CacheSettingsSection","DiagnosticsSettingsSection","AboutSettingsSection"];
     static FrameworkElement? Find(object page,string name)=>page.GetType().GetField(name,BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)?.GetValue(page) as FrameworkElement
         ?? (page as FrameworkElement)?.FindName(name) as FrameworkElement;
-    public static void Open(object page)=>Apply(page,false);
+    public static void Open(object page)
+    {
+        Pages.GetValue(page,_=>new()).Section="AccountSettingsSection";
+        LogCenterLauncher.Leave(page);
+        if(Find(page,"ExperienceSettingsSearch") is TextBox search)search.Text="";
+        Apply(page,false);
+    }
     public static void Category(object page)=>Apply(page,true);
     public static void Filter(object page)=>Apply(page,false);
     public static void Layout(object page)
@@ -52,7 +58,7 @@ public static class DesktopSettings
             // existing section containers; their controls and bindings stay put.
             foreach(string name in Names)if(Find(page,name) is {} section)
             {
-                section.MaxWidth=880;section.HorizontalAlignment=HorizontalAlignment.Stretch;section.Margin=new Thickness(0,0,0,16);
+                section.MaxWidth=1040;section.HorizontalAlignment=HorizontalAlignment.Stretch;section.Margin=new Thickness(0,0,0,16);
                 if(section is Border border)border.Padding=new Thickness(24);
             }
             // Their live replacements are the desktop mode selector and the
@@ -72,11 +78,12 @@ public static class DesktopSettings
                 scroll.Padding=new Thickness(24,8,24,24);scroll.HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled;scroll.HorizontalScrollMode=ScrollMode.Disabled;
                 if(scroll.Content is FrameworkElement content && scroll.ActualWidth>0)
                 {
-                    content.HorizontalAlignment=HorizontalAlignment.Center;content.MaxWidth=880;content.Margin=new Thickness(0);
-                    double width=Math.Min(880,Math.Max(0,scroll.ActualWidth-48));
+                    content.HorizontalAlignment=HorizontalAlignment.Left;content.MaxWidth=1040;content.Margin=new Thickness(0);
+                    double width=Math.Min(1040,Math.Max(0,scroll.ActualWidth-48));
                     if(!double.IsFinite(content.Width)||Math.Abs(content.Width-width)>.5)content.Width=width;
                 }
             }
+            SettingsPresentation.Apply((FrameworkElement)page);
         }
         catch(Exception e){Report(e);}
         finally{state.LayingOut=false;}

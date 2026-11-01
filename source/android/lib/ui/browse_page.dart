@@ -16,6 +16,9 @@ import 'expansion_chevron.dart';
 import '../core/catalog_sort.dart';
 import '../core/browse_cache.dart';
 import '../core/emby.dart';
+import '../core/accounts.dart';
+import '../core/store.dart';
+import 'federated_search_page.dart';
 import '../core/broad_search.dart';
 import '../core/home_feed.dart';
 import '../core/personal_sync.dart';
@@ -53,12 +56,14 @@ class LibraryPage extends StatefulWidget {
     this.libraryRequest = 0,
     this.display = LibraryDisplay.standard,
     this.searchMode = false,
-    this.onAggregateSearch,
+    this.searchStore,
+    this.onSearchItem,
   });
   final EmbyClient api;
   final LibraryDisplay display;
   final bool searchMode;
-  final Future<void> Function(String)? onAggregateSearch;
+  final AppStore? searchStore;
+  final Future<void> Function(SavedAccount, MediaItem)? onSearchItem;
   final Future<void> Function(MediaItem) onItem;
   final bool active;
   final bool reducedMotion;
@@ -1408,15 +1413,6 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
                       : null,
                 ),
               VisibilityStatus(account: widget.api.session!),
-              if (widget.onAggregateSearch != null)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: CupertinoButton(
-                    key: const Key('open-federated-search'),
-                    onPressed: () => widget.onAggregateSearch!(search.text),
-                    child: const Text('聚合搜索 · 全部账号'),
-                  ),
-                ),
               Padding(
                 padding: EdgeInsets.fromLTRB(
                   widget.searchMode ? 8 : inset,
@@ -1477,6 +1473,7 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
                                   ? '搜索名称、拼音或演员'
                                   : '搜索影片、剧集或演员',
                               onChanged: (_) {
+                                if (widget.searchStore != null) setState(() {});
                                 debounce?.cancel();
                                 if (catalogMode) {
                                   debounce = Timer(
@@ -1504,6 +1501,7 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
                               },
                               onSuffixTap: () {
                                 search.clear();
+                                if (widget.searchStore != null) setState(() {});
                                 debounce?.cancel();
                                 if (catalogMode) {
                                   filterCatalog();
@@ -1538,7 +1536,20 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
                   ],
                 ),
               ),
-              if (widget.searchMode && catalogMode) searchFilters(),
+              if (widget.searchMode && catalogMode) ...[
+                if (widget.searchStore != null && search.text.trim().isNotEmpty)
+                  Padding(
+                    padding: EdgeInsets.symmetric(horizontal: inset),
+                    child: Text(
+                      '当前账号筛选',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: secondaryColor(context),
+                      ),
+                    ),
+                  ),
+                searchFilters(),
+              ],
               if (!resumeMode)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
@@ -1702,6 +1713,19 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
                                             onItem: widget.onItem,
                                           ),
                                         ),
+                                      if (widget.searchStore != null &&
+                                          search.text.trim().isNotEmpty)
+                                        SliverToBoxAdapter(
+                                          child: Padding(
+                                            padding: EdgeInsets.all(inset),
+                                            child: Text(
+                                              '当前账号 · ${widget.searchStore!.accountDisplays.read(widget.api.session!).name(widget.api.session!)}',
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
                                       if (shown.isEmpty)
                                         SliverToBoxAdapter(
                                           child: Padding(
@@ -1716,7 +1740,10 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
                                                       : search.text
                                                             .trim()
                                                             .isNotEmpty
-                                                      ? '没有匹配的影片或剧集，演员结果见上方'
+                                                      ? widget.searchStore !=
+                                                                null
+                                                            ? '当前账号没有匹配影视，其他账号结果见下方'
+                                                            : '没有匹配的影片或剧集，演员结果见上方'
                                                       : '没有找到影视内容'),
                                             ),
                                           ),
@@ -1837,6 +1864,18 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
                                                 ),
                                         ),
                                       ),
+                                      if (!resumeMode &&
+                                          widget.searchStore != null &&
+                                          widget.onSearchItem != null)
+                                        FederatedSearchPage.sliver(
+                                          api: widget.api,
+                                          store: widget.searchStore!,
+                                          query: search.text,
+                                          active:
+                                              visible &&
+                                              !widget.api.backgroundWork.paused,
+                                          onOpen: widget.onSearchItem!,
+                                        ),
                                     ],
                                   ),
                                 ),

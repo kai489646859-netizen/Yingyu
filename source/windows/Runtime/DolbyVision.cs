@@ -38,10 +38,8 @@ public static class DolbyVision
         =>CommandAsync(client,"show-text",text,"3000");
     internal static int CommandAsync(Richasy.MpvKernel.Core.MpvClient client,params string[] values)
     {
-        var strings=values.Select(Marshal.StringToCoTaskMemUTF8).ToArray();
-        IntPtr argv=Marshal.AllocHGlobal(IntPtr.Size*(strings.Length+1));
-        try{for(int i=0;i<strings.Length;i++)Marshal.WriteIntPtr(argv,i*IntPtr.Size,strings[i]);Marshal.WriteIntPtr(argv,strings.Length*IntPtr.Size,IntPtr.Zero);return Native.Value.CommandAsync(PlaybackTransport.Handle(client),0,argv);}
-        finally{foreach(var value in strings)Marshal.FreeCoTaskMem(value);Marshal.FreeHGlobal(argv);}
+        using var arguments = new NativeArguments(values);
+        return Native.Value.CommandAsync(PlaybackTransport.Handle(client),0,arguments.Pointer);
     }
     internal static int SignalUi(Richasy.MpvKernel.Core.MpvClient client,bool safe)
     {

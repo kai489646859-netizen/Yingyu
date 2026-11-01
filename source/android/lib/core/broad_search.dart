@@ -162,7 +162,8 @@ class BroadSearch {
         } catch (failure) {
           failures++;
           error = failure;
-          if (active()) b.more = false;
+          // A failed page is not EOF. Keep its cursor and availability for the
+          // next explicit retry/load-more action; this wave never retries it.
         }
       }
     }

@@ -21,7 +21,9 @@ class DiscWorkerTransport extends DiscTransport {
     super.nativeInvoke,
     this.directNative = false,
     this.nativeLibraryPath,
-  }) : super(backgroundOutput: true);
+  }) : super(backgroundOutput: true) {
+    log?.addListener(_syncLogEnabled);
+  }
   final bool directNative;
   final String? nativeLibraryPath;
 
@@ -37,6 +39,14 @@ class DiscWorkerTransport extends DiscTransport {
   Future<void>? _closeJob;
   Future<void>? _healthJob;
   final _healthClock = Stopwatch()..start();
+  bool? _workerLogEnabled;
+  void _syncLogEnabled() {
+    if (_closing || _commands == null) return;
+    final enabled = log?.enabled == true;
+    if (_workerLogEnabled == enabled) return;
+    _workerLogEnabled = enabled;
+    _commands!.send(['logging', enabled]);
+  }
 
   @override
   String get readHealth =>
@@ -88,6 +98,7 @@ class DiscWorkerTransport extends DiscTransport {
           playlist,
           directNative,
           nativeLibraryPath,
+          log?.enabled == true,
         ),
         onError: _events!.sendPort,
         onExit: _events!.sendPort,
@@ -125,6 +136,7 @@ class DiscWorkerTransport extends DiscTransport {
     switch (message[0]) {
       case 'connected':
         _commands = message[1] as SendPort;
+        _syncLogEnabled();
         if (!_connected.isCompleted) _connected.complete();
         _commands!.send(['speed', _requestedSpeed]);
       case 'native':
@@ -210,6 +222,7 @@ class DiscWorkerTransport extends DiscTransport {
 
   Future<void> _close() async {
     _closing = true;
+    log?.removeListener(_syncLogEnabled);
     if (!_started.isCompleted && _launched) {
       _started.completeError(const AppFailure('播放已退出'));
     }
@@ -252,6 +265,7 @@ class _WorkerStart {
     this.playlist,
     this.directNative,
     this.nativeLibraryPath,
+    this.logEnabled,
   );
   final SendPort parent;
   final PlaybackRoute route;
@@ -262,6 +276,7 @@ class _WorkerStart {
   final int? playlist;
   final bool directNative;
   final String? nativeLibraryPath;
+  final bool logEnabled;
 }
 
 class _WorkerLog extends DiagnosticLog {
@@ -273,6 +288,7 @@ class _WorkerLog extends DiagnosticLog {
   String nextRequest(String prefix) => super.nextRequest('$prefix后台');
   @override
   void add(LogArea area, String message, {LogLevel level = LogLevel.info}) {
+    if (!enabled) return;
     parent.send([
       'log',
       area,
@@ -285,7 +301,8 @@ class _WorkerLog extends DiagnosticLog {
 
 Future<void> _discWorkerMain(_WorkerStart args) async {
   final commands = ReceivePort();
-  final log = _WorkerLog(args.parent, args.route.diagnosticSecrets);
+  final log = _WorkerLog(args.parent, args.route.diagnosticSecrets)
+    ..enabled = args.logEnabled;
   final nativeReplies = <ReceivePort>{};
   var closing = false;
   late final DiscTransport transport;
@@ -325,14 +342,12 @@ Future<void> _discWorkerMain(_WorkerStart args) async {
     onStage: (stage) => args.parent.send(['stage', stage]),
     onFailure: (error) => args.parent.send(['failed', error]),
   );
+  // Running diagnostics already request a fresh snapshot through 'status'.
+  // Keep media/control and immediate stage/failure messages independent of it.
   String health() => '原盘数据线程=独立；${direct?.health ?? ''}${transport.readHealth}';
-  final timer = Timer.periodic(const Duration(seconds: 1), (_) {
-    if (!closing) args.parent.send(['status', health()]);
-  });
   Future<void> close() async {
     if (closing) return;
     closing = true;
-    timer.cancel();
     try {
       await transport.close();
     } finally {
@@ -348,6 +363,8 @@ Future<void> _discWorkerMain(_WorkerStart args) async {
   commands.listen((dynamic message) {
     if (message is! List || closing) return;
     switch (message[0]) {
+      case 'logging':
+        log.enabled = message[1] == true;
       case 'speed':
         transport.setSpeed(message[1] as double);
       case 'buffering':

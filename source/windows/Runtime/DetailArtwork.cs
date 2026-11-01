@@ -76,7 +76,9 @@ public static class DetailArtwork
     {
         if(AndroidCacheRuntime.IsPaused||Access.Get<Grid>(page,"DetailView").Visibility!=Visibility.Visible
             ||Access.Get<EmbyItem?>(page,"_currentDetailItem") is not {} item)return;
-        EnsureSurface(page);if(Ready(Access.Get<Image>(page,"DetailPosterImage")))return;
+        EnsureSurface(page);
+        bool backdropNeeded=ReferenceAppearance.WantsDetailBackground((FrameworkElement)page)&&AndroidCacheCards.DetailBackgroundCandidates(page,item).Count>0;
+        if(Ready(Access.Get<Image>(page,"DetailPosterImage"))&&(!backdropNeeded||Ready(Access.Get<Image>(page,"DetailBackdropImage"))))return;
         var token=Access.Get<CancellationTokenSource?>(page,"_posterLoadCts")?.Token??CancellationToken.None;
         if(token.IsCancellationRequested)return;
         // A resume/refresh replaces the shared poster CTS. Rejoin this detail
@@ -87,14 +89,16 @@ public static class DetailArtwork
     internal static async Task WaitForPriorityImages(object page,CancellationToken token)
     {
         // Actor cache hits never call this. Only missing actor files wait for
-        // the current detail's higher-priority *network* image attempts.
+        // the current primary poster. A slow backdrop must not block all cold
+        // portraits; both still use the same bounded global image scheduler.
         if(Access.Get<Grid>(page,"DetailView").Visibility!=Visibility.Visible||!States.TryGetValue(page,out var state)
-            ||state.Generation!=Access.Get<int>(page,"_detailLoadVersion")||state.Running is not {} work)return;
+            ||state.Generation!=Access.Get<int>(page,"_detailLoadVersion")||state.Primary is not {} work)return;
         await work.WaitAsync(token);
     }
     sealed class State
     {
         internal Task? Running;
+        internal Task? Primary;
         internal EmbyItem? Item;
         internal CancellationToken Token;
         internal int Generation;
@@ -112,7 +116,7 @@ public static class DetailArtwork
         if (state.Running is { IsCompleted: false } existing && ReferenceEquals(state.Item, item)
             && state.Token == token && state.Generation == generation && state.Size == size)
             return existing;
-        state.Item = item; state.Token = token; state.Generation = generation; state.Size = size;
+        state.Item = item; state.Token = token; state.Generation = generation; state.Size = size;state.Primary=null;
         state.Running = LoadCore(page, item, token, generation, size);
         return state.Running;
     }
@@ -120,24 +124,25 @@ public static class DetailArtwork
     static async Task LoadCore(object page, EmbyItem item, CancellationToken token, int generation, ArtworkSizePreference size)
     {
         var owner=Access.Get<EmbySession?>(page,"_session");var client=Access.Get<EmbyApiClient?>(page,"_client");
-        bool Current() => ReferenceEquals(owner,Access.Get<EmbySession?>(page,"_session"))&&ReferenceEquals(client,Access.Get<EmbyApiClient?>(page,"_client"))&&!token.IsCancellationRequested && ReferenceEquals(Access.Get<EmbyItem?>(page, "_currentDetailItem"), item)
-            && Access.Get<int>(page, "_detailLoadVersion") == generation
-            && Access.Get<Grid>(page,"DetailView").Visibility==Visibility.Visible;
+        // The scheduler evaluates demand from worker threads. Only read the
+        // session/load fields there; WinUI Visibility belongs to the UI thread.
+        bool RequestCurrent() => ReferenceEquals(owner,Access.Get<EmbySession?>(page,"_session"))&&ReferenceEquals(client,Access.Get<EmbyApiClient?>(page,"_client"))&&!token.IsCancellationRequested && ReferenceEquals(Access.Get<EmbyItem?>(page, "_currentDetailItem"), item)
+            && Access.Get<int>(page, "_detailLoadVersion") == generation;
+        bool Current()=>RequestCurrent()&&Access.Get<Grid>(page,"DetailView").Visibility==Visibility.Visible;
         Task<BitmapImage?> Picture(string type, int width) => (Task<BitmapImage?>)Access.Call(page,
             "LoadPosterBitmapAsync", item, type, width, token, null, null,
-            PosterFetchPriority.Interactive, PosterCacheRetention.Detail, (Func<bool>)Current, null)!;
+            PosterFetchPriority.Interactive, PosterCacheRetention.Detail, (Func<bool>)RequestCurrent, null)!;
         try
         {
             if (!Current() || Access.Get<Grid>(page, "DetailView").Visibility != Visibility.Visible) return;
             var sizes = ArtworkRequestSizePolicy.Resolve(size);
             var poster = Access.Get<Image>(page, "DetailPosterImage");
             var backdrop = Access.Get<Image>(page, "DetailBackdropImage");
-            // The current presentation intentionally hides the large backdrop.
-            // Keep its loader/cache for a later design, but do not download a
-            // large image that the current view will not show.
-            bool backgroundRequested=ReferenceAppearance.WantsDetailBackground((FrameworkElement)page)&&item.BackdropImageTags.Count>0;
+            // Load only an advertised backdrop required by the current presentation.
+            bool backgroundRequested=ReferenceAppearance.WantsDetailBackground((FrameworkElement)page)&&AndroidCacheCards.DetailBackgroundCandidates(page,item).Count>0;
             async Task LoadPrimary()
             {
+                if(!Current()||Ready(poster))return;
                 try
                 {
                     var cached=await AndroidCacheCards.CachedDetailPoster(page,item,token);
@@ -151,19 +156,26 @@ public static class DetailArtwork
                 catch(OperationCanceledException){}
                 catch(Exception error){PlaybackTransport.Write("Warning","Poster.Detail","详情主海报加载未完成；"+error.GetType().Name);}
             }
-            var primary=LoadPrimary();
+            var primary=LoadPrimary();States.GetValue(page,_=>new()).Primary=primary;
             async Task LoadBackground()
             {
                 if(!backgroundRequested||!Current()||Ready(backdrop))return;
                 try
                 {
                     // Cache reads run beside primary reads/downloads. Only a
-                    // background *miss* waits for the primary network attempt.
+                    // misses share the bounded scheduler without serial dependency.
                     var cached=await AndroidCacheCards.CachedDetailBackground(page,item,token);
                     if(!Current())return;
                     if(cached!=null){backdrop.Source=cached;return;}
-                    await primary;if(!Current())return;
-                    var image=await Picture("Backdrop",sizes.DetailBackdropWidth);if(Current())backdrop.Source=image??backdrop.Source;
+                    // Independent interactive work joins the original two-slot
+                    // scheduler; a stalled primary must not hold the other slot idle.
+                    foreach(var candidate in AndroidCacheCards.DetailBackgroundCandidates(page,item)){
+                        if(!Current())return;
+                        var image=await AndroidCacheCards.Bitmap(page,item,candidate.ImageType,sizes.DetailBackdropWidth,token,candidate.ItemId,candidate.ImageTag,
+                            PosterFetchPriority.Interactive,PosterCacheRetention.Detail,RequestCurrent,null);
+                        if(!Current())return;
+                        if(image is {PixelWidth:>0,PixelHeight:>0}&&ResumeArtwork.IsLandscape(image.PixelWidth,image.PixelHeight)){backdrop.Source=image;break;}
+                    }
                 }
                 catch(OperationCanceledException){}
                 catch(Exception error){PlaybackTransport.Write("Warning","Poster.Detail","详情背景独立加载未完成；"+error.GetType().Name);}

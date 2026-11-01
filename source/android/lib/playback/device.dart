@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'device_identity.dart';
 
 class Device {
   /// Numeric window/system values only; neither is measured screen luminance.
@@ -15,6 +16,18 @@ class Device {
   }
 
   static const channel = MethodChannel('yingyu/device');
+  static Future<DeviceIdentity> identity() async {
+    try {
+      return DeviceIdentity.parse(
+        await channel
+            .invokeMethod('identity')
+            .timeout(const Duration(seconds: 1)),
+      );
+    } catch (_) {
+      return const DeviceIdentity();
+    }
+  }
+
   static Future<bool> focus() async =>
       await channel.invokeMethod<bool>('focus') ?? false;
   static Future<void> release() => channel.invokeMethod('release');

@@ -17,28 +17,10 @@ internal static class DiscAudioLabels
     internal static string? Get(MpvTrackInfo track) => Captions.TryGetValue(track, out var value) ? value.Text : null;
     internal static void Remember(MpvTrackInfo track, string? language, string? codec, string? channels, string? title)
     {
-        string tag = language?.Trim().ToLowerInvariant() ?? "";
-        string name = tag switch
-        {
-            "zh" or "zho" or "chi" => "中文", "eng" or "en" => "英语", "jpn" or "ja" => "日语",
-            "kor" or "ko" => "韩语", "fre" or "fra" or "fr" => "法语", "ger" or "deu" or "de" => "德语",
-            "spa" or "es" => "西班牙语", "ita" or "it" => "意大利语", "rus" or "ru" => "俄语",
-            "por" or "pt" => "葡萄牙语", "tha" or "th" => "泰语", "vie" or "vi" => "越南语",
-            "" or "und" or "unknown" => "语言未知", _ => tag
-        };
-        string kind = codec?.Trim().ToLowerInvariant() switch
-        {
-            "ac3" => "AC-3", "eac3" => "E-AC-3", "truehd" => "TrueHD", "dts" => "DTS",
-            "aac" => "AAC", "flac" => "FLAC", null or "" => "", var value => value.ToUpperInvariant()
-        };
-        var parts = new List<string> { name };
-        if (kind.Length > 0) parts.Add(kind);
-        if (int.TryParse(channels, NumberStyles.Integer, CultureInfo.InvariantCulture, out int count) && count is > 0 and <= 64)
-            parts.Add(count.ToString(CultureInfo.InvariantCulture) + " 声道");
-        parts.Add("轨道 " + track.Id.ToString(CultureInfo.InvariantCulture));
-        if (!string.IsNullOrWhiteSpace(title)) parts.Add(title.Trim());
-        lock (Captions) { Captions.Remove(track); Captions.Add(track, new Caption(string.Join(" · ", parts))); }
+        string label=TrackLabels.Format(language,title,codec,channels,true);
+        lock(Captions){Captions.Remove(track);Captions.Add(track,new Caption(label));}
     }
+
     internal static IReadOnlyDictionary<ushort, string> ReadLanguages(IntPtr info)
     {
         // Bundled libbluray 1.5.0 Windows x64 header, same selected title as PG.

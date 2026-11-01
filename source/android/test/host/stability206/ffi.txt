@@ -1,0 +1,80 @@
+// Complete production methods and reply handlers; synthetic MPV transport only.
+// ignore_for_file: non_constant_identifier_names, unused_element, avoid_print, deprecated_member_use
+import 'dart:async';
+import 'dart:ffi';
+import 'package:media_kit/ffi/ffi.dart' hide calloc;
+import 'package:media_kit/ffi/ffi.dart' as memory;
+import 'package:media_kit/generated/libmpv/bindings.dart' as generated;
+
+class CountedAllocator implements Allocator {
+ final live=<int,Pointer>{};
+ @override Pointer<T> allocate<T extends NativeType>(int bytes,{int? alignment}) {
+  final p=memory.calloc.allocate<T>(bytes,alignment:alignment);live[p.address]=p;return p;
+ }
+ @override void free(Pointer p) {
+  if(live.remove(p.address)==null) throw StateError('duplicate/unowned free');
+  memory.calloc.free(p);
+ }
+ void clean(){for(final p in live.values.toList()){free(p);}}
+}
+class Config206 {bool async=true;}
+class Io206 {
+ final calloc=CountedAllocator();
+ final configuration=Config206();
+ final ctx=Pointer<generated.mpv_handle>.fromAddress(1);
+ late final mpv=Mpv206(reply);
+ int outputEpoch=0,_asyncRequestNumber=0;
+ final _setPropertyRequests=<int,Completer<int>>{};
+ final _commandRequests=<int,Completer<int>>{};
+ final errors=<int>[];
+ int get pending=>_setPropertyRequests.length+_commandRequests.length;
+ void _logError(int code,String text){if(code<0)errors.add(code);}
+ Future<void> flag()=>_setPropertyFlag('pause',true);
+ Future<void> number()=>_setPropertyDouble('speed',2.0);
+ Future<void> integer()=>_setPropertyInt64('aid',2);
+ Future<void> string()=>_setPropertyString('sid','no');
+ Future<void> command(List<String> args)=>_command(args);
+ void reply(int id,int type,int code){
+  final event=memory.calloc<generated.mpv_event>();
+  event.ref.event_id=type;event.ref.reply_userdata=id;event.ref.error=code;
+  try {
+// REPLIES
+  } finally {memory.calloc.free(event);}
+ }
+// METHODS
+}
+class Mpv206 {
+ Mpv206(this.reply);
+ final void Function(int,int,int) reply;
+ int immediate=0,result=0,calls=0;
+ bool throws=false,hold=false;
+ final waiting=<void Function()>[];
+ List<String> commandArgs=[];
+ final properties=<String>[];
+ int send(int id,int type){
+  calls++;
+  if(throws)throw StateError('native bridge failure');
+  if(immediate>=0){
+   void complete()=>reply(id,type,result);
+   if(hold){waiting.add(complete);}else{scheduleMicrotask(complete);}
+  }
+  return immediate;
+ }
+ int mpv_set_property_async(Pointer c,int id,Pointer<Char> name,int format,Pointer data){
+  properties.add(name.cast<Utf8>().toDartString());
+  return send(id,generated.mpv_event_id.MPV_EVENT_SET_PROPERTY_REPLY);
+ }
+ int mpv_set_property(Pointer c,Pointer<Char> name,int format,Pointer data){
+  calls++;if(throws)throw StateError('native bridge failure');return result;
+ }
+ void capture(Pointer<Pointer<Char>> args){
+  commandArgs=[];
+  for(var i=0;args[i]!=nullptr;i++){commandArgs.add(args[i].cast<Utf8>().toDartString());}
+ }
+ int mpv_command_async(Pointer c,int id,Pointer<Pointer<Char>> args){
+  capture(args);return send(id,generated.mpv_event_id.MPV_EVENT_COMMAND_REPLY);
+ }
+ int mpv_command(Pointer c,Pointer<Pointer<Char>> args){
+  capture(args);calls++;if(throws)throw StateError('native bridge failure');return result;
+ }
+}

@@ -45,6 +45,35 @@ PlaybackMediaFacts readPlaybackMediaFacts({
   String value(String key) {
     try {
       final result = read(key);
+      if (const {
+        'unknown',
+        'unavailable',
+        'null',
+        'n/a',
+        'nan',
+        'infinity',
+      }.contains(result.trim().toLowerCase())) {
+        return '';
+      }
+      if (const {
+        'container-fps',
+        'video-bitrate',
+        'audio-bitrate',
+        'video-params/w',
+        'video-params/h',
+        'audio-params/samplerate',
+      }.contains(key)) {
+        final number = double.tryParse(result);
+        if (number == null || !number.isFinite || number <= 0) return '';
+        if (const {
+              'video-params/w',
+              'video-params/h',
+              'audio-params/samplerate',
+            }.contains(key) &&
+            number != number.truncateToDouble()) {
+          return '';
+        }
+      }
       // These properties contain only codec/format names and numeric values.
       if (result.length <= 160 &&
           RegExp(r'^[A-Za-z0-9 ._+()/,:-]+$').hasMatch(result)) {
@@ -80,4 +109,10 @@ String mediaBitrate(Object? value) {
   return bits >= 1000000
       ? '${(bits / 1000000).toStringAsFixed(2)} Mbps'
       : '${(bits / 1000).toStringAsFixed(1)} kbps';
+}
+
+String mediaFrameRate(Object? value) {
+  final fps = double.tryParse('$value');
+  if (fps == null || !fps.isFinite || fps <= 0) return '未提供';
+  return '$value fps';
 }

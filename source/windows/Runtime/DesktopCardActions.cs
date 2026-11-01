@@ -23,6 +23,12 @@ internal static class DesktopCardActions
         object? bitmap=resolved.Id==item.Id?card.GetType().GetProperty("Poster")!.GetValue(card):null;
         await (Task)Call(page,"ShowDetailAsync",resolved,bitmap,null,result.GetType().GetField("Item2")!.GetValue(result),result.GetType().GetField("Item3")!.GetValue(result))!;
     }
+    internal static MenuFlyout MoreMenu(object page,object card)
+    {
+        var menu=new MenuFlyout();var details=new MenuFlyoutItem{Text="查看详情"};
+        details.Click+=async (_,_)=>{PosterTap.Cancel(page);try{await Detail(page,card);}catch(Exception error){Report(page,error);}};
+        menu.Items.Add(details);ReferenceSurfaces.Flyout(menu);return menu;
+    }
     internal static MenuFlyout Menu(object page,FrameworkElement root,object card)
     {
         var menu=new MenuFlyout();var item=Item(card);

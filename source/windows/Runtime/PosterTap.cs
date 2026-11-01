@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -22,6 +22,12 @@ public static class PosterTap
         string? scope=Access.Get<string?>(page,"_activeSnapshotKey"),profile=Access.Get<string?>(page,"_activeProfileId");
         bool library=Access.Get<Grid>(page,"LibraryView").Visibility==Visibility.Visible,detail=Access.Get<Grid>(page,"DetailView").Visibility==Visibility.Visible,settings=Access.Get<Grid>(page,"SettingsView").Visibility==Visibility.Visible;
         var existingPopups=page is FrameworkElement source&&source.XamlRoot!=null?VisualTreeHelper.GetOpenPopupsForXamlRoot(source.XamlRoot).Where(p=>p.IsOpen).ToHashSet():new HashSet<Popup>();
+        // Reject a delayed tap if scrolling or layout moved its target meanwhile.
+        var origin=container.TransformToVisual((UIElement)page).TransformPoint(new(0,0));
+        var scrolls=new List<(ScrollViewer Viewer,double X,double Y)>();
+        EventHandler<ScrollViewerViewChangingEventArgs> onScroll=(_,_)=>pending.Cancel();
+        for(DependencyObject? node=container;node!=null;node=VisualTreeHelper.GetParent(node))
+            if(node is ScrollViewer viewer){scrolls.Add((viewer,viewer.HorizontalOffset,viewer.VerticalOffset));viewer.ViewChanging+=onScroll;}
         _=Run();return true;
         async Task Run()
         {
@@ -32,10 +38,14 @@ public static class PosterTap
                     ||scope!=Access.Get<string?>(page,"_activeSnapshotKey")||profile!=Access.Get<string?>(page,"_activeProfileId")||DesktopScroll.IsAnimating(page)
                     ||(Access.Get<Grid>(page,"LibraryView").Visibility==Visibility.Visible)!=library||(Access.Get<Grid>(page,"SettingsView").Visibility==Visibility.Visible)!=settings
                     ||(Access.Get<Grid>(page,"DetailView").Visibility==Visibility.Visible)!=detail||VisualTreeHelper.GetOpenPopupsForXamlRoot(element.XamlRoot).Any(p=>p.IsOpen&&!existingPopups.Contains(p)))return;
+                // Composited transforms can lag behind scrolling or be offset by a layout change.
+                if(scrolls.Any(s=>Math.Abs(s.Viewer.HorizontalOffset-s.X)>4||Math.Abs(s.Viewer.VerticalOffset-s.Y)>4))return;
+                var position=container.TransformToVisual(element).TransformPoint(new(0,0));
+                if(Math.Abs(position.X-origin.X)>4||Math.Abs(position.Y-origin.Y)>4)return;
                 state.Dispatching=true;try{navigate();}finally{state.Dispatching=false;}
             }catch(OperationCanceledException){}
             catch(Exception error){try{PlaybackTransport.Write("Warning","Poster.Tap","海报详情未打开；"+error.GetType().Name);}catch(Exception){}}
-            finally{if(ReferenceEquals(state.Pending,pending))state.Pending=null;pending.Dispose();}
+            finally{foreach(var scroll in scrolls)scroll.Viewer.ViewChanging-=onScroll;if(ReferenceEquals(state.Pending,pending))state.Pending=null;pending.Dispose();}
         }
     }
 }

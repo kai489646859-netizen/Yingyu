@@ -72,6 +72,7 @@ internal sealed class VideoCacheStore
     readonly string _directory;
     readonly object _gate = new();
     readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+    readonly LinkedList<string> _recency = new();
     readonly Dictionary<object, (string Identity, long Start, long End)> _readers = new();
     long _used, _limit;
     bool _loaded;
@@ -88,6 +89,8 @@ internal sealed class VideoCacheStore
     void Load()
     {
         if (_loaded) return;
+        // A previous interrupted directory scan must not count its prefix twice.
+        _entries.Clear(); _recency.Clear(); _used = 0;
         Directory.CreateDirectory(_directory);
         foreach (string file in Directory.EnumerateFiles(_directory, "*", SearchOption.TopDirectoryOnly))
         {
@@ -100,6 +103,8 @@ internal sealed class VideoCacheStore
             _entries[name] = new Entry(stat.Length, stat.LastWriteTimeUtc);
             _used += stat.Length;
         }
+        foreach (var pair in _entries.OrderBy(p => p.Value.Used))
+            pair.Value.Node = _recency.AddLast(pair.Key);
         _loaded = true;
         Trim(0);
     }
@@ -122,15 +127,30 @@ internal sealed class VideoCacheStore
     bool Protected(Entry entry) => entry.Identity != null && _readers.Values.Any(r => r.Identity == entry.Identity && entry.Start < r.End && entry.Start + entry.Length > r.Start);
     bool Trim(long incoming)
     {
-        if (_limit < 0) return true;
-        foreach (var pair in _entries.OrderBy(p => p.Value.Used).ToArray())
+        if (_limit < 0 || _used + incoming <= _limit) return true;
+        var node = _recency.First;
+        while (node != null)
         {
             if (_used + incoming <= _limit) return true;
-            if (Protected(pair.Value)) continue;
-            try { File.Delete(Path.Combine(_directory, pair.Key)); _entries.Remove(pair.Key); _used -= pair.Value.Size; }
+            var next = node.Next;
+            string name = node.Value;
+            var entry = _entries[name];
+            node = next;
+            if (Protected(entry)) continue;
+            try { File.Delete(Path.Combine(_directory, name)); Forget(name, entry); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { VideoCacheSettings.Warning = "部分视频片段暂时无法清理"; }
         }
         return _used + incoming <= _limit;
+    }
+    void Forget(string name, Entry entry)
+    {
+        _entries.Remove(name); _used -= entry.Size;
+        if (entry.Node != null) _recency.Remove(entry.Node);
+    }
+    void Touch(string name, Entry entry)
+    {
+        if (entry.Node == null) entry.Node = _recency.AddLast(name);
+        else { _recency.Remove(entry.Node); _recency.AddLast(entry.Node); }
     }
     internal byte[]? Read(string identity, long start, int length)
     {
@@ -146,13 +166,14 @@ internal sealed class VideoCacheStore
                 if (all.Length != length + HeaderBytes || BitConverter.ToInt32(all, 0) != 0x59564331 || BitConverter.ToInt64(all, 4) != start || BitConverter.ToInt32(all, 12) != length
                     || !CryptographicOperations.FixedTimeEquals(all.AsSpan(16, 32), SHA256.HashData(all.AsSpan(HeaderBytes)))) throw new InvalidDataException();
                 entry.Used = DateTime.UtcNow;
+                Touch(name, entry);
                 if (entry.Used - entry.SavedUse >= TimeSpan.FromMinutes(1))
                 { File.SetLastWriteTimeUtc(Path.Combine(_directory, name), entry.Used); entry.SavedUse = entry.Used; }
                 return all.AsSpan(HeaderBytes).ToArray();
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException)
             {
-                try { File.Delete(Path.Combine(_directory, name)); _entries.Remove(name); _used -= entry.Size; } catch (Exception removeError) when (removeError is IOException or UnauthorizedAccessException) { }
+                try { File.Delete(Path.Combine(_directory, name)); Forget(name, entry); } catch (Exception removeError) when (removeError is IOException or UnauthorizedAccessException) { }
                 VideoCacheSettings.Warning = "视频缓存读取失败，继续从片源读取"; return null;
             }
         }
@@ -174,7 +195,8 @@ internal sealed class VideoCacheStore
                 using (var writer = new BinaryWriter(file))
                 { writer.Write(0x59564331); writer.Write(start); writer.Write(bytes.Length); writer.Write(SHA256.HashData(bytes)); writer.Write(bytes); file.Flush(); }
                 File.Move(temporary, Path.Combine(_directory, name));
-                _entries.Add(name, new Entry(size, DateTime.UtcNow) { Identity = identity, Start = start, Length = bytes.Length });
+                var entry = new Entry(size, DateTime.UtcNow) { Identity = identity, Start = start, Length = bytes.Length };
+                _entries.Add(name, entry); Touch(name, entry);
                 _used += size; return true;
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -188,7 +210,7 @@ internal sealed class VideoCacheStore
         {
             Load(); if (_readers.Count != 0) throw new InvalidOperationException("播放中请先退出视频再清理视频缓存");
             foreach (string name in _entries.Keys.ToArray())
-            { File.Delete(Path.Combine(_directory, name)); _used -= _entries[name].Size; _entries.Remove(name); }
+            { File.Delete(Path.Combine(_directory, name)); Forget(name, _entries[name]); }
         }
     }
     sealed class Entry(long size, DateTime used)
@@ -196,6 +218,7 @@ internal sealed class VideoCacheStore
         internal long Size = size, Start;
         internal int Length;
         internal string? Identity;
+        internal LinkedListNode<string>? Node;
         internal DateTime Used = used, SavedUse = used;
     }
 }

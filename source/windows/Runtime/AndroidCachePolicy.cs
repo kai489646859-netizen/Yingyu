@@ -18,7 +18,20 @@ public sealed record AndroidImageOptions(int CacheGB = 5, int AutoCleanDays = 0,
 // bodies have separate gates: releasing a start never releases a body slot.
 public sealed class AndroidImageScheduler
 {
-    readonly SemaphoreSlim bodies = new(2, 2), admission = new(1, 1);
+    readonly SemaphoreSlim admission = new(1, 1);
+    sealed record WaitingBody(bool Interactive,TaskCompletionSource<bool> Ready);
+    readonly object bodySync=new();readonly List<WaitingBody> bodyQueue=new();int bodyCount;
+    async Task AcquireBody(bool interactive,CancellationToken token){
+        token.ThrowIfCancellationRequested();WaitingBody waiter;
+        lock(bodySync){if(bodyCount<2){bodyCount++;return;}waiter=new(interactive,new(TaskCreationOptions.RunContinuationsAsynchronously));bodyQueue.Add(waiter);}
+        try{await waiter.Ready.Task.WaitAsync(token).ConfigureAwait(false);}
+        catch{lock(bodySync){if(!bodyQueue.Remove(waiter))ReleaseBody();}throw;}
+    }
+    void ReleaseBody(){lock(bodySync){
+        if(bodyQueue.Count==0){bodyCount--;return;}
+        int index=bodyQueue.FindIndex(w=>w.Interactive);if(index<0)index=0;
+        var next=bodyQueue[index];bodyQueue.RemoveAt(index);next.Ready.TrySetResult(true);
+    }}
     readonly Func<long> clock;
     readonly Func<int, CancellationToken, Task> delay;
     readonly Func<AndroidImageOptions> options;
@@ -63,7 +76,7 @@ public sealed class AndroidImageScheduler
         if (Paused || !visible() || RetryDelay(origin) > TimeSpan.Zero) throw new OperationCanceledException(token);
     }
     public async Task<bool> RunAsync(string origin, Func<CancellationToken, Task<bool>> send,
-        Func<bool> visible, CancellationToken token)
+        Func<bool> visible, CancellationToken token, bool interactive=false)
     {
         bool acquired = false;
         using var abort = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -72,7 +85,7 @@ public sealed class AndroidImageScheduler
         try
         {
             Check(origin, visible, token);
-            await bodies.WaitAsync(token).ConfigureAwait(false); acquired = true;
+            await AcquireBody(interactive,token).ConfigureAwait(false); acquired = true;
             await admission.WaitAsync(token).ConfigureAwait(false);
             try
             {
@@ -124,7 +137,7 @@ public sealed class AndroidImageScheduler
             finished.Cancel();
             if (monitor != null) { try { await monitor.ConfigureAwait(false); } catch (OperationCanceledException) { } }
             lock (sync) active.Remove(abort);
-            if (acquired) bodies.Release();
+            if (acquired) ReleaseBody();
         }
         async Task Monitor()
         {

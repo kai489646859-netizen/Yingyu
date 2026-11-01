@@ -66,32 +66,6 @@ public static class BlurayTracks
 
     // Retained binary hook name. It now selects a disc-specific display label
     // for tagged audio as well as PGS; no new hook in the original assembly.
-    public static bool IsPgs(MpvTrackInfo track) => DiscAudioLabels.Contains(track) || track.Type == MpvTrackType.Subtitle
-        && (track.Codec?.Contains("pgs", StringComparison.OrdinalIgnoreCase) == true
-            || track.Title?.Contains("HDMV Presentation Graph", StringComparison.OrdinalIgnoreCase) == true);
-
-    public static string Label(MpvTrackInfo track)
-    {
-        if (DiscAudioLabels.Get(track) is { } audio) return audio;
-        string tag = track.Language?.Trim().ToLowerInvariant() ?? "";
-        string language = tag switch
-        {
-            "chi" or "zho" or "zh" or "zh-cn" or "zh-tw" or "zh-hans" or "zh-hant" => "中文",
-            "eng" or "en" => "英语", "jpn" or "ja" => "日语", "kor" or "ko" => "韩语",
-            "fra" or "fre" or "fr" => "法语", "deu" or "ger" or "de" => "德语",
-            "spa" or "es" => "西班牙语", "ita" or "it" => "意大利语",
-            "rus" or "ru" => "俄语", "por" or "pt" => "葡萄牙语",
-            "tha" or "th" => "泰语", "vie" or "vi" => "越南语",
-            "" or "und" or "unknown" => "语言未知", _ => tag
-        };
-        string label = $"{language} · PGS · 轨道 {track.Id.ToString(CultureInfo.InvariantCulture)}";
-        // Keep authored track names; suppress only the repeated codec description.
-        string title = track.Title?.Trim() ?? "";
-        int description = title.IndexOf("HDMV Presentation Graph", StringComparison.OrdinalIgnoreCase);
-        if (description >= 0) title = title[..description].Trim();
-        if (title.Length > 0 && !title.Contains("hdmv_pgs", StringComparison.OrdinalIgnoreCase)
-            && !title.Equals("PGS", StringComparison.OrdinalIgnoreCase)
-            && !title.Equals(tag, StringComparison.OrdinalIgnoreCase)) label += " · " + title;
-        return label;
-    }
+    public static bool IsPgs(MpvTrackInfo track)=>track.Type is MpvTrackType.Audio or MpvTrackType.Subtitle;
+    public static string Label(MpvTrackInfo track)=>TrackLabels.Display(track);
 }

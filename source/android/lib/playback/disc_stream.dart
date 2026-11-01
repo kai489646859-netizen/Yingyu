@@ -3,6 +3,7 @@ import 'dart:io' show HttpException, SocketException;
 import 'dart:typed_data';
 import '../core/models.dart';
 import 'disc_cache.dart';
+import 'network_route.dart';
 
 /// One HTTP response, requested from [start] to EOF. Pulling its iterator only
 /// when the bounded block cache asks for data provides socket backpressure.
@@ -15,6 +16,7 @@ class DiscStreamSource {
     this.canResume = false,
     this.validator,
     this.identity,
+    this.networkRevision,
   });
   final int start, total;
   final Stream<List<int>> bytes;
@@ -23,6 +25,7 @@ class DiscStreamSource {
   final String? validator;
   // Present only for an exact target with a strong ETag. Never logged.
   final DiscStreamIdentity? identity;
+  final int? networkRevision;
 }
 
 class DiscStreamIdentity {
@@ -107,8 +110,19 @@ class DiscReadMetrics {
 }
 
 class DiscStreamReader {
-  DiscStreamReader(this.open, {this.onResume, DiscReadMetrics? metrics})
-    : metrics = metrics ?? DiscReadMetrics();
+  DiscStreamReader(
+    this.open, {
+    this.onResume,
+    DiscReadMetrics? metrics,
+    PlaybackNetworkRoutes? network,
+    this.networkGrace = const Duration(seconds: 2),
+  }) : metrics = metrics ?? DiscReadMetrics(),
+       _network = network ?? PlaybackNetworkRoutes.shared;
+  final PlaybackNetworkRoutes _network;
+  final Duration networkGrace;
+  NetworkReadGate? _networkGate;
+  int _sourceRevision = 0, _handoffs = 0;
+  int _lastHandoffRevision = -1;
   final DiscStreamOpen open;
   final void Function()? onResume;
   final DiscReadMetrics metrics;
@@ -143,9 +157,22 @@ class DiscStreamReader {
         error is _TruncatedBody ||
         error is HttpException &&
             error.message.toLowerCase().contains('connection closed');
+    if (transient &&
+        previous.canResume &&
+        previous.identity != null &&
+        !cancellation.cancelled &&
+        !_closed) {
+      await _network.waitAvailable(cancellation.whenCancelled);
+    }
+    final handoff =
+        previous.identity != null &&
+        _network.available &&
+        _sourceRevision != _network.revision &&
+        _lastHandoffRevision != _network.revision &&
+        _handoffs < 3;
     if (!transient ||
         !previous.canResume ||
-        resumedResponses >= 1 ||
+        (!handoff && resumedResponses >= 1) ||
         cancellation.cancelled ||
         _closed) {
       throw error;
@@ -154,10 +181,16 @@ class DiscStreamReader {
     await _release();
     cancellation.check();
     if (_closed) throw const AppFailure('原盘读取已取消');
-    resumedResponses++;
+    if (handoff) {
+      _handoffs++;
+      _lastHandoffRevision = _network.revision;
+    } else {
+      resumedResponses++;
+    }
     onResume?.call();
     // The production opener reuses only an already resolved external URL.
     // This never overlaps the old response and never revisits a STRM entry.
+    final revision = _network.revision;
     final next = await metrics.opening(
       () => open(_path!, position, cancellation),
     );
@@ -167,11 +200,14 @@ class DiscStreamReader {
     }
     if (next.start != position ||
         next.total != previous.total ||
-        previous.validator != null && next.validator != previous.validator) {
+        previous.validator != null && next.validator != previous.validator ||
+        previous.identity != null &&
+            !previous.identity!.matches(next.identity)) {
       next.close(false);
       throw const AppFailure('原盘续读内容与原文件不一致，已停止播放');
     }
     _source = next;
+    _sourceRevision = next.networkRevision ?? revision;
     _iterator = StreamIterator(next.bytes);
     openedResponses++;
     cancellation.abort = () => unawaited(_release());
@@ -218,6 +254,7 @@ class DiscStreamReader {
         await _release();
         cancellation.check();
         if (_closed) throw const AppFailure('原盘读取已取消');
+        final revision = _network.revision;
         final source = await metrics.opening(
           () => open(path, start, cancellation),
         );
@@ -226,6 +263,7 @@ class DiscStreamReader {
           throw const AppFailure('原盘读取已取消');
         }
         _source = source;
+        _sourceRevision = source.networkRevision ?? revision;
         _iterator = StreamIterator(source.bytes);
         _path = path;
         _position = start;
@@ -254,11 +292,25 @@ class DiscStreamReader {
         if (_remainingAt == _remaining.length) {
           final iterator = _iterator;
           try {
-            if (iterator == null || !await metrics.next(iterator)) {
+            final current = _source ?? source;
+            final eligible = current.canResume && current.identity != null;
+            final more =
+                iterator != null &&
+                (eligible
+                    ? await (_networkGate ??= NetworkReadGate(
+                        _network,
+                        grace: networkGrace,
+                      )).next(
+                        metrics.next(iterator),
+                        revision: _sourceRevision,
+                        eligible: true,
+                      )
+                    : await metrics.next(iterator));
+            if (!more) {
               throw const _TruncatedBody();
             }
           } catch (error) {
-            await _resumeBody(error, source, cancellation);
+            await _resumeBody(error, _source ?? source, cancellation);
             continue;
           }
           cancellation.check();
@@ -310,6 +362,7 @@ class DiscStreamReader {
 
   Future<void> close() async {
     _closed = true;
+    _networkGate?.close();
     await _release();
   }
 }

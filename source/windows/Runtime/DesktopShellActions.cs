@@ -61,6 +61,7 @@ internal static class DesktopShellActions
         }
         void Key(object sender,KeyRoutedEventArgs e)
         {
+            if(ShortcutBinding.IsRecording(page.XamlRoot))return;
             SearchSpace(sender,e);if(e.Handled)return;
             try{
                 if(e.Handled||page.XamlRoot==null||VisualTreeHelper.GetOpenPopupsForXamlRoot(page.XamlRoot).Any(p=>p.IsOpen))return;

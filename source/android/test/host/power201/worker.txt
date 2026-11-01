@@ -1,0 +1,72 @@
+// ignore_for_file: unused_element, unused_element_parameter, unused_field, unused_import, prefer_final_fields, library_private_types_in_public_api
+// Complete worker body with native/media/port IO substituted for timer replay.
+import 'dart:async';
+
+class SendPort {
+  final sent = <dynamic>[];
+  void send(dynamic value) => sent.add(value);
+}
+class ReceivePort {
+  ReceivePort() { all.add(this); }
+  static final all = <ReceivePort>[];
+  final sendPort = SendPort();
+  void Function(dynamic)? handler;
+  bool closed = false;
+  void listen(void Function(dynamic) value) { handler = value; }
+  void deliver(dynamic value) { if (!closed) handler!(value); }
+  Future<dynamic> get first => Completer<dynamic>().future;
+  void close() { closed = true; }
+}
+class Isolate { static void exit() {} }
+class AppFailure implements Exception { AppFailure(String text); }
+String safeError(Object e) => 'synthetic';
+String redactLog(String e, {Iterable<String> secrets = const []}) => e;
+class _Route { final diagnosticSecrets = <String>[]; String playMethod='DirectPlay'; }
+class _Selected { int playlist=1; }
+class _WorkerLog { _WorkerLog(Object parent, Iterable<String> secrets) { latest=this; } static late _WorkerLog latest; bool enabled=true; void dispose() {} }
+class DiscNativeSession {
+  DiscNativeSession(Object id, dynamic read, {String? libraryPath});
+  Future<Object?> invoke(String method, Map<String,Object?> values) async => null;
+  String get health => 'synthetic native counters';
+}
+class DiscTransport {
+  DiscTransport(Object route, {Object? kind, String? address, int? cacheBytes,
+    String? sessionId, bool? backgroundOutput, bool? directInput,
+    dynamic nativeInvoke, Object? log, required this.onStage, required this.onFailure}) { latest=this; }
+  static late DiscTransport latest;
+  final void Function(String) onStage, onFailure;
+  int reads=0, counter=0, closes=0, seeks=0;
+  final rates=<double>[], buffering=<bool>[];
+  final titles=<Object>[];
+  _Selected? selected=_Selected();
+  String seekIndex=''; String base='synthetic';
+  String get readHealth { reads++; return 'counter=$counter'; }
+  Future<String> start({int? playlist}) async => 'synthetic';
+  Future<void> close() async { closes++; }
+  Object? readNativeInput(dynamic a,dynamic b,dynamic c,dynamic d,dynamic e) => null;
+  void setSpeed(double value) { rates.add(value); }
+  void setBuffering(bool value) { buffering.add(value); }
+  void resetReadAhead() { seeks++; }
+}
+class _WorkerStart {
+  final parent=SendPort(); final route=_Route(); final kind='iso';
+  final String? address=null,nativeLibraryPath=null;
+  final cacheBytes=1024; final id='synthetic'; final int? playlist=null;
+  final directNative=false;
+  bool logEnabled=true;
+}
+class WorkerHarness {
+  final args=_WorkerStart();
+  set initialLogging(bool value) { args.logEnabled=value; }
+  bool get logging => _WorkerLog.latest.enabled;
+  late ReceivePort commands;
+  DiscTransport get transport => DiscTransport.latest;
+  List<dynamic> get events => args.parent.sent;
+  Future<void> start() async {
+    final n=ReceivePort.all.length;
+    await _discWorkerMain(args);
+    commands=ReceivePort.all[n];
+  }
+  void command(List<dynamic> value) => commands.deliver(value);
+}
+// METHOD

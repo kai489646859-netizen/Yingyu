@@ -1,4 +1,4 @@
-using Mono.Cecil;
+﻿using Mono.Cecil;
 using Mono.Cecil.Cil;
 
 static class DesktopThemePatch
@@ -29,6 +29,9 @@ static class DesktopThemePatch
             After(page.Methods.Single(m => m.Name == name), "Card", true);
         After(page.Methods.Single(m => m.Name == "UpdateDetailExperienceLayout"), "Detail");
         After(page.Methods.Single(m => m.Name == "SetActiveNavigation"), "Navigation");
+        After(page.Methods.Single(m=>m.Name=="LibraryHeader_SizeChanged"),"HomeHeader");
+        foreach(string name in new[]{"ShowShell","TryShowOfflineShell","ShowHomeSnapshot"})
+            After(page.Methods.Single(m=>m.Name==name),"Navigation");
         var theme = Type(app, "EmbyDesktop.MainWindow").Methods.Single(m => m.Name == "ApplyTheme");
         mark(theme);
         var processor = theme.Body.GetILProcessor(); var start = theme.Body.Instructions[0];

@@ -9,8 +9,7 @@ public static partial class CachePaths
     public const string ApplicationId = "8E1C8179-C475-4BC7-A797-5E769E477C0C";
     static readonly Lazy<CacheLayout> Layout = new(() =>
     {
-        var layout = new CacheLayout(AppContext.BaseDirectory,
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "映屿"));
+        var layout = new CacheLayout(AppContext.BaseDirectory, ApplicationStorage.DataRoot, ApplicationStorage.LegacyRoot);
         InitializeMigrationObserver(layout);
         return layout;
     });
@@ -108,14 +107,16 @@ public sealed class CacheLayout
     public int PendingMigrations { get { lock (migrationGate) return migrations.Values.Count(task => !task.IsCompleted); } }
     public string InstallRoot { get; }
     public string UserDataRoot { get; }
+    public string LegacyDataRoot { get; }
     public string CacheRoot => Path.Combine(InstallRoot, "Cache");
-    public CacheLayout(string installationDirectory, string userDataDirectory)
+    public CacheLayout(string installationDirectory, string userDataDirectory, string? legacyDataDirectory = null)
     {
         InstallRoot = Absolute(installationDirectory);
         UserDataRoot = Absolute(userDataDirectory);
+        LegacyDataRoot = Absolute(legacyDataDirectory ?? userDataDirectory);
         if (SamePath(InstallRoot, Path.GetPathRoot(InstallRoot)!))
             throw new IOException("请选择映屿专用安装文件夹。");
-        if (!Path.GetFileName(UserDataRoot).Equals("映屿", StringComparison.Ordinal))
+        if (!Path.GetFileName(UserDataRoot).Equals("映屿", StringComparison.Ordinal) && !SamePath(UserDataRoot,Path.Combine(InstallRoot,"Data")))
             throw new IOException("个人数据目录身份不匹配。");
     }
     public static string Absolute(string value)
@@ -169,7 +170,7 @@ public sealed class CacheLayout
     }
     public void CopyLegacyPictures()
     {
-        var legacy = Path.Combine(UserDataRoot, "Cache", "Posters");
+        var legacy = Path.Combine(LegacyDataRoot, "Cache", "Posters");
         var target = DirectoryFor("Posters");
         QueueMigration(legacy + "|pictures", async token =>
         {
@@ -192,6 +193,7 @@ public sealed class CacheLayout
     {
         var source = Absolute(expectedLegacy);
         if (!IsWithin(UserDataRoot, source)) throw new IOException("旧缓存来源越界。");
+        source = Path.Combine(LegacyDataRoot, Path.GetRelativePath(UserDataRoot,source));
         var target = DirectoryFor(relativeDestination);
         QueueMigration(source + "|" + target, async token =>
         {

@@ -63,14 +63,14 @@ public static class PlayerShutdown
     {
         Trace("host-destroy-entered");window.Destroy();Trace("host-destroy-completed");
     }
-    static void Trace(string stage)=>PlaybackTransport.Write("Info","Playback.Shutdown",$"版本=0.5.8; stage={stage}。");
-    static void LogStage(object session,string stage)=>PlaybackTransport.Write("Info","Playback.Shutdown",$"版本=0.5.8; session={Identities.GetValue(session,_=>new()).Id}; stage={stage}。");
+    static void Trace(string stage)=>PlaybackTransport.Write("Info","Playback.Shutdown",$"版本=0.8.5; stage={stage}。");
+    static void LogStage(object session,string stage)=>PlaybackTransport.Write("Info","Playback.Shutdown",$"版本=0.8.5; session={Identities.GetValue(session,_=>new()).Id}; stage={stage}。");
 
     static Task Run(object session,Func<Task> action,string phase)
     {
         var dispatcher=Access.Get<DispatcherQueue>(session,"_dispatcher");
         int id=Identities.GetValue(session,_=>new()).Id;
-        void Log(string stage)=>PlaybackTransport.Write("Info","Playback.Shutdown",$"版本=0.5.8; session={id}; phase={phase}; stage={stage}; uiThread={dispatcher.HasThreadAccess}。");
+        void Log(string stage)=>PlaybackTransport.Write("Info","Playback.Shutdown",$"版本=0.8.5; session={id}; phase={phase}; stage={stage}; uiThread={dispatcher.HasThreadAccess}。");
         Log("requested");
         PlaybackFeatureLog.Write(session,"player-close",phase+"-requested");
         if(dispatcher.HasThreadAccess)return Complete();

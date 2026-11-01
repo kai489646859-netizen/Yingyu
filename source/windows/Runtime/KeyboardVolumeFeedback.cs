@@ -26,7 +26,14 @@ public static class KeyboardVolumeFeedback
         readonly TextBlock _text = new()
         {
             FontSize = 24, Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255)),
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             TextAlignment = TextAlignment.Center
+        };
+        readonly TextBlock _shadow = new()
+        {
+            FontSize = 24, Foreground = new SolidColorBrush(Color.FromArgb(210, 0, 0, 0)),
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            TextAlignment = TextAlignment.Center, Margin = new Thickness(1, 1, -1, -1)
         };
         readonly Border _panel;
         readonly DispatcherQueueTimer _timer;
@@ -35,14 +42,21 @@ public static class KeyboardVolumeFeedback
         internal State(object overlay)
         {
             _overlay = (FrameworkElement)overlay;
+            // A subtle glyph shadow keeps white text readable over bright
+            // frames without making the small background panel opaque.
+            var label = new Grid();
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAccessibilityView(
+                _shadow, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+            label.Children.Add(_shadow);
+            label.Children.Add(_text);
             _panel = new Border
             {
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0), Padding = new Thickness(24, 12, 24, 12),
                 CornerRadius = new CornerRadius(10), IsHitTestVisible = false,
-                Background = new SolidColorBrush(Color.FromArgb(102, 40, 40, 40)),
-                Visibility = Visibility.Collapsed, Child = _text
+                Background = new SolidColorBrush(Color.FromArgb(76, 40, 40, 40)),
+                Visibility = Visibility.Collapsed, Child = label
             };
             _layer.Children.Add(_panel);
             _timer = _overlay.DispatcherQueue.CreateTimer();
@@ -63,6 +77,7 @@ public static class KeyboardVolumeFeedback
                 _root.Children.Add(_layer);
             }
             _text.Text = $"音量 {value:0}%";
+            _shadow.Text = _text.Text;
             _panel.Visibility = Visibility.Visible;
             _timer.Stop();
             _timer.Start();

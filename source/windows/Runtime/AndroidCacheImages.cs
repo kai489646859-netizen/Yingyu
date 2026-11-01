@@ -118,7 +118,7 @@ public static class AndroidCacheImages
         bool result=await Scheduler.RunAsync(serverId,async t=>{
             started=true;ImageLoadDiagnostics.Record("network-queue",queued);
             return await send(t).ConfigureAwait(false);
-        },needed??(()=>true),token).ConfigureAwait(false);
+        },needed??(()=>true),token,priority==PosterFetchPriority.Interactive).ConfigureAwait(false);
         if(!started)ImageLoadDiagnostics.Record("network-deferred",queued);
         return result;
     }
@@ -157,7 +157,21 @@ public static class AndroidCacheImages
         try
         {
             pending = (Task<HttpResponseMessage>)Access.Call(cache, "SendWithRedirectsAsync", source, abort.Token)!;
-            using var response = claimed = await pending.WaitAsync(TimeSpan.FromSeconds(12), token).ConfigureAwait(false);
+            var response = claimed = await pending.WaitAsync(TimeSpan.FromSeconds(12), token).ConfigureAwait(false);
+            // Retry only an explicit format rejection, once, through the same
+            // authenticated redirect boundary and scheduler slot.
+            if(response.StatusCode==HttpStatusCode.UnsupportedMediaType
+                && source.AbsolutePath.Contains("/Images/",StringComparison.OrdinalIgnoreCase)
+                && !source.Query.TrimStart('?').Split('&').Any(p=>p.Split('=')[0].Equals("format",StringComparison.OrdinalIgnoreCase))
+                && !token.IsCancellationRequested && needed?.Invoke()!=false)
+            {
+                response.Dispose();claimed=null;
+                var compatible=new Uri(source.GetLeftPart(UriPartial.Path)+source.Query+(source.Query.Length==0?"?":"&")+"format=jpg");
+                ImageLoadDiagnostics.Record("format-fallback",started,415);
+                pending=(Task<HttpResponseMessage>)Access.Call(cache,"SendWithRedirectsAsync",compatible,abort.Token)!;
+                response=claimed=await pending.WaitAsync(TimeSpan.FromSeconds(12),token).ConfigureAwait(false);
+            }
+            using var ownedResponse=response;
             status=(int)response.StatusCode;ImageLoadDiagnostics.Record("response-headers",started,status);
             if (!response.IsSuccessStatusCode)
             {

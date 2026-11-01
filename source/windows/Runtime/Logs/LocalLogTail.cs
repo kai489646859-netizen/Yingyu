@@ -11,7 +11,7 @@ internal sealed record TailBatch(bool Reset, IReadOnlyList<LogRow> Rows, string 
 // is accessed; the file is shared with the original log writer.
 internal sealed class LocalLogTail
 {
-    internal static readonly string DirectoryPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "映屿", "日志");
+    internal static readonly string DirectoryPath = Path.Combine(Yingyu.Update.CachePaths.UserDataRoot, "日志");
     internal const int MaximumRows = 10_000;
     internal const int InitialBytes = 4 * 1024 * 1024;
     internal const int IncrementBytes = 256 * 1024;

@@ -286,6 +286,7 @@ class DiagnosticLog extends ChangeNotifier {
   String? storageError;
   Timer? _saveTimer;
   Future<void> _writes = Future.value();
+  bool _writing = false;
   bool _disposed = false;
   int _sequence = 0;
   String nextRequest(String prefix) => '$prefix${++_sequence}';
@@ -323,7 +324,9 @@ class DiagnosticLog extends ChangeNotifier {
       _saveTimer = null;
     }
     _saveTimer ??= Timer(
-      level == LogLevel.error ? Duration.zero : const Duration(milliseconds: 250),
+      level == LogLevel.error
+          ? Duration.zero
+          : const Duration(milliseconds: 250),
       () {
         _saveTimer = null;
         unawaited(flush());
@@ -335,37 +338,50 @@ class DiagnosticLog extends ChangeNotifier {
     _saveTimer?.cancel();
     _saveTimer = null;
     // Reuse the current save instead of queuing an empty write callback.
-    if (_pendingRecords.isEmpty && !_replacePending) return _writes;
+    if (_writing || (_pendingRecords.isEmpty && !_replacePending)) {
+      return _writes;
+    }
+    _writing = true;
     _writes = _writes.then((_) async {
-      if (_pendingRecords.isEmpty && !_replacePending) return;
-      final pending = List<LogEntry>.of(_pendingRecords);
-      final replace = _replacePending;
-      _pendingRecords.clear();
-      _replacePending = false;
-      final previousError = storageError;
-      List<String> snapshot() => _entries.map((e) => e.encode()).toList();
       try {
-        if (storage != null) {
-          if (replace) {
-            await storage!.replace(snapshot());
-          } else {
-            await storage!.append(
-              pending.map((e) => e.encode()).toList(),
-              snapshot,
-            );
+        do {
+          if (_pendingRecords.isEmpty && !_replacePending) return;
+          final pending = List<LogEntry>.of(_pendingRecords);
+          final replace = _replacePending;
+          _pendingRecords.clear();
+          _replacePending = false;
+          final previousError = storageError;
+          List<String> snapshot() => _entries.map((e) => e.encode()).toList();
+          try {
+            if (storage != null) {
+              if (replace) {
+                await storage!.replace(snapshot());
+              } else {
+                await storage!.append(
+                  pending.map((e) => e.encode()).toList(),
+                  snapshot,
+                );
+              }
+            } else if (prefs != null &&
+                !await prefs!.setStringList(entriesKey, snapshot())) {
+              throw StateError('save');
+            }
+            storageError = null;
+          } catch (_) {
+            // An append can fail after a partial write. The next save atomically
+            // replaces it with current memory, never re-appends duplicate rows.
+            _replacePending = true;
+            storageError = '日志未能保存到本机，当前记录仍可复制';
+            if (!_disposed && storageError != previousError) notifyListeners();
+            return; // Retry on a later flush, never spin on a failed disk.
           }
-        } else if (prefs != null &&
-            !await prefs!.setStringList(entriesKey, snapshot())) {
-          throw StateError('save');
-        }
-        storageError = null;
-      } catch (_) {
-        // An append can fail after a partial write. The next save atomically
-        // replaces it with current memory, never re-appends duplicate rows.
-        _replacePending = true;
-        storageError = '日志未能保存到本机，当前记录仍可复制';
+          if (!_disposed && storageError != previousError) notifyListeners();
+          // Logs/clear arriving during IO join this drain. Do not accumulate one
+          // Future callback per timer tick behind slow storage.
+        } while (_pendingRecords.isNotEmpty || _replacePending);
+      } finally {
+        _writing = false;
       }
-      if (!_disposed && storageError != previousError) notifyListeners();
     });
     return _writes;
   }

@@ -103,6 +103,7 @@ internal static class SensitiveText
     // values without the visual viewer's translation or line-length omission.
     internal static string HideRaw(string text)
     {
+        text = Yingyu.Update.StructuredLogRedactor.Redact(text);
         foreach (var pattern in Patterns) text = pattern.Replace(text, "[敏感信息已隐藏]");
         return text;
     }
@@ -111,6 +112,7 @@ internal static class SensitiveText
         if (text.Length > BoundedLines.MaxLineCharacters) return "超长记录已省略，原日志保留。";
         try
         {
+            text = Yingyu.Update.StructuredLogRedactor.Redact(text);
             foreach (var pattern in Patterns) text = pattern.Replace(text, "[敏感信息已隐藏]");
             return text.Replace("unknown", "未记录", StringComparison.Ordinal)
                 .Replace("LoadingFailed", "加载失败", StringComparison.Ordinal)

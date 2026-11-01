@@ -24,7 +24,7 @@ internal static class BlurayPreparationCache
         // exact key under the CURRENT freshly authenticated source/ETag/length;
         // never accept a slot merely because its directory bytes look similar.
         var keys = new List<string>();
-        foreach (string? version in new string?[] { "0.0.0", null, "0.5.9" })
+        foreach (string? version in new string?[] { "0.0.0", null, "0.8.5" })
             if (KeyCore(original, etag, length, headers, version) is { } key && !keys.Contains(key)) keys.Add(key);
         return keys;
     }

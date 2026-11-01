@@ -132,15 +132,20 @@ public static class AndroidCacheRuntime
             var button = new Button { Content = title };
             button.Click += async (_, _) =>
             {
-                if (confirm && ActivePlayback) { status.Text = "请在播放结束后清理缓存。"; return; }
-                if (confirm)
-                {
-                    var dialog = new ContentDialog { XamlRoot = element.XamlRoot, Title = title,
-                        Content = "只删除所选缓存，账号、设置和观看进度保留。", PrimaryButtonText = "清理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close };
-                    if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-                }
+                if (!button.IsEnabled) return;
                 button.IsEnabled = false;
-                try { await action(); if (confirm) status.Text = "已完成"; }
+                try
+                {
+                    if (confirm && ActivePlayback) { status.Text = "请在播放结束后清理缓存。"; return; }
+                    if (confirm)
+                    {
+                        var dialog = new ContentDialog { XamlRoot = element.XamlRoot, Title = title,
+                            Content = "只删除所选缓存，账号、设置和观看进度保留。", PrimaryButtonText = "清理", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close };
+                        if (await ModalProtection.Show(dialog) != ContentDialogResult.Primary) return;
+                        if (ActivePlayback) { status.Text = "请在播放结束后清理缓存。"; return; }
+                    }
+                    await action(); if (confirm) status.Text = "已完成";
+                }
                 catch (Exception error) { status.Text = "操作未完成：" + error.Message; }
                 finally { button.IsEnabled = true; }
             };

@@ -193,7 +193,7 @@ void main() {
       await tester.enterText(find.byType(EditableText), '不存在');
       await tester.pump(const Duration(milliseconds: 450));
       await settleOffline(tester);
-      expect(find.text('没有匹配的影片或剧集，演员结果见上方'), findsOneWidget);
+      expect(find.text('当前账号没有匹配影视，其他账号结果见下方'), findsOneWidget);
       expect(find.text('已显示全部'), findsNothing);
       expect(find.byType(CircularProgressIndicator), findsNothing);
       await tester.pumpWidget(const SizedBox());

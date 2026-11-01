@@ -204,7 +204,7 @@ public static class NativeDolby
             if(blockers.Length>768)blockers=blockers[..768];
             string block=$"chrome={chrome}; feedback={feedback}; status={status}; dialog={dialog}; popup={popup}; rootPaint={paintedRoot}; childPaint={paintedChildren}; rootBrush={root.Background?.GetType().Name??"none"}; blockers={blockers}";
             long now=Environment.TickCount64;
-            if(block!=lastBlock||now-lastTrace>=30000){lastBlock=block;lastTrace=now;PlaybackTransport.Write("Info","Playback.NativeDolby.UI",$"版本=0.5.8; safe={safe}; {block}。");}
+            if(block!=lastBlock||now-lastTrace>=30000){lastBlock=block;lastTrace=now;PlaybackTransport.Write("Info","Playback.NativeDolby.UI",$"版本=0.8.5; safe={safe}; {block}。");}
             Set(safe,reconcile&&safe);
         }
         void Set(bool safe,bool reconcile)

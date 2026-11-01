@@ -64,92 +64,57 @@ internal static class DesktopReadability
     internal static void Arrow(Button button,bool right)
     {
         var p=ReferenceSurfaces.Palette(button);
-        button.Template=ArrowTemplate;string glyph=right?"\uE76C":"\uE76B";if(button.Content is not FontIcon current||current.Glyph!=glyph)button.Content=new FontIcon{Glyph=glyph,FontSize=20,IsTextScaleFactorEnabled=false};if(button.Content is FontIcon icon)icon.Foreground=DesktopVisuals.Brush(p.Text);
-        button.Width=42;button.Height=54;button.MinWidth=42;button.MinHeight=54;button.MaxHeight=double.PositiveInfinity;
-        button.Padding=new(0);button.CornerRadius=new(21);button.BorderThickness=new(1);
+        button.Template=ArrowTemplate;string glyph=right?"\uE76C":"\uE76B";if(button.Content is not FontIcon current||current.Glyph!=glyph)button.Content=new FontIcon{Glyph=glyph,FontSize=12,IsTextScaleFactorEnabled=false};if(button.Content is FontIcon icon)icon.Foreground=DesktopVisuals.Brush(p.Text);
+        button.Width=34;button.Height=34;button.MinWidth=34;button.MinHeight=34;button.MaxHeight=double.PositiveInfinity;
+        button.Padding=new(0);button.CornerRadius=new(17);button.BorderThickness=new(1);
         button.Background=DesktopVisuals.Brush(p.Surface);button.BorderBrush=DesktopVisuals.Brush(DesktopMaterial.Mix(p.Outline,p.Accent,.4));button.Foreground=DesktopVisuals.Brush(p.Text);
         button.HorizontalContentAlignment=HorizontalAlignment.Center;button.VerticalContentAlignment=VerticalAlignment.Center;
-        Positions.GetValue(button,b=>new ArrowPosition(b)).Queue();
+        Positions.GetValue(button,b=>new ArrowPosition(b,right)).Queue();
     }
-    // Move the existing button and hit region together. Its original parent,
-    // Click handler, visibility, enabled state and horizontal position remain.
+    // Keep original buttons, handlers and row parent. Put the existing heading
+    // and both controls in a header row; the original viewport spans below it.
+    static readonly ConditionalWeakTable<Grid,object> HeaderRows=new();
     sealed class ArrowPosition
     {
-        readonly Button button;readonly Thickness originalMargin;
-        Grid? row;ScrollViewer? scroll;FrameworkElement? content;
-        bool queued,waiting;int retries;
-        internal ArrowPosition(Button button)
+        readonly Button button;readonly bool right;
+        Grid? row;ScrollViewer? scroll;bool queued;
+        internal ArrowPosition(Button button,bool right)
         {
-            this.button=button;originalMargin=button.Margin;button.Loaded+=(_,_)=>Queue();button.SizeChanged+=(_,_)=>Queue();
-            button.Unloaded+=(_,_)=>Unbind();
+            this.button=button;this.right=right;button.Loaded+=(_,_)=>Queue();button.Unloaded+=(_,_)=>Unbind();
         }
-        void Unbind()
-        {
-            if(row!=null)row.SizeChanged-=Changed;
-            button.LayoutUpdated-=Layout;
-            if(scroll!=null){scroll.SizeChanged-=Changed;scroll.ViewChanged-=Scrolled;}
-            if(content!=null)content.SizeChanged-=Changed;
-            row=null;scroll=null;content=null;waiting=false;
-        }
+        void Unbind(){if(row!=null)row.SizeChanged-=Changed;if(scroll!=null){scroll.ViewChanged-=Scrolled;scroll.SizeChanged-=Changed;if(scroll.Content is FrameworkElement content)content.SizeChanged-=Changed;}row=null;scroll=null;}
         void Changed(object sender,SizeChangedEventArgs args)=>Queue();
         void Scrolled(object? sender,ScrollViewerViewChangedEventArgs args)=>Queue();
-        internal void Queue(bool external=true)
+        internal void Queue()
         {
-            // XBF Loaded can arrive before IsLoaded flips. Enqueue first and
-            // check readiness in Paint after the framework finishes that event.
-            if(external)retries=6;if(queued)return;queued=true;
-            if(!button.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal,()=>{
-                queued=false;try{Paint();}catch(Exception error){PlaybackTransport.Write("Warning","Desktop.Row","海报翻页按钮位置未完成；"+error.GetType().Name);}
-            }))queued=false;
+            if(queued)return;queued=true;
+            if(!button.DispatcherQueue.TryEnqueue(()=>{queued=false;try{Paint();}catch(Exception e){PlaybackTransport.Write("Warning","Desktop.Row","栏目翻页布局未完成；"+e.GetType().Name);}}))queued=false;
         }
-        void Layout(object? sender,object args)
-        {if(--retries<=0){button.LayoutUpdated-=Layout;waiting=false;return;}Queue(false);}
-        void WaitForLayout(){if(!waiting&&retries>0){waiting=true;button.LayoutUpdated+=Layout;}}
         void Paint()
         {
             if(!button.IsLoaded)return;
-            Grid? parent=null;ScrollViewer? strip=null;
-            for(var node=VisualTreeHelper.GetParent(button);node!=null;node=VisualTreeHelper.GetParent(node))
-                if(node is Grid grid&&(strip=grid.Children.OfType<ScrollViewer>().FirstOrDefault(v=>v.VerticalScrollBarVisibility==ScrollBarVisibility.Disabled))!=null){parent=grid;break;}
-            if(parent==null||strip==null){WaitForLayout();return;}
-            if(!ReferenceEquals(row,parent)||!ReferenceEquals(scroll,strip)||!ReferenceEquals(content,strip.Content))
+            if(button.Parent is not Grid parent)return;
+            var strip=parent.Children.OfType<ScrollViewer>().FirstOrDefault(v=>v.VerticalScrollBarVisibility==ScrollBarVisibility.Disabled);
+            if(strip==null)return;
+            if(!ReferenceEquals(row,parent)){Unbind();row=parent;scroll=strip;row.SizeChanged+=Changed;scroll.ViewChanged+=Scrolled;scroll.SizeChanged+=Changed;if(scroll.Content is FrameworkElement content)content.SizeChanged+=Changed;}
+            if(!HeaderRows.TryGetValue(parent,out _))
             {
-                Unbind();row=parent;scroll=strip;content=strip.Content as FrameworkElement;
-                row.SizeChanged+=Changed;scroll.SizeChanged+=Changed;scroll.ViewChanged+=Scrolled;if(content!=null)content.SizeChanged+=Changed;
+                HeaderRows.Add(parent,new object());
+                FrameworkElement? heading=null;
+                if(parent.Parent is StackPanel host){int at=host.Children.IndexOf(parent);if(at>0&&host.Children[at-1] is FrameworkElement candidate&&candidate is not ScrollViewer&& !UiElements.Descendants(candidate).OfType<ScrollViewer>().Any()){heading=candidate;host.Children.RemoveAt(at-1);}}
+                parent.RowDefinitions.Clear();parent.RowDefinitions.Add(new(){Height=GridLength.Auto,MinHeight=40});parent.RowDefinitions.Add(new(){Height=GridLength.Auto});parent.RowSpacing=10;
+                int columns=Math.Max(1,parent.ColumnDefinitions.Count);Grid.SetRow(strip,1);Grid.SetColumn(strip,0);Grid.SetColumnSpan(strip,columns);
+                if(heading!=null){Grid.SetRow(heading,0);Grid.SetColumn(heading,0);Grid.SetColumnSpan(heading,columns);heading.Margin=new(heading.Margin.Left-4,heading.Margin.Top,heading.Margin.Right+90,heading.Margin.Bottom);heading.VerticalAlignment=VerticalAlignment.Center;parent.Children.Insert(0,heading);}
             }
-            var viewport=scroll.TransformToVisual(row).TransformBounds(new Rect(0,0,scroll.ActualWidth,scroll.ActualHeight));
-            var images=UiElements.Descendants(scroll).OfType<Image>().Where(im=>im.IsLoaded&&im.Visibility==Visibility.Visible&&im.ActualWidth>30&&im.ActualHeight>30)
-                .Select(im=>im.TransformToVisual(row).TransformBounds(new Rect(0,0,im.ActualWidth,im.ActualHeight)))
-                .Where(b=>b.Right>viewport.Left&&b.Left<viewport.Right).OrderBy(b=>b.Left).ToArray();
-            if(images.Length==0)
+            // Keep the original inset that protects poster hover scaling, but
+            // place that transparent gutter outside the common leading edge.
+            var card=UiElements.Descendants(strip).OfType<Grid>().FirstOrDefault(g=>g.RowDefinitions.Count==3&&g.DataContext?.GetType().Name=="MediaCardViewModel"&&g.IsLoaded);
+            if(card!=null&&UiElements.Descendants(card).OfType<Image>().FirstOrDefault(im=>im.IsLoaded&&im.ActualWidth>30) is {} artwork)
             {
-                // Empty/failed posters keep a real image aperture too. Never
-                // wait for downloading pixels just to position an arrow.
-                images=UiElements.Descendants(scroll).OfType<Grid>().Where(g=>g.IsLoaded&&g.Name=="PosterCardRoot")
-                    .SelectMany(g=>g.Children.OfType<FrameworkElement>().Where(e=>Grid.GetRow(e)==0&&e.ActualWidth>30&&e.ActualHeight>30).Take(1))
-                    .Select(e=>e.TransformToVisual(row).TransformBounds(new Rect(0,0,e.ActualWidth,e.ActualHeight)))
-                    .Where(b=>b.Right>viewport.Left&&b.Left<viewport.Right).OrderBy(b=>b.Left).ToArray();
+                double inset=artwork.TransformToVisual(card).TransformPoint(new(0,0)).X;
+                if(double.IsFinite(inset)&&inset>=0&&inset<50&&Math.Abs(strip.Margin.Left+inset)>.2)strip.Margin=new(-inset,strip.Margin.Top,strip.Margin.Right,strip.Margin.Bottom);
             }
-            if(images.Length==0||button.ActualHeight<=0)
-            {WaitForLayout();return;}
-            if(waiting){button.LayoutUpdated-=Layout;waiting=false;}
-            // Move the layout and hit region together. Balanced vertical
-            // margins preserve the row's desired height and coexist with the
-            // host's Scale/Translation resets and original press feedback.
-            if(VisualTreeHelper.GetParent(button) is not FrameworkElement layoutParent)return;
-            var area=layoutParent.TransformToVisual(row).TransformBounds(new Rect(0,0,layoutParent.ActualWidth,layoutParent.ActualHeight));
-            double naturalCenter=button.VerticalAlignment switch
-            {
-                VerticalAlignment.Top=>area.Top+originalMargin.Top+button.ActualHeight/2,
-                VerticalAlignment.Bottom=>area.Bottom-originalMargin.Bottom-button.ActualHeight/2,
-                _=>area.Top+(area.Height+originalMargin.Top-originalMargin.Bottom)/2,
-            };
-            double offset=images[0].Y+images[0].Height/2-naturalCenter;
-            if(double.IsFinite(offset))
-            {
-                var target=new Thickness(originalMargin.Left,originalMargin.Top+offset,originalMargin.Right,originalMargin.Bottom-offset);
-                if(button.Margin!=target)button.Margin=target;
-            }
+            Grid.SetRow(button,0);Grid.SetColumn(button,0);Grid.SetColumnSpan(button,Math.Max(1,parent.ColumnDefinitions.Count));button.HorizontalAlignment=HorizontalAlignment.Right;button.VerticalAlignment=VerticalAlignment.Center;button.Margin=new(0,0,right?0:44,0);
         }
     }
     internal static void Arrows(FrameworkElement view)
@@ -163,7 +128,7 @@ internal static class DesktopReadability
             bool? direction=name is "HomeRowPreviousButton"?false:name is "HomeRowNextButton"?true:label=="上一组"?false:label=="下一组"?true:button.Content is string text&&text=="‹"?false:button.Content is string text2&&text2=="›"?true:null;
             if(direction==null&&VisualTreeHelper.GetParent(button) is Grid row&&row.Children.OfType<ScrollViewer>().FirstOrDefault(s=>s.VerticalScrollBarVisibility==ScrollBarVisibility.Disabled) is {} strip)
             {
-                if(button.Content is FontIcon arrow&&arrow.Glyph is "\uE76B" or "\uE76C" or "\uE0E2" or "\uE0E3")direction=Grid.GetColumn(button)>Grid.GetColumn(strip);
+                if(button.Content is FontIcon arrow&&arrow.Glyph is "\uE76B" or "\uE76C" or "\uE0E2" or "\uE0E3")direction=arrow.Glyph is "\uE76C" or "\uE0E3";
             }
             if(direction is {} right)Arrow(button,right);
         }

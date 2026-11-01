@@ -22,10 +22,9 @@ public static class ArtworkStorage
         string? shared = AndroidCacheImages.ResolveWork(cache, request)
             ?? AndroidCacheImages.ResolveShared(cache, (string?)Access.Call(cache, "BuildSharedAliasPath", request));
         if (shared == null || !shared.StartsWith(CachePaths.Artwork + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return;
-        Directory.CreateDirectory(Path.GetDirectoryName(exact)!);
-        string temporary = exact + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try { File.Copy(shared, temporary); try { File.Move(temporary, exact, false); } catch (IOException) when (File.Exists(exact)) { } }
-        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        // Share a small alias, not another copy of the same image file.
+        string? alias=(string?)Access.Call(cache,"BuildSharedAliasPath",request);
+        if(alias!=null)Access.Call(cache,"RegisterSharedPath",alias,shared);
     }
     public static void Configure(object page) => AndroidCacheRuntime.Configure(page);
 }

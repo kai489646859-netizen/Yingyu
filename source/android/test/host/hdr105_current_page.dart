@@ -1,5 +1,6 @@
 import 'package:yingyu/playback/subtitle_size_menu.dart';
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -27,6 +28,8 @@ import 'package:yingyu/playback/intro_editor.dart';
 import 'package:yingyu/playback/episode_continuity.dart';
 import 'package:yingyu/playback/orientation.dart';
 import 'package:yingyu/playback/player_status.dart';
+import 'package:yingyu/playback/network_route.dart';
+import 'package:yingyu/playback/network_recovery.dart';
 import 'package:yingyu/playback/opening_metadata.dart';
 import 'package:yingyu/playback/frame_rate_hint.dart';
 import 'package:yingyu/playback/subtitle_import.dart';
@@ -42,12 +45,16 @@ class PlayerPage extends StatefulWidget {
     this.createSessionForItem,
     this.browse,
     this.allowNetwork,
+    this.networkEvents,
   });
   final PlaybackSession Function() createSession;
   final bool fromBeginning;
   final PlaybackSession Function(MediaItem)? createSessionForItem;
   final BrowseRepository? browse;
   final Future<bool> Function(BuildContext)? allowNetwork;
+
+  /// Injectable platform events for host tests; Android supplies the default.
+  final Stream<dynamic>? networkEvents;
   @override
   State<PlayerPage> createState() => _PlayerPageState();
 }
@@ -83,6 +90,36 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool audioDucked = false;
   bool locked = false, unlockVisible = false, foreground = true;
   final playerStatus = PlayerStatusController();
+  StreamSubscription<dynamic>? _networkSubscription;
+  NetworkPlaybackRecovery? _networkRecovery;
+  bool _networkSeen = false;
+  void _networkChanged(dynamic event) {
+    final routes = PlaybackNetworkRoutes.shared;
+    final previousKind = routes.kind;
+    final changed = routes.update(event);
+    final seen = _networkSeen;
+    _networkSeen = true;
+    if (!mounted || exiting || session.closed || !seen) return;
+    if (routes.available &&
+        routes.kind == 'mobile' &&
+        previousKind != 'mobile') {
+      setState(() => overlay = '已切换到手机流量');
+      scheduleOverlayHide();
+    }
+    if (changed) {
+      session.store.log.add(
+        LogArea.network,
+        '默认网络变化：类型=${routes.kind}；可用=${routes.available}；代次=${routes.revision}；未采集网络名称或地址',
+      );
+      _networkRecovery?.changed(
+        routes.available &&
+            foreground &&
+            !session.background &&
+            session.backend.snapshot.playing,
+      );
+    }
+  }
+
   final _awake = PlayerAwake();
   final _positionRefresh = ValueNotifier<Duration>(Duration.zero);
   Object? _builtState;
@@ -293,8 +330,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _finishLevelDrag() {
     _levelDragActive = false;
+    if (overlay == 'brightness-level' || overlay == 'volume-level') {
+      overlayHideTimer?.cancel();
+      setState(() => overlay = null);
+    }
     if (locked) return;
-    scheduleOverlayHide();
     if (_levelsInteractive && leftSide) {
       unawaited(recordBrightness(session, '亮度手势结束'));
     }
@@ -502,6 +542,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    PlaybackNetworkRoutes.shared.beginObservation();
     WidgetsBinding.instance.addObserver(this);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     Device.channel.setMethodCallHandler((call) async {
@@ -557,6 +598,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (mounted) setState(() => operationError = safeError(error));
     });
     start();
+    final events =
+        widget.networkEvents ??
+        (Platform.isAndroid
+            ? PlaybackNetworkRoutes.channel.receiveBroadcastStream()
+            : null);
+    _networkSubscription = events?.listen(
+      _networkChanged,
+      onError: (Object _) {},
+    );
   }
 
   Future<void> start({
@@ -575,6 +625,41 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               : widget.createSessionForItem!(selectedEpisode!))
           ..addListener(changed);
     final owner = session;
+    _networkRecovery?.close();
+    _networkRecovery = NetworkPlaybackRecovery(
+      eligible: () =>
+          mounted &&
+          !exiting &&
+          !switching &&
+          !retrying &&
+          foreground &&
+          session == owner &&
+          !owner.closed &&
+          !owner.background &&
+          owner.ready &&
+          !owner.seeking &&
+          owner.error == null &&
+          owner.api.session == owner.account &&
+          owner.backend.snapshot.playing &&
+          owner.backend.snapshot.buffering &&
+          !owner.backend.snapshot.completed,
+      recover: (current) async {
+        final backend = owner.backend;
+        if (backend is NetworkRecoveryBackend) {
+          await (backend as NetworkRecoveryBackend).recoverNetwork(current);
+        }
+      },
+      onError: (error) {
+        owner.store.log.add(
+          LogArea.network,
+          '网络恢复未完成：${safeError(error)}',
+          level: LogLevel.warning,
+        );
+        if (mounted && session == owner && !exiting && !owner.closed) {
+          setState(() => operationError = '网络切换后读取未恢复，请重试');
+        }
+      },
+    );
     neighborsLoading = false;
     owner.skipOpeningIntro = automatic;
     if (mounted) {
@@ -686,6 +771,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   );
   void changed() {
     if (!mounted) return;
+    if (session.seeking ||
+        session.background ||
+        !session.backend.snapshot.playing) {
+      _networkRecovery?.cancel();
+    }
     if (locked && session.error != null) {
       locked = unlockVisible = false;
       controls = true;
@@ -977,6 +1067,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _networkRecovery?.close();
+    unawaited(_networkSubscription?.cancel());
     overlayHideTimer?.cancel();
     unawaited(_frameRateHints.close());
     _nextPrepared?.cancel();
@@ -1508,6 +1600,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         child: Center(
                           child: AnimatedSwitcher(
                             duration: const Duration(milliseconds: 180),
+                            reverseDuration: Duration.zero,
                             transitionBuilder: (child, animation) =>
                                 FadeTransition(
                                   opacity: animation,

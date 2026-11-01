@@ -1,0 +1,2 @@
+ae7e5cff6cc0f10b835853f4d5004fbf463f05d1caf1ccc96ed5c7e159618770  Yingyu-Setup-x64-0.8.5.exe
+d8deefbd2075abf7c14a944d206d3f9960664c7ac77b44881e4257dfb6e689c0  Yingyu-0.8.5-source-and-symbols.zip

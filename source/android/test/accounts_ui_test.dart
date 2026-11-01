@@ -18,6 +18,8 @@ import 'package:yingyu/core/store.dart';
 import 'package:yingyu/playback/device.dart';
 import 'package:yingyu/ui/accounts.dart';
 import 'package:yingyu/ui/detail.dart';
+import 'package:yingyu/ui/release_refresh.dart';
+import 'package:yingyu/ui/library_layout.dart';
 import 'package:yingyu/ui/style.dart';
 import 'package:yingyu/version.dart';
 import 'accounts_test.dart' show accountFixture;
@@ -431,32 +433,75 @@ void main() {
       }
     }
   });
-  testWidgets(
-    'aggregate B result switches account then opens B detail exactly once',
-    (tester) async {
-      await start(tester);
-      await library(tester);
-      await tester.tap(find.byKey(const Key('open-federated-search')));
-      await settleOffline(tester);
-      await tester.enterText(find.byKey(const Key('federated-search')), '影片');
-      await tester.pump(const Duration(milliseconds: 400));
-      await settleOffline(tester);
-      await tester.ensureVisible(find.text('b 的影片'));
-      await tester.tap(find.text('b 的影片'));
-      await settleOffline(tester);
-      expect(store.accounts.selected!.id, accountKey(b));
-      expect(find.byType(DetailPage), findsOneWidget);
-      expect(
-        tester.widget<DetailPage>(find.byType(DetailPage)).api.session!.userId,
-        b.userId,
-      );
-      Navigator.of(tester.element(find.byType(DetailPage))).pop();
-      await settleOffline(tester);
-      store.notifyListeners();
-      await settleOffline(tester);
-      expect(find.byType(DetailPage), findsNothing);
-      await tester.pumpWidget(const SizedBox());
-      await settleOffline(tester);
-    },
-  );
+  for (final fromHome in [false, true]) {
+    testWidgets(
+      'default ${fromHome ? 'home' : 'library'} search switches account then opens B detail exactly once',
+      (tester) async {
+        await start(tester);
+        if (fromHome) {
+          await tester.tap(find.byKey(const Key('home-search')));
+          await settleOffline(tester);
+        } else {
+          await library(tester);
+        }
+        expect(find.byKey(const Key('open-federated-search')), findsNothing);
+        await tester.enterText(find.byKey(const Key('library-search')), '影片');
+        await tester.pump(const Duration(milliseconds: 400));
+        await settleOffline(tester);
+        final target = find.text('b 的影片');
+        final scrollable = find
+            .descendant(
+              of: find.byType(ReleaseRefreshScrollView),
+              matching: find.byType(Scrollable),
+            )
+            .last;
+        for (
+          var attempt = 0;
+          attempt < 8 && target.hitTestable().evaluate().isEmpty;
+          attempt++
+        ) {
+          await tester.drag(scrollable, const Offset(0, -180));
+          await settleOffline(tester);
+        }
+        expect(target.hitTestable(), findsOneWidget);
+        final foreignCard = find.ancestor(
+          of: target,
+          matching: find.byType(LibraryPosterCard),
+        );
+        expect(
+          find.descendant(
+            of: foreignCard,
+            matching: find.byKey(const ValueKey('poster-more-same-id')),
+          ),
+          findsNothing,
+        );
+        expect(
+          find.descendant(
+            of: foreignCard,
+            matching: find.byKey(const ValueKey('poster-long-anchor-same-id')),
+          ),
+          findsNothing,
+        );
+        await tester.tap(find.text('b 的影片'));
+        await settleOffline(tester);
+        expect(store.accounts.selected!.id, accountKey(b));
+        expect(find.byType(DetailPage), findsOneWidget);
+        expect(
+          tester
+              .widget<DetailPage>(find.byType(DetailPage))
+              .api
+              .session!
+              .userId,
+          b.userId,
+        );
+        Navigator.of(tester.element(find.byType(DetailPage))).pop();
+        await settleOffline(tester);
+        store.notifyListeners();
+        await settleOffline(tester);
+        expect(find.byType(DetailPage), findsNothing);
+        await tester.pumpWidget(const SizedBox());
+        await settleOffline(tester);
+      },
+    );
+  }
 }

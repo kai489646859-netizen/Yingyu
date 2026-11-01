@@ -197,35 +197,45 @@ class OutputIo {
 
   }
   Future<void> _command(List<String> args) async {
-    if (args.isNotEmpty && const {
-      'seek', 'loadfile', 'loadlist', 'stop', 'playlist-next', 'playlist-prev',
-      'playlist-play-index',
-    }.contains(args.first)) {
+    if (args.isNotEmpty &&
+        const {
+          'seek',
+          'loadfile',
+          'loadlist',
+          'stop',
+          'playlist-next',
+          'playlist-prev',
+          'playlist-play-index',
+        }.contains(args.first)) {
       outputEpoch++;
     }
     final pointers = args.map<Pointer<Utf8>>((e) => e.toNativeUtf8()).toList();
-    final arr = calloc<Pointer<Utf8>>(128);
+    final arr = calloc<Pointer<Utf8>>(args.length + 1);
     for (int i = 0; i < args.length; i++) {
       (arr + i).value = pointers[i];
     }
 
-    if (configuration.async) {
-      final requestNumber = _asyncRequestNumber++;
-      final completer = _commandRequests[requestNumber] = Completer<int>();
-      final immediate = mpv.mpv_command_async(ctx, requestNumber, arr.cast());
-      final text = '_command(${args.join(', ')})';
-      if (immediate < 0) {
-        // Sending failed.
-        _logError(immediate, text);
-        return;
+    int? requestNumber;
+    try {
+      if (configuration.async) {
+        requestNumber = _asyncRequestNumber++;
+        final completer = _commandRequests[requestNumber] = Completer<int>();
+        final immediate = mpv.mpv_command_async(ctx, requestNumber, arr.cast());
+        final text = '_command(${args.join(', ')})';
+        if (immediate < 0) {
+          // Sending failed.
+          _logError(immediate, text);
+          return;
+        }
+        _logError(await completer.future, text);
+      } else {
+        mpv.mpv_command(ctx, arr.cast());
       }
-      _logError(await completer.future, text);
-    } else {
-      mpv.mpv_command(ctx, arr.cast());
+    } finally {
+      if (requestNumber != null) _commandRequests.remove(requestNumber);
+      calloc.free(arr);
+      pointers.forEach(calloc.free);
     }
-
-    calloc.free(arr);
-    pointers.forEach(calloc.free);
   }
 
 }

@@ -48,6 +48,7 @@ internal static partial class ReferenceAppearance
         }
         void AttachSearchPage(Grid shell)
         {
+            if(Find<AutoSuggestBox>("SearchBox") is {} editor)editor.Loaded+=(_,_)=>{if(!searchExpanded)return;int epoch=searchEpoch;page.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,()=>{if(searchExpanded&&epoch==searchEpoch&&editor.IsLoaded)DesktopSearch.Focus(editor);});};
             searchBody.Children.Add(searchHost);searchBody.Children.Add(suggestions);
             searchPage.Children.Add(new ScrollViewer{Content=searchBody,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});
             Grid.SetColumn(searchPage,0);Grid.SetColumnSpan(searchPage,Math.Max(1,shell.ColumnDefinitions.Count));Grid.SetRow(searchPage,0);Grid.SetRowSpan(searchPage,Math.Max(1,shell.RowDefinitions.Count));Canvas.SetZIndex(searchPage,12);shell.Children.Add(searchPage);

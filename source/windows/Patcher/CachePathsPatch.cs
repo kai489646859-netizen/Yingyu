@@ -8,6 +8,15 @@ internal static class CachePathsPatch
     {
         var changed = new List<string>();
         var paths = helper.MainModule.Types.Single(t => t.FullName == "Yingyu.Update.CachePaths");
+        var storage = helper.MainModule.Types.Single(t => t.FullName == "Yingyu.Update.ApplicationStorage");
+        var dataPaths = core.MainModule.Types.Single(t => t.FullName == "EmbyDesktop.Core.Services.YingyuDataPaths");
+        foreach(var pair in new[]{("get_RootDirectory","get_DataRoot"),("EnsureLegacyDataMigrated","Prepare")})
+        {
+            var method=dataPaths.Methods.Single(m=>m.Name==pair.Item1);
+            method.Body.Instructions.Clear(); method.Body.Variables.Clear(); method.Body.ExceptionHandlers.Clear();
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Call,core.MainModule.ImportReference(storage.Methods.Single(m=>m.Name==pair.Item2))));
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));changed.Add(method.FullName);
+        }
         MethodReference Import(ModuleDefinition module, string name) => module.ImportReference(paths.Methods.Single(m => m.Name == name));
         void RedirectArgument(string typeName, string methodName, int parameter, string redirect)
         {

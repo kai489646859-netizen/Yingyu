@@ -11,6 +11,7 @@ import 'tracks.dart';
 import 'media_facts.dart';
 import 'media_notice.dart';
 import 'native_hdr.dart';
+import 'device_identity.dart';
 
 /// PC's circled-exclamation button invokes MPV's stats overlay. The mobile
 /// surface presents only already available facts; opening it makes no request.
@@ -37,6 +38,7 @@ class _PlaybackInfoPageState extends State<PlaybackInfoPage> {
     session.closed,
     session.seeking,
     session.error,
+    session.deviceIdentity,
   );
 
   void changed() {
@@ -274,8 +276,8 @@ class _PlaybackInfoPageState extends State<PlaybackInfoPage> {
                             ].whereType<String>().join(' · '),
                     ),
                     SettingsRow(
-                      '片源帧率',
-                      subtitle: known(current['container-fps']),
+                      '片源帧率（封装标注）',
+                      subtitle: mediaFrameRate(current['container-fps']),
                     ),
                     if (backend is PlaybackOutputBackend) ...[
                       SettingsRow(
@@ -357,6 +359,39 @@ class _PlaybackInfoPageState extends State<PlaybackInfoPage> {
                 ),
                 if (serverRows.isNotEmpty)
                   SettingsGroup(title: '服务器补充资料', children: serverRows),
+                SettingsGroup(
+                  title: '设备信息（系统报告）',
+                  children: [
+                    SettingsRow(
+                      '设备型号',
+                      subtitle: DeviceIdentity.shown(
+                        session.deviceIdentity.model,
+                      ),
+                    ),
+                    SettingsRow(
+                      '品牌',
+                      subtitle: DeviceIdentity.shown(
+                        session.deviceIdentity.brand,
+                      ),
+                    ),
+                    SettingsRow(
+                      '制造商',
+                      subtitle: DeviceIdentity.shown(
+                        session.deviceIdentity.manufacturer,
+                      ),
+                    ),
+                    SettingsRow(
+                      '系统版本',
+                      subtitle: DeviceIdentity.shown(
+                        session.deviceIdentity.system,
+                      ),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.all(20),
+                      child: Text('型号按系统原值显示，可能是型号代码；不推断营销名称。片源帧率不等于屏幕实际呈现帧率。'),
+                    ),
+                  ],
+                ),
                 SettingsGroup(
                   title: '播放状态',
                   children: [

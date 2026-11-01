@@ -46,7 +46,7 @@ internal static class ColorDiagnostics
         for(int i=0;i<Watched.Length;i++)
             if((int)MpvNative.ObserveProperty(client.Handle,0x5949430000000000UL+(ulong)i,Watched[i],MpvFormat.None)>=0)accepted++;
         Observed.Add(client,new());
-        PlaybackTransport.Write("Info","Playback.Color",$"版本=0.5.8; event=observation-registration; accepted={accepted}; requested={Watched.Length}; valuesCopied=false");
+        PlaybackTransport.Write("Info","Playback.Color",$"版本=0.8.5; event=observation-registration; accepted={accepted}; requested={Watched.Length}; valuesCopied=false");
     }
     internal static void Property(MpvClient client,MpvEventProperty property)
     {

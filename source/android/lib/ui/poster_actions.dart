@@ -18,16 +18,24 @@ class PosterActionsScope extends InheritedWidget {
     required this.feed,
     required this.onItem,
     required super.child,
+    this.enabled = true,
   });
   final PersonalSync sync;
   final InterfacePreferences preferences;
   final HomeFeed feed;
   final Future<void> Function(MediaItem) onItem;
-  static PosterActionsScope? maybeOf(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<PosterActionsScope>();
+  final bool enabled;
+  static PosterActionsScope? maybeOf(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<PosterActionsScope>();
+    return scope?.enabled == true ? scope : null;
+  }
+
   @override
   bool updateShouldNotify(PosterActionsScope old) =>
-      old.sync != sync || old.preferences != preferences;
+      old.sync != sync ||
+      old.preferences != preferences ||
+      old.enabled != enabled;
 }
 
 enum _Action {

@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using EmbyDesktop.Core.Services;
@@ -50,6 +50,11 @@ public static class DesktopTheme
         try { if (Pages.TryGetValue(page, out var state)) state.Navigation(); }
         catch (Exception error) { Report(error); }
     }
+    public static void HomeHeader(object page)
+    {
+        try { if(page is FrameworkElement element)HomePresentation.Header(element); }
+        catch (Exception error) { Report(error); }
+    }
     static Color Color(uint value) => Windows.UI.Color.FromArgb((byte)(value >> 24), (byte)(value >> 16), (byte)(value >> 8), (byte)value);
     static SolidColorBrush Brush(uint value) => new(Color(value));
     sealed class CardState
@@ -92,6 +97,9 @@ public static class DesktopTheme
             // Each supported callback has its own exception boundary. There is
             // no optional system-event subscription during construction or load.
             system.Run("register-loaded", () => page.Loaded += OnLoaded);
+            if(Find<ItemsControl>("HomeLibrarySectionsControl") is {} home){
+                home.Loaded+=(_,_)=>QueueHomeRows();home.SizeChanged+=(_,_)=>QueueHomeRows();home.Items.VectorChanged+=(_,_)=>QueueHomeRows();
+            }
             system.Run("register-unloaded", () => page.Unloaded += OnUnloaded);
             system.Run("register-theme", () => page.ActualThemeChanged += OnActualThemeChanged);
             system.Run("register-size", () => page.SizeChanged += OnSizeChanged);
@@ -319,6 +327,24 @@ public static class DesktopTheme
             ReferenceAppearance.Apply(page);
             DetailArtwork.EnsureSurface(page);
         }
+        bool homeRowsQueued;
+        readonly ConditionalWeakTable<GridView,object> homeRows=new();
+        void QueueHomeRows(){
+            if(homeRowsQueued)return;homeRowsQueued=true;
+            if(!page.DispatcherQueue.TryEnqueue(()=>{
+                homeRowsQueued=false;if(!page.IsLoaded||Find<ItemsControl>("HomeLibrarySectionsControl") is not {} host)return;
+                foreach(var row in UiElements.Descendants(host).OfType<GridView>().ToArray()){
+                    // The bounded home strips already realize their cards inside an outer
+                    // horizontal ScrollViewer. Measure each configured container width
+                    // instead of retaining ItemsStackPanel's initial 184-DIP slot.
+                    if(!homeRows.TryGetValue(row,out _)){
+                        homeRows.Add(row,new());row.ContainerContentChanging+=(_,_)=>QueueHomeRows();row.Loaded+=(_,_)=>QueueHomeRows();
+                        row.ItemsPanel=(ItemsPanelTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load("<ItemsPanelTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><StackPanel Orientation=\"Horizontal\"/></ItemsPanelTemplate>");
+                    }
+                    foreach(var root in UiElements.Descendants(row).OfType<Grid>().Where(g=>g.Name=="PosterCardRoot"&&g.IsLoaded).ToArray())TrackCard(root);
+                }
+            }))homeRowsQueued=false;
+        }
         public void TrackCard(FrameworkElement element)
         {
             if (!registered.TryGetValue(element, out var entry))
@@ -348,7 +374,7 @@ public static class DesktopTheme
                 if(args.PropertyName!="Poster")entry.FullPaint=true;
                 if(entry.PaintQueued)return;entry.PaintQueued=true;
                 if(!element.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,() => system.Run("card-refresh", () => {
-                    entry.PaintQueued=false;bool full=entry.FullPaint;entry.FullPaint=false;
+                    entry.PaintQueued=false;if(element.IsLoaded)SizeCard(element);bool full=entry.FullPaint;entry.FullPaint=false;
                     if(element.IsLoaded&&(full||element is not Grid grid||!DesktopCardSurface.PaintPoster(grid,element.DataContext)))StyleCard(element);
                 })))entry.PaintQueued=false;
             });
@@ -365,6 +391,9 @@ public static class DesktopTheme
             // Writing XAML transitions here conflicts with composition-backed
             // templates, even when assigning null, and must not block refresh.
         }
+        sealed class RowSize { internal double Width; }
+        readonly ConditionalWeakTable<ItemsWrapGrid,RowSize> rowSizes=new();
+        readonly ConditionalWeakTable<GridViewItem,RowSize> cellSizes=new();
         void SizeCard(FrameworkElement element)
         {
             if (element.DataContext is not { } card || element is not Grid grid || grid.RowDefinitions.Count == 0) return;
@@ -375,18 +404,43 @@ public static class DesktopTheme
                 if(node is GridViewItem cell){cell.Padding=new Thickness(0);cell.Margin=new Thickness(0);cell.Background=Brush(0x00000000);cell.BorderBrush=Brush(0x00000000);cell.BorderThickness=new Thickness(0);cell.MinWidth=0;cell.MinHeight=0;cell.Height=double.NaN;cell.MaxHeight=double.PositiveInfinity;cell.Clip=null;if(browse)cell.Width=double.NaN;break;}
                 if(node is ItemsControl)break;
             }
-            if (!browse)
+            bool homeRow=false,resumeRow=false;
+            for(DependencyObject? parent=VisualTreeHelper.GetParent(element);parent!=null;parent=VisualTreeHelper.GetParent(parent)){
+                if(parent is FrameworkElement {Name:"HomeLibrarySectionsControl"})homeRow=true;
+                if(parent is FrameworkElement {Name:"ResumeGrid"})resumeRow=true;
+            }
+            if (!browse||homeRow||resumeRow)
             {
                 double width = landscape && registered.TryGetValue(element,out var native)&&native.NativeLandscapeWidth>0
-                    ? native.NativeLandscapeWidth : landscape ? Options.PosterWidth * 1.65 : Options.PosterWidth;
+                    ? native.NativeLandscapeWidth*1.14 : landscape ? Options.PosterWidth * 1.65 : Options.PosterWidth;
                 grid.Width = width; grid.MaxWidth = width;
-                double itemWidth=landscape?width:width+14; // Landscape already reserves its hover inset internally.
+                double itemWidth=landscape?width-(resumeRow?5:6):width+(homeRow?10:8); // Landscape already reserves its hover inset internally.
                 // Home rows use their own panel; update only the containing row,
                 // never the virtualized library wall's anchor-preserving grid.
                 for (DependencyObject? ancestor = VisualTreeHelper.GetParent(element); ancestor != null; ancestor = VisualTreeHelper.GetParent(ancestor))
                 {
-                    if(ancestor is GridViewItem container){container.Padding=new Thickness(0);container.Margin=new Thickness(0);container.BorderThickness=new Thickness(0);container.MinWidth=landscape?itemWidth:0;container.MaxWidth=landscape?itemWidth:double.PositiveInfinity;container.Width=itemWidth;container.HorizontalContentAlignment=HorizontalAlignment.Left;}
-                    if (ancestor is ItemsWrapGrid wrap) { wrap.ItemWidth = itemWidth; wrap.ItemHeight=width*(landscape?9.0/16:1.5)+64; break; }
+                    if(ancestor is GridViewItem container){
+                        if(homeRow){
+                            if(!cellSizes.TryGetValue(container,out var cellSize)){
+                                cellSize=new();cellSizes.Add(container,cellSize);
+                                container.RegisterPropertyChangedCallback(FrameworkElement.WidthProperty,(sender,property)=>{
+                                    var cell=(GridViewItem)sender;if(cellSize.Width>0&&(double.IsNaN(cell.Width)||Math.Abs(cell.Width-cellSize.Width)>.1))cell.Width=cellSize.Width;
+                                });
+                            }
+                            cellSize.Width=itemWidth;
+                        }
+                        container.Padding=new Thickness(0);container.Margin=new Thickness(0);container.BorderThickness=new Thickness(0);container.MinWidth=landscape?itemWidth:0;container.MaxWidth=landscape?itemWidth:double.PositiveInfinity;container.Width=itemWidth;container.HorizontalContentAlignment=HorizontalAlignment.Left;}
+                    if (ancestor is ItemsWrapGrid wrap) {
+                        if(homeRow||resumeRow){
+                            if(!rowSizes.TryGetValue(wrap,out var row)){
+                                row=new();rowSizes.Add(wrap,row);
+                                wrap.RegisterPropertyChangedCallback(ItemsWrapGrid.ItemWidthProperty,(sender,property)=>{
+                                    var panel=(ItemsWrapGrid)sender;if(row.Width>0&&Math.Abs(panel.ItemWidth-row.Width)>.1)panel.ItemWidth=row.Width;
+                                });
+                            }
+                            row.Width=itemWidth;
+                        }
+                        wrap.ItemWidth = itemWidth; wrap.ItemHeight=width*(landscape?9.0/16:1.5)+64; break; }
                     if (ancestor is ItemsControl) break;
                 }
             }
@@ -429,17 +483,13 @@ public static class DesktopTheme
                 var click=new ToggleSwitch{Header="画面单击暂停／继续",IsOn=Options.VideoClickPause};
                 click.Toggled+=(_,_)=>Save(Options with{VideoClickPause=click.IsOn});controls.Children.Add(click);
                 Choice(controls,"方向键定位步长",new[]{"5 秒","10 秒","30 秒"},Array.IndexOf(new[]{5,10,30},Options.SeekStepSeconds),i=>Options with{SeekStepSeconds=new[]{5,10,30}[i]});
-                Choice(controls,"暂停／继续快捷键",new[]{"Space / K","K","P"},Array.IndexOf(new[]{32,75,80},Options.PauseKey),i=>Options with{PauseKey=new[]{32,75,80}[i]});
-                Choice(controls,"全屏快捷键",new[]{"F","F11","G"},Array.IndexOf(new[]{70,122,71},Options.FullScreenKey),i=>Options with{FullScreenKey=new[]{70,122,71}[i]});
-                Choice(controls,"静音快捷键",new[]{"M","V"},Options.MuteKey==77?0:1,i=>Options with{MuteKey=i==0?77:86});
-                var hold=new ToggleSwitch{Header="按住 → 临时 3 倍速",IsOn=Options.RightHoldBoost};hold.Toggled+=(_,_)=>Save(Options with{RightHoldBoost=hold.IsOn});controls.Children.Add(hold);
-                var volume=new ToggleSwitch{Header="↑ / ↓ 调整音量",IsOn=Options.KeyboardVolumeKeys};volume.Toggled+=(_,_)=>Save(Options with{KeyboardVolumeKeys=volume.IsOn});controls.Children.Add(volume);
+                ShortcutBinding.AddEditors(controls,Save);
                 experience.Children.Add(controls);
             }
             var reset = new Button { Content = "恢复默认外观" };
             reset.Click += (_, _) => system.Run("reset-click", () =>
             {
-                if (!Save(new DesktopThemeOptions{HdrExperimental=Options.HdrExperimental,VideoClickPause=Options.VideoClickPause,SeekStepSeconds=Options.SeekStepSeconds,KeyboardVolumeKeys=Options.KeyboardVolumeKeys,RightHoldBoost=Options.RightHoldBoost,PauseKey=Options.PauseKey,FullScreenKey=Options.FullScreenKey,MuteKey=Options.MuteKey})) return;
+                if (!Save(new DesktopThemeOptions{HdrExperimental=Options.HdrExperimental,VideoClickPause=Options.VideoClickPause,SeekStepSeconds=Options.SeekStepSeconds,KeyboardVolumeKeys=Options.KeyboardVolumeKeys,RightHoldBoost=Options.RightHoldBoost,PauseKey=Options.PauseKey,FullScreenKey=Options.FullScreenKey,MuteKey=Options.MuteKey,VolumeUpKey=Options.VolumeUpKey,VolumeDownKey=Options.VolumeDownKey,ShortcutVersion=Options.ShortcutVersion,CustomShortcutMask=Options.CustomShortcutMask})) return;
                 // Recreate only the appearance controls, preserving the original
                 // window-size preference UI and unrelated playback preferences.
                 if (oldContent is FrameworkElement original && original.Parent is Panel parent) parent.Children.Remove(oldContent);
@@ -502,11 +552,16 @@ public static class DesktopTheme
         }
         bool Save(DesktopThemeOptions next)
         {
+            var before=Options;next=next.Validate();
+            bool transition=before.Mode!=next.Mode||before.Accent!=next.Accent;
+            bool visualChanged=transition||before.Corners!=next.Corners||before.ReducedMotion!=next.ReducedMotion;
             try { DesktopThemeStore.Save(StorePath, next); options = next.Validate(); }
             catch (Exception error) { status.Text = "外观保存失败，已保留原设置：" + error.GetType().Name; return false; }
-            LivePages.RemoveAll(weak => !weak.TryGetTarget(out _));
-            foreach (var weak in LivePages.ToArray()) if (weak.TryGetTarget(out var state)) state.Apply();
-            PlayerDesktopStyle.RefreshAll();
+            if(visualChanged){
+                LivePages.RemoveAll(weak => !weak.TryGetTarget(out _));
+                foreach (var weak in LivePages.ToArray()) if (weak.TryGetTarget(out var state)){if(transition||Options.ReducedMotion)ThemeTransition.Change(state.page,state.Apply);else state.Apply();}
+                PlayerDesktopStyle.RefreshAll();
+            }
             status.Text = "已保存并应用"; return true;
         }
     }

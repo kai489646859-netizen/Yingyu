@@ -5,12 +5,18 @@ import '../core/models.dart';
 class DiscReadCancellation {
   bool cancelled = false;
   void Function()? abort;
+  Completer<void>? _cancelled;
+  Future<void> get whenCancelled {
+    if (cancelled) return Future.value();
+    return (_cancelled ??= Completer<void>()).future;
+  }
   void check() {
     if (cancelled) throw const AppFailure('原盘预读已取消');
   }
 
   void cancel() {
     cancelled = true;
+    if (_cancelled?.isCompleted == false) _cancelled!.complete();
     abort?.call();
   }
 }
