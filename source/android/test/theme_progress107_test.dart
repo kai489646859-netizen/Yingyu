@@ -47,7 +47,7 @@ void main() {
     for (final position in [0, 480]) {
       for (final rewatch in [false, true]) {
         testWidgets(
-          'completed shelf bar is full: duration=$duration position=$position rewatch=$rewatch',
+          'shelf uses full completion, verified fraction or empty track: duration=$duration position=$position rewatch=$rewatch',
           (tester) async {
             SharedPreferences.setMockInitialValues({});
             final store = AppStore(await SharedPreferences.getInstance());
@@ -94,7 +94,8 @@ void main() {
               find.byType(LinearProgressIndicator),
             );
             if ((rewatch || position > 0) && duration == 0) {
-              expect(bars, isEmpty);
+              expect(bars, hasLength(1));
+              expect(bars.single.value, 0);
             } else {
               expect(bars, hasLength(1));
               expect(

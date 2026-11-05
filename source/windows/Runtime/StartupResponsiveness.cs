@@ -15,6 +15,11 @@ public static class StartupResponsiveness
         Mark(page, "page-initialize");
         PlaybackTransport.Write("Info", "Startup.Stage", $"阶段=cache-migration-queued，待处理={CachePaths.PendingMigrations}；迁移不阻塞主页。");
     }
+    public static void ProfileHomeReady(object page)
+    {
+        if(page is Microsoft.UI.Xaml.FrameworkElement element)HomePresentation.Refresh(element);
+    }
+
     public static void Mark(object page, string stage)
     {
         var clock = Clocks.GetValue(page, _ => new());

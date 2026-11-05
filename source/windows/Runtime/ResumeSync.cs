@@ -7,13 +7,13 @@ namespace Yingyu.Update;
 public static class ResumeSync
 {
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<EmbyItem,object> Pending=new();
-    sealed class AutoPending { internal string Stamp=""; }
+    sealed class AutoPending { internal string Stamp="";internal DateTimeOffset RetryAt; }
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object,AutoPending> Auto=new();
     static void RequestPending(object page,EmbySession session,IReadOnlyList<PendingPlaybackSyncEntry> entries)
     {
         if(entries.Count==0)return;
         string stamp=JsonSerializer.Serialize(new object[]{session.ServerId,session.UserId,entries.OrderBy(e=>e.Playback.ItemId).Select(e=>new object[]{e.Playback.ItemId,e.Playback.PlaySessionId,e.Playback.PositionTicks,e.UpdatedAt.UtcTicks}).ToArray()});
-        var state=Auto.GetOrCreateValue(page);if(state.Stamp==stamp)return;state.Stamp=stamp;
+        var state=Auto.GetOrCreateValue(page);if(state.Stamp==stamp&&DateTimeOffset.UtcNow<state.RetryAt)return;state.Stamp=stamp;state.RetryAt=DateTimeOffset.UtcNow.AddMinutes(1);
         Access.Set(page,"_playbackSyncRequested",true);
     }
 
@@ -45,6 +45,53 @@ public static class ResumeSync
         return ResumeSeriesMergePolicy.Collapse(result.Where(ResumeServerHistory.Show), limit);
     }
 
+    static bool NeedsPosition(EmbyItem item)
+        => item.Type is not ("Series" or "Season")
+            && (item.UserData is null || item.UserData is { Played: false, PlaybackPositionTicks: 0 });
+
+    static Task<IReadOnlyList<EmbyItem>> ReadLocalHistory(object page)
+        => (Task<IReadOnlyList<EmbyItem>>)Access.Call(page, "ReadLocalPlaybackHistoryAsync")!;
+
+    static EmbyItem FillMissingPosition(EmbyItem item, IReadOnlyList<EmbyItem> history)
+    {
+        if (!NeedsPosition(item)) return item;
+        var saved = history.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, item.Id, StringComparison.OrdinalIgnoreCase));
+        if (saved?.UserData is not { Played: false, PlaybackPositionTicks: > 0, LastPlayedDate: { } savedAt } progress
+            || item.UserData?.LastPlayedDate >= savedAt
+            || (item.RunTimeTicks is > 0 && progress.PlaybackPositionTicks >= item.RunTimeTicks.Value))
+            return item;
+
+        // Restore only playback fields on a copy. Keep raw server observations
+        // and the pending upload/fingerprint checks independent of this fallback.
+        var copy = JsonSerializer.SerializeToNode(item)!.AsObject();
+        var data = copy["UserData"] as System.Text.Json.Nodes.JsonObject;
+        if (data is null)
+        {
+            data = new System.Text.Json.Nodes.JsonObject();
+            copy["UserData"] = data;
+        }
+        data["PlaybackPositionTicks"] = progress.PlaybackPositionTicks;
+        data["LastPlayedDate"] = savedAt;
+        if (item.RunTimeTicks is not > 0 && saved.RunTimeTicks is > 0)
+            copy["RunTimeTicks"] = saved.RunTimeTicks.Value;
+        data["PlayedPercentage"] = progress.PlayedPercentage;
+        return copy.Deserialize<EmbyItem>()!;
+    }
+
+    internal static async Task<EmbyItem> RestoreForQuickPlay(object page, EmbyItem item)
+    {
+        if (!NeedsPosition(item)) return item;
+        var session = Access.Get<EmbySession?>(page, "_session");
+        var client = Access.Get<EmbyApiClient?>(page, "_client");
+        if (session is null || client is null) return item;
+        var history = await ReadLocalHistory(page);
+        if (!ReferenceEquals(session, Access.Get<EmbySession?>(page, "_session"))
+            || !ReferenceEquals(client, Access.Get<EmbyApiClient?>(page, "_client")))
+            throw new OperationCanceledException();
+        return FillMissingPosition(item, history);
+    }
+
     public static async Task<IReadOnlyList<EmbyItem>> History(object page, IEnumerable<EmbyItem> server)
     {
         var session = Access.Get<EmbySession?>(page, "_session");
@@ -67,8 +114,8 @@ public static class ResumeSync
             var item=observed.FirstOrDefault(i=>i.Id.Equals(entry.Playback.ItemId,StringComparison.OrdinalIgnoreCase));
             if(item!=null)metadata[entry.Playback.ItemId]=item;
         }
-        var missing=entries.OrderByDescending(e=>e.UpdatedAt).Select(e=>e.Playback.ItemId)
-            .Where(id=>!metadata.ContainsKey(id)).Distinct(StringComparer.OrdinalIgnoreCase).Take(18).ToList();
+        var missing=entries.OrderByDescending(e=>e.UpdatedAt).Select(e=>e.Playback.ItemId).Concat(observed.Where(i=>i.RunTimeTicks is not >0&&i.UserData?.PlaybackPositionTicks>0).Select(i=>i.Id))
+            .Where(id=>!metadata.TryGetValue(id,out var known)||known.RunTimeTicks is not >0).Distinct(StringComparer.OrdinalIgnoreCase).Take(18).ToList();
         if(missing.Count>0)
         {
             string ids=Uri.EscapeDataString(string.Join(',',missing));
@@ -81,6 +128,21 @@ public static class ResumeSync
                 if(item!=null&&missing.Contains(item.Id,StringComparer.OrdinalIgnoreCase))metadata[item.Id]=item;
             }
         }
+        var library=Access.Get<DesktopLibraryState>(page,"_desktopState");
+        var scope=DesktopLibraryStore.Scope(session);
+        var history=await ReadLocalHistory(page);
+        if(!ReferenceEquals(client,Access.Get<EmbyApiClient?>(page,"_client"))||!ReferenceEquals(session,Access.Get<EmbySession?>(page,"_session")))throw new OperationCanceledException();
+        // Reuse the existing bounded metadata batch to recover missing duration.
+        // Retain the current observation's user data and account reconciliation.
+        observed=observed.Select(item=>{
+            if(item.RunTimeTicks is >0)return item;
+            metadata.TryGetValue(item.Id,out var full);
+            long? duration=full?.RunTimeTicks;
+            if(duration is not >0&&!library.Versions.ContainsKey(scope+"|"+item.Id))duration=history.FirstOrDefault(i=>i.Id==item.Id&&i.RunTimeTicks>0)?.RunTimeTicks;
+            if(duration is not >0||item.UserData?.PlaybackPositionTicks>duration)return item;
+            var copy=System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(item))!.AsObject();
+            copy["RunTimeTicks"]=duration.Value;return copy.Deserialize<EmbyItem>()!;
+        }).ToList();
         var edits = new List<(EmbyItem Item, bool Completed, DateTimeOffset At)>();
         foreach (var entry in entries)
         {
@@ -95,9 +157,9 @@ public static class ResumeSync
         }
         // These edits have already passed exact server-baseline and episode
         // checks. Do not veto them again using the device's wall clock.
-        var merged=observed.ToList();
+        var merged=observed.Select(item => FillMissingPosition(item, history)).ToList();
         foreach(var edit in edits.OrderBy(e=>e.At)){
-            merged.RemoveAll(i=>ResumeSeriesMergePolicy.RepresentsSameTitle(i,edit.Item));
+            merged.RemoveAll(i=>ResumeSeriesMergePolicy.RepresentsSameTitle(i,edit.Item)&&(!edit.Completed||i.Id.Equals(edit.Item.Id,StringComparison.OrdinalIgnoreCase)));
             if(!edit.Completed)merged.Insert(0,edit.Item);
         }
         if(Access.Get<DateTimeOffset>(page,"_lastLocalResumeUpdateAt")!=localRevision)throw new OperationCanceledException();

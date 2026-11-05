@@ -32,7 +32,7 @@ internal static class AboutPresentation
         var state=States.GetValue(page,_=>new());
         if(!ReferenceEquals(section.Child,state.Body))section.Child=state.Body;
         section.MaxWidth=760;
-        var version=page.GetType().Assembly.GetName().Version;state.Version.Text=$"版本 {version?.Major}.{version?.Minor}.{version?.Build}";
+        state.Version.Text="版本 "+typeof(AboutPresentation).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute),false).OfType<System.Reflection.AssemblyInformationalVersionAttribute>().Single().InformationalVersion.Split('+')[0];
         state.PathText.Text="数据目录："+CachePaths.UserDataRoot+"\n缓存目录："+CachePaths.CacheRoot;
         state.Card.Background=DesktopVisuals.Brush(palette.Surface);state.Card.BorderBrush=DesktopVisuals.Brush(palette.Outline);
         foreach(var text in UiElements.Descendants(state.Body).OfType<TextBlock>())text.Foreground=DesktopVisuals.Brush(text.FontSize>=15?palette.Text:palette.Secondary);

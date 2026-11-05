@@ -21,6 +21,7 @@ import 'core/store.dart';
 import 'playback/backend.dart';
 import 'playback/network_permission.dart';
 import 'playback/page.dart';
+import 'playback/danmaku_sources.dart';
 import 'playback/session.dart';
 import 'ui/detail.dart';
 import 'ui/library.dart';
@@ -796,6 +797,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         context,
         MaterialPageRoute(
           builder: (_) => PlayerPage(
+            createDanmakuSource: () => DanmakuSources(
+              onBilibiliSearchStatus: (status) => widget.store.log.add(
+                LogArea.player,
+                '弹幕：哔哩哔哩搜索 HTTP $status，尝试公开目录',
+              ),
+            ),
             allowNetwork: networkPermission.authorize,
             fromBeginning: beginning,
             createSession: () => makeSession(entry),

@@ -233,7 +233,10 @@ class ContinueWatching extends StatelessWidget {
                                             ),
                                           ),
                                         if (progress.known ||
-                                            progress.completed)
+                                            progress.completed ||
+                                            (progress.position ??
+                                                    Duration.zero) >
+                                                Duration.zero)
                                           Positioned(
                                             left: 0,
                                             right: 0,

@@ -12,14 +12,23 @@ public static class ResumeStopSync
         if(remote.UserData is not {} data||!data.LastPlayedDate.HasValue)return false;
         if(completed)return data.Played&&data.PlaybackPositionTicks==0;
         if(position==0)return !data.Played&&data.PlaybackPositionTicks==0;
-        return data.PlaybackPositionTicks>0&&Math.Abs((decimal)data.PlaybackPositionTicks-position)<=TimeSpan.TicksPerSecond*2;
+        return !data.Played&&data.PlaybackPositionTicks>0&&Math.Abs((decimal)data.PlaybackPositionTicks-position)<=TimeSpan.TicksPerSecond*2;
     }
     public static async Task Stop(EmbyApiClient client,PlaybackRequest request,CancellationToken token,PlaybackStopReason reason)
     {
+        // Commit before reads/HTTP. A process exit during either network phase
+        // cannot strand this stop solely in the UI event queue.
+        DurablePlaybackSync.Saved? saved=null;
+        try{saved=await DurablePlaybackSync.Save(client,request,reason==PlaybackStopReason.NaturalEnd);}
+        catch(Exception error){PlaybackTransport.Write("Warning","Playback.Sync","停止进度预先落盘失败，原上报与本机观看记录仍继续；"+error.GetType().Name);}
         EmbyItem? before=null;
         try{using var read=CancellationTokenSource.CreateLinkedTokenSource(token);read.CancelAfter(TimeSpan.FromSeconds(3));before=await client.GetItemAsync(request.ItemId,read.Token);}
         catch(Exception e)when(e is not OutOfMemoryException){PlaybackTransport.Write("Warning","Playback.Sync","停止前核对未完成，仍执行原停止上报；"+e.GetType().Name);}
-        if(before!=null)ResumeDeviceSync.CaptureStop(client,before,request.PlaySessionId);
+        if(before!=null)
+        {
+            ResumeDeviceSync.CaptureStop(client,before,request.PlaySessionId);
+            if(saved!=null)try{await ResumeDeviceSync.RefreshBaseline(saved.Store,client,saved.Entry);}catch(Exception error){PlaybackTransport.Write("Warning","Playback.Sync","停止核对基线保存未完成；"+error.GetType().Name);}
+        }
         try{await client.ReportPlaybackStoppedInBackgroundAsync(request,token);}
         catch(EmbyApiException){throw;}
         catch(Exception error){throw new EmbyApiException("停止上报未获确认；进度保留待同步。",innerException:error);}
@@ -34,7 +43,7 @@ public static class ResumeStopSync
                 var remote=await client.GetItemAsync(request.ItemId,read.Token);
                 bool complete=reason==PlaybackStopReason.NaturalEnd;
                 if(Confirmed(remote,request.PositionTicks,complete))
-                {PlaybackTransport.Write("Info","Playback.Sync","停止上报已由当前服务器账号回读确认；位置秒="+(request.PositionTicks/TimeSpan.TicksPerSecond));return;}
+                {await DurablePlaybackSync.Confirm(client,request,saved);PlaybackTransport.Write("Info","Playback.Sync","停止上报已由当前服务器账号回读确认；位置秒="+(request.PositionTicks/TimeSpan.TicksPerSecond));return;}
             }
             throw new EmbyApiException("停止请求已返回，但服务器尚未确认对应位置；进度保留待同步。");
         }

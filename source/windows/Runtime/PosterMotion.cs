@@ -12,6 +12,11 @@ public static class PosterMotion
     // Reserve room inside the measured cell instead of expanding into its clip.
     public static double Inset(double width,double height)=>InteractionPolicy.Inset(width,height);
     static readonly ConditionalWeakTable<FrameworkElement,State> Entries=new();
+    // A carousel button keeps XAML's RenderTransform ownership even after the
+    // transform is cleared. The host must not reset its other transform APIs.
+    static readonly ConditionalWeakTable<Microsoft.UI.Xaml.Controls.Button,object> IndependentButtons=new();
+    internal static void OwnButton(Microsoft.UI.Xaml.Controls.Button button)=>IndependentButtons.GetValue(button,_=>new object());
+    public static bool OwnsButton(Microsoft.UI.Xaml.Controls.Button button)=>IndependentButtons.TryGetValue(button,out _);
     public static void Attach(FrameworkElement hit,FrameworkElement artwork)
     {
         try { Entries.GetValue(hit,_=>new State(hit,artwork)); }
@@ -34,7 +39,7 @@ public static class PosterMotion
             // Exit coordinates may still lie on the old edge during re-layout.
             // Also observe handled exits from the retained favorite button.
             hit.AddHandler(UIElement.PointerExitedEvent,new PointerEventHandler(Exit),true);
-            hit.AddHandler(UIElement.PointerPressedEvent,new PointerEventHandler((_,e)=>{if(e.Pointer.PointerDeviceType==Microsoft.UI.Input.PointerDeviceType.Mouse&&e.GetCurrentPoint(hit).Properties.IsLeftButtonPressed)Safe(Press);}),true);
+            hit.AddHandler(UIElement.PointerPressedEvent,new PointerEventHandler((_,e)=>{if(e.Pointer.PointerDeviceType==Microsoft.UI.Input.PointerDeviceType.Mouse&&e.GetCurrentPoint(hit).Properties.IsLeftButtonPressed&&!Navigation(e.OriginalSource as DependencyObject))Safe(Press);}),true);
             hit.AddHandler(UIElement.PointerReleasedEvent,new PointerEventHandler((_,e)=>Safe(()=>Release(Inside(e)))),true);
             hit.PointerCanceled+=(_,_)=>Safe(Reset);
             hit.PointerCaptureLost+=(_,_)=>Safe(()=>{bool canceled=pressed;pressed=false;Set(canceled?false:hovered,false);});
@@ -50,6 +55,7 @@ public static class PosterMotion
         }
         bool Inside(PointerRoutedEventArgs args){var p=args.GetCurrentPoint(hit).Position;return p.X>=0&&p.Y>=0&&p.X<hit.ActualWidth&&p.Y<hit.ActualHeight;}
         void Exit(object sender,PointerRoutedEventArgs args){if(args!=null&&!ReferenceEquals(args.OriginalSource,hit)&&Inside(args))return;Safe(Reset);}
+        bool Navigation(DependencyObject? node){if(hit.Name!="HomeRecommendationCarousel")return false;while(node!=null){if(node is FrameworkElement {Name:"HomeRecommendationNavigation"})return true;node=Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(node);}return false;}
         void Press(){pressed=true;Set(hovered,false);}
         void Release(bool inside){pressed=false;Set(inside,true);}
         void Reset(){pressed=false;Set(false,false);}

@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yingyu/core/emby.dart';
+import 'package:yingyu/core/browse_cache.dart';
 import 'package:yingyu/core/models.dart';
 import 'package:yingyu/core/store.dart';
 import 'package:yingyu/core/personal_library.dart';
@@ -67,6 +68,27 @@ void main() {
   final backends = <DelayedSeekBackend>[];
   final calls = <String>[];
   bool nextAvailable = true;
+  bool crossSeason = false, localSeason = false;
+  String? unavailableNext;
+  BrowseRepository? browse;
+  MediaItem media(String id) => MediaItem({
+    ...featureEpisode(id).data,
+    if (id == '2' && unavailableNext != null) unavailableNext!: true,
+    if (crossSeason && id == '2') ...{
+      'SeasonId': 's2',
+      'ParentIndexNumber': 2,
+      'IndexNumber': 1,
+    },
+  });
+  final seasonItems = [
+    for (var n = 1; n <= 2; n++)
+      MediaItem({
+        'Id': 's$n',
+        'Type': 'Season',
+        'SeriesId': 'series',
+        'IndexNumber': n,
+      }),
+  ];
   Completer<void>? stopGate;
   final positions = <String, int>{};
   final notices = <String, String>{};
@@ -82,6 +104,9 @@ void main() {
     notices.clear();
     stopGate = null;
     nextAvailable = true;
+    crossSeason = localSeason = false;
+    unavailableNext = null;
+    browse = null;
     api = EmbyClient(
       client: MockClient((request) async {
         final path = request.url.path;
@@ -99,12 +124,30 @@ void main() {
           positions['${body['ItemId']}'] = integer(body['PositionTicks']);
           return response('', 204);
         }
+        if (path.endsWith('/Seasons')) {
+          return response(
+            jsonEncode({
+              'Items': crossSeason
+                  ? seasonItems.map((e) => e.data).toList()
+                  : [],
+              'TotalRecordCount': crossSeason ? 2 : 0,
+            }),
+            200,
+          );
+        }
         if (path.endsWith('/Episodes')) {
           return response(
             jsonEncode({
+              'TotalRecordCount':
+                  request.url.queryParameters['SeasonId'] == 's2'
+                  ? 1
+                  : nextAvailable
+                  ? 2
+                  : 1,
               'Items': [
-                featureEpisode('1').data,
-                if (nextAvailable) featureEpisode('2').data,
+                if (request.url.queryParameters['SeasonId'] != 's2')
+                  media('1').data,
+                if (nextAvailable) media('2').data,
               ],
             }),
             200,
@@ -113,7 +156,7 @@ void main() {
         final id = path.split('/').last;
         return response(
           jsonEncode({
-            ...featureEpisode(id).data,
+            ...media(id).data,
             'UserData': {
               'PlaybackPositionTicks': positions[id] ?? 0,
               'Played': (positions[id] ?? 0) >= 5990000000,
@@ -131,6 +174,26 @@ void main() {
     bool sparse = false,
   }) async {
     await store.setAutoNext(auto);
+    if (localSeason) {
+      final prefs = await SharedPreferences.getInstance();
+      browse = BrowseRepository(
+        api,
+        BrowseCache(prefs),
+        BrowsePreferences(prefs),
+      );
+      for (final n in [1, 2]) {
+        await browse!.cache.put(
+          browse!.key(BrowseRepository.episodeCatalogueKey('series', 's$n')),
+          ItemPage([media('$n')], 1),
+          DateTime.now(),
+        );
+      }
+      await browse!.cache.put(
+        browse!.key('seasons:series'),
+        ItemPage(seasonItems, 2),
+        DateTime.now(),
+      );
+    }
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -168,6 +231,7 @@ void main() {
         await tester.runAsync(() => Future<void>.delayed(Duration.zero));
         await tester.pump(const Duration(milliseconds: 50));
       }
+      browse?.dispose();
       api.close();
       await store.log.flush();
       store.log.dispose();
@@ -187,6 +251,7 @@ void main() {
                 : featureEpisode('1'),
           ),
           createSessionForItem: make,
+          browse: browse,
         ),
       ),
     );
@@ -388,9 +453,32 @@ void main() {
     },
   );
 
-  testWidgets(
-    'natural EOF opens next without a second wait and saves previous episode first',
-    (tester) async {
+  for (final flag in ['IsMissing', 'IsVirtualItem']) {
+    testWidgets('real EOF cannot open unavailable next episode: $flag', (
+      tester,
+    ) async {
+      unavailableNext = flag;
+      await launch(tester);
+      await tick(tester, 595);
+      expect(find.byKey(const Key('next-countdown')), findsNothing);
+      await tick(tester, 600, playing: false, completed: true);
+      await tester.pump(const Duration(seconds: 6));
+      expect(sessions.length, 1);
+      expect(calls.where((c) => c.startsWith('open:')).length, 1);
+      expect(find.text('下一集暂不可用，可返回选集重试'), findsOneWidget);
+    });
+  }
+
+  for (final mode in [
+    'same-season',
+    'server-cross-season',
+    'local-cross-season',
+  ]) {
+    testWidgets('natural EOF saves old progress then opens next: $mode', (
+      tester,
+    ) async {
+      crossSeason = mode != 'same-season';
+      localSeason = mode == 'local-cross-season';
       await launch(tester);
       stopGate = Completer<void>();
       await session.seek(const Duration(seconds: 595));
@@ -422,9 +510,10 @@ void main() {
       expect(sessions.length, 2);
       expect(backends.first.disposed, true);
       expect(session.item.id, '2');
+      if (crossSeason) expect(session.item.data['ParentIndexNumber'], 2);
       expect(find.byKey(const Key('next-countdown')), findsNothing);
-    },
-  );
+    });
+  }
 
   testWidgets(
     'cancel at the EOF frame retires the already queued automatic advance',

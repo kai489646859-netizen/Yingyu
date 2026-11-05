@@ -11,8 +11,8 @@ namespace Yingyu.Update;
 internal static class HomeStartupDeck
 {
     internal sealed record Entry(EmbyItem Item,string ImageOwner,string ImageType,string Tag,int Width,int Quality,PosterCacheRetention Retention);
-    sealed record Document(int Version,string Scope,Entry[] Entries,string[] Last);
-    internal sealed record Ready(Entry[] Pool,Entry[] Picks);
+    sealed record Document(int Version,string Scope,Entry[] Entries,string[] Last,string? Day=null);
+    internal sealed record Ready(Entry[] Pool,Entry[] Picks,bool SameDay=false);
     internal sealed record Plan(Entry[] Pool,EmbyItem[] Fresh,Dictionary<string,EmbyItem> Current);
     const int MaximumEntries=64,MaximumBytes=256*1024;
     internal static string Scope(EmbySession session)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(session.ServerUrl+"\n"+session.ServerId+"\n"+session.UserId)));
@@ -62,7 +62,7 @@ internal static class HomeStartupDeck
     static bool Valid(Entry? entry)=>entry!=null&&Allowed(entry.Item)&&Text(entry.ImageOwner,512)&&Text(entry.Tag,1024)&&!string.IsNullOrWhiteSpace(entry.Tag)
         &&entry.ImageType is "Thumb" or "Backdrop"&&entry.Width==1280&&entry.Quality==85&&entry.Retention==PosterCacheRetention.Detail
         &&MediaArtworkPolicy.GetLandscapeCandidates(entry.Item).Any(c=>c.ItemId==entry.ImageOwner&&c.ImageType==entry.ImageType&&c.ImageTag==entry.Tag);
-    static Entry? Candidate(EmbyItem item){
+    internal static Entry? Candidate(EmbyItem item){
         if(!Allowed(item))return null;var clean=Clean(item);
         var c=MediaArtworkPolicy.GetLandscapeCandidates(clean).FirstOrDefault(c=>c.ImageType is "Thumb" or "Backdrop"&&!string.IsNullOrWhiteSpace(c.ImageTag));
         return c==null?null:new Entry(clean,c.ItemId,c.ImageType,c.ImageTag,1280,85,PosterCacheRetention.Detail);
@@ -71,32 +71,34 @@ internal static class HomeStartupDeck
         token.ThrowIfCancellationRequested();try{
             var file=new FileInfo(PathFor(session));if(!file.Exists||file.Length is <=0 or >MaximumBytes)return new Ready([],[]);
             var doc=JsonSerializer.Deserialize<Document>(File.ReadAllBytes(file.FullName));
-            if(doc==null||doc.Version is not (1 or 2)||doc.Scope!=Scope(session)||doc.Entries==null||doc.Entries.Length>MaximumEntries||doc.Last==null||doc.Last.Length>4)return new Ready([],[]);
+            if(doc==null||doc.Version is not (1 or 2 or 3)||doc.Scope!=Scope(session)||doc.Entries==null||doc.Entries.Length>MaximumEntries||doc.Last==null||doc.Last.Length>6)return new Ready([],[]);
             var pool=doc.Entries.Where(e=>e!=null&&(doc.Version==1?Resolve(cache,session,e)!=null:Valid(e)))
                 .Select(e=>Candidate(e.Item)).OfType<Entry>().DistinctBy(e=>e.Item.Id,StringComparer.OrdinalIgnoreCase).ToArray();
-            var picks=pool.OrderBy(_=>Random.Shared.Next()).Take(2).ToArray();
-            token.ThrowIfCancellationRequested();return new Ready(pool,picks);
+            bool sameDay=doc.Version==3&&doc.Day==DateTime.Today.ToString("yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture);
+            var picks=sameDay?doc.Last.Select(id=>pool.FirstOrDefault(e=>e.Item.Id.Equals(id,StringComparison.OrdinalIgnoreCase))).OfType<Entry>().DistinctBy(e=>e.Item.Id).ToArray():pool.OrderBy(_=>Random.Shared.Next()).Take(6).ToArray();
+            token.ThrowIfCancellationRequested();return new Ready(pool,picks,sameDay&&picks.Length>0);
         }catch(Exception e)when(e is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NullReferenceException){return new Ready([],[]);}
     },token);
-    internal static Task Save(PosterCacheService cache,EmbySession session,IEnumerable<Entry> entries,IEnumerable<string> last,CancellationToken token)=>Task.Run(()=>{
+    internal static Task Save(PosterCacheService cache,EmbySession session,IEnumerable<Entry> entries,IEnumerable<string> last,CancellationToken token,DateTime? day=null)=>Task.Run(()=>{
         token.ThrowIfCancellationRequested();string path=PathFor(session),temp=path+"."+Guid.NewGuid().ToString("N")+".tmp";
         try{
             var pool=entries.Where(Valid).DistinctBy(e=>e.Item.Id,StringComparer.OrdinalIgnoreCase).Take(MaximumEntries).Select(e=>e with{Item=Clean(e.Item)}).ToArray();
-            var bytes=JsonSerializer.SerializeToUtf8Bytes(new Document(2,Scope(session),pool,last.Take(2).ToArray()));if(bytes.Length>MaximumBytes)return;
+            var bytes=JsonSerializer.SerializeToUtf8Bytes(new Document(3,Scope(session),pool,last.Take(6).ToArray(),(day??DateTime.Today).ToString("yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture)));if(bytes.Length>MaximumBytes)return;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);File.WriteAllBytes(temp,bytes);token.ThrowIfCancellationRequested();File.Move(temp,path,true);
         }catch(Exception e)when(e is IOException or UnauthorizedAccessException){}
         finally{if(File.Exists(temp))File.Delete(temp);}
     },token);
     internal static Task<Plan> Build(PosterCacheService cache,EmbySession session,LocalSearchIndexSnapshot snapshot,HashSet<string> shown,CancellationToken token)=>Task.Run(()=>{
-        var pool=new List<Entry>(MaximumEntries);var picks=new List<EmbyItem>(2);var current=new Dictionary<string,EmbyItem>(StringComparer.OrdinalIgnoreCase);
+        var pool=new List<Entry>(MaximumEntries);var picks=new List<EmbyItem>(6);var current=new Dictionary<string,EmbyItem>(StringComparer.OrdinalIgnoreCase);
         var seen=new HashSet<string>(StringComparer.OrdinalIgnoreCase);int count=0;
         foreach(var row in snapshot.Entries){
             token.ThrowIfCancellationRequested();var item=row.Item;if(!Allowed(item)||!seen.Add(item.Id))continue;
             if(shown.Contains(item.Id))current.TryAdd(item.Id,item);var entry=Candidate(item);if(entry==null)continue;
             count++;if(pool.Count<MaximumEntries)pool.Add(entry);else{int at=Random.Shared.Next(count);if(at<MaximumEntries)pool[at]=entry;}
-            if(picks.Count<2)picks.Add(entry.Item);else{int at=Random.Shared.Next(count);if(at<2)picks[at]=entry.Item;}
+            if(picks.Count<6)picks.Add(entry.Item);else{int at=Random.Shared.Next(count);if(at<6)picks[at]=entry.Item;}
         }
-        if(picks.Count==2&&Random.Shared.Next(2)==1)(picks[0],picks[1])=(picks[1],picks[0]);
+        for(int i=picks.Count-1;i>0;i--){int at=Random.Shared.Next(i+1);(picks[i],picks[at])=(picks[at],picks[i]);}
+        pool=picks.Select(Candidate).OfType<Entry>().Concat(pool).DistinctBy(e=>e.Item.Id,StringComparer.OrdinalIgnoreCase).Take(MaximumEntries).ToList();
         return new Plan(pool.ToArray(),picks.ToArray(),current);
     },token);
 }

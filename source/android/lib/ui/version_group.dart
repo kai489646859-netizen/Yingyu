@@ -4,6 +4,7 @@ import '../core/accounts.dart';
 import '../core/browse_cache.dart';
 import '../core/emby.dart';
 import '../core/models.dart';
+import '../core/video_labels.dart';
 import '../core/version_groups.dart';
 import 'style.dart';
 import 'surface.dart';
@@ -113,11 +114,9 @@ class _VersionChooserState extends State<VersionChooser> {
               final original = widget.group.versions[i];
               final item = details[original.id];
               final error = failures[original.id];
-              final description = versionDescription(item ?? original);
               return SettingsRow(
-                '${i + 1}. ${original.title}',
+                '${i + 1}. ${resourceName(resourceVideo(item ?? original))}',
                 subtitle: [
-                  if (description.isNotEmpty) description,
                   if (item != null)
                     item.resume > Duration.zero
                         ? '已看 ${item.resume.inMinutes} 分钟'

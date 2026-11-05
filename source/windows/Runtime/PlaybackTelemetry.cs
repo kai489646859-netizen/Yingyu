@@ -38,6 +38,12 @@ public static class PlaybackTelemetry
     }
     internal static void Emit(string value) => DiagnosticQueue.Emit(value);
 
+    internal static void DanmakuTiming(object session, string details)
+    {
+        if (Sessions.TryGetValue(session, out var state))
+            state.Record("danmaku-timing", details);
+    }
+
     public static void Start(object session, MpvClient client)
     {
         try

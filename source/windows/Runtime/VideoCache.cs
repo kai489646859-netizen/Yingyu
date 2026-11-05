@@ -29,7 +29,10 @@ public static class VideoCache
     internal static string? CurrentIsoScope => IsoIdentity.Value;
 
     public static Task PlayAsync(MpvClient client, string address, MpvPlayOptions options, object session)
-        =>EpisodePlaybackIntent.Play(session,()=>DolbyHdrFallback.Play(session,()=>PlayWithCache(client,address,options,session)));
+    {
+        PlayerSkipCountdown.PrepareStart(session,options);
+        return EpisodePlaybackIntent.Play(session,()=>DolbyHdrFallback.Play(session,()=>PlayWithCache(client,address,options,session)));
+    }
     static Task PlayWithCache(MpvClient client, string address, MpvPlayOptions options, object session)
     {
         if(NetworkBluray.ConsumeMenuStart(session))options.StartPosition=0;

@@ -37,13 +37,20 @@ public static class PlayerFeedback
         var state = States.GetValue(overlay, x => new State(x));
         state.Session = new WeakReference<object>(session);
         state.LastStatus = null;
+        PlayerSkipCountdown.Bind(session);
         MediaNotice.Begin(session);
         PlayerMediaInfo.Bind(session);
         NativeDolby.Bind(session);
+        PlayerDanmaku.Bind(session);
+        PlayerSeasonPanel.Bind(session,overlay);
+        try{DesktopSubtitles.Bind(session);SeekArtwork.Bind(session);}catch(Exception e){PlaybackTransport.Write("Warning","Playback.Desktop","桌面辅助功能初始化未完成；"+e.GetType().Name);}
+
     }
     public static void KeepStartupVisible(object overlay, MpvPlayerState status)
     {
         if (States.TryGetValue(overlay, out var saved)) saved.LastStatus = status;
+        if(status is MpvPlayerState.Paused or MpvPlayerState.Playing && Access.Get<bool>(overlay,"_controlsVisible"))
+            Access.Call(overlay,"ShowControlsTemporarily");
         if (status is MpvPlayerState.Playing or MpvPlayerState.Paused
             && saved?.Session?.TryGetTarget(out var media) == true) MediaNotice.Ready(media);
         // Initial pause/core-idle notifications may precede file-loaded/first
@@ -63,9 +70,13 @@ public static class PlayerFeedback
         }
         catch (Exception error) { PlaybackTransport.Write("Warning", "Playback.Feedback", "加载状态同步未完成；异常类型=" + error.GetType().Name); }
     }
+    public static void EpisodePlaylistReady(object session)=>PlayerDanmaku.PlaylistReady(session);
     public static void Ready(object session)
     {
         if(DolbyHdrFallback.IsFailed(session))return;
+        PlayerDanmaku.Ready(session);
+        PlayerSeasonPanel.Ready(session);
+        PlayerSkipCountdown.Ready(session);
         MediaNotice.Ready(session);
         var overlay = Access.Get<object?>(session, "_overlay");
         if (overlay is not FrameworkElement element) return;
@@ -86,6 +97,13 @@ public static class PlayerFeedback
             }
             catch (Exception error) { PlaybackTransport.Write("Warning", "Playback.Feedback", "首帧提示同步未完成；异常类型=" + error.GetType().Name); }
         });
+    }
+    public static bool CanIdleHide(object overlay)
+    {
+        if(Access.Get<bool>(overlay,"_isPlaying"))return true;
+        return States.TryGetValue(overlay,out var state)&&state.LastStatus is MpvPlayerState.Playing or MpvPlayerState.Paused
+            &&state.Session?.TryGetTarget(out var session)==true&&Access.Get<bool>(session,"_hasStartedPlayback")
+            &&!Access.Get<bool>(session,"_startupTerminalFailure");
     }
     sealed class State
     {

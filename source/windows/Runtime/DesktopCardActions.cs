@@ -11,7 +11,15 @@ internal static class DesktopCardActions
     internal static async Task Play(object page,object card)
     {
         PosterTap.Cancel(page);
-        try{var item=Item(card);if(item.Type is "Series" or "Season"){await Detail(page,card);return;}await (Task)Call(page,"StartPlaybackSafelyAsync",item,false,CancellationToken.None)!;}
+        try
+        {
+            var item=Item(card);
+            if(item.Type is "Series" or "Season"){await Detail(page,card);return;}
+            if(card.GetType().GetProperty("PreferLandscapeArtwork")?.GetValue(card) is true)
+                item=await ResumeSync.RestoreForQuickPlay(page,item);
+            await (Task)Call(page,"StartPlaybackSafelyAsync",item,false,CancellationToken.None)!;
+        }
+        catch(OperationCanceledException){}
         catch(Exception error){Report(page,error);}
     }
     internal static async Task Watched(object page,object card)

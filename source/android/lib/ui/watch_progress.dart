@@ -64,23 +64,34 @@ class WatchProgressState {
     final started =
         position > Duration.zero &&
         (!completionPending || completionSuperseded);
-    final known = item.duration > Duration.zero;
+    final hasDuration = item.duration > Duration.zero;
+    final reported = object(item.data['UserData'])['PlayedPercentage'];
+    final serverFraction =
+        serverOwned &&
+            started &&
+            reported is num &&
+            reported.isFinite &&
+            reported > 0 &&
+            reported <= 100
+        ? reported / 100
+        : null;
+    final known = hasDuration || serverFraction != null;
     final fraction = restart
         ? 0.0
         : played && !started
         ? 1.0
-        : known
-        ? (position.inMilliseconds / item.duration.inMilliseconds).clamp(
+        : hasDuration
+        ? (position.inMicroseconds / item.duration.inMicroseconds).clamp(
             0.0,
             1.0,
           )
-        : 0.0;
+        : serverFraction ?? 0.0;
     final label = restart
         ? played
               ? '已看完 · 从头重看'
               : '从头播放'
         : started
-        ? '${played ? '已看完 · 重看至' : '看到'} ${watchTime(position)}${known ? ' / ${watchTime(item.duration)}' : ''}'
+        ? '${played ? '已看完 · 重看至' : '看到'} ${watchTime(position)}${hasDuration ? ' / ${watchTime(item.duration)}' : ''}'
         : played
         ? '已看完'
         : '未观看';

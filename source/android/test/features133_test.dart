@@ -15,7 +15,6 @@ import 'package:yingyu/ui/people.dart';
 import 'package:yingyu/ui/settings.dart';
 import 'package:yingyu/ui/style.dart';
 import 'package:yingyu/core/store.dart';
-import 'package:flutter/cupertino.dart';
 import 'core_test.dart' show syntheticSession;
 import 'offline_settle.dart' show syntheticImagePaths;
 
@@ -177,30 +176,14 @@ void main() {
           ),
         ),
       );
+      expect(find.byKey(const Key('prepare-next')), findsNothing);
       await tester.scrollUntilVisible(
-        find.byKey(const Key('prepare-next')),
+        find.text('自动播放下一集'),
         400,
         scrollable: find.byType(Scrollable).first,
       );
-      final row = tester.widget<SettingsRow>(
-        find.byKey(const Key('prepare-next')),
-      );
-      expect(row.icon, isNotNull);
-      expect(row.trailing, isA<CupertinoSwitch>());
-      expect((row.trailing as CupertinoSwitch).value, true);
-      final groups = tester.widgetList<SettingsGroup>(
-        find.ancestor(
-          of: find.byKey(const Key('prepare-next')),
-          matching: find.byType(SettingsGroup),
-        ),
-      );
-      expect(groups.single.title, '播放');
-      await tester.ensureVisible(find.text('下一集准备'));
       await tester.pumpAndSettle();
       await savePreview(tester, capture, 'playback');
-      (row.trailing as CupertinoSwitch).onChanged!(false);
-      await tester.pumpAndSettle();
-      expect(prefs.getBool('yingyu.next.prepare.v1'), false);
       expect(find.text('防剧透'), findsNothing);
       await tester.scrollUntilVisible(
         find.text('演员图片缓存'),

@@ -1087,7 +1087,31 @@ class HomeFeed extends ChangeNotifier {
       collapseResume(
         entries.where(allowsResume),
         limit: limit,
-      ).map(ServerResumeItem.new).toList();
+      ).map(_resumeDisplayRow).toList();
+
+  ServerResumeItem _resumeDisplayRow(MediaItem item) {
+    final position = item.resume;
+    final percent = object(item.data['UserData'])['PlayedPercentage'];
+    if (item.id.isEmpty ||
+        item.duration > Duration.zero ||
+        position <= Duration.zero ||
+        (percent is num && percent.isFinite && percent > 0 && percent <= 100)) {
+      return ServerResumeItem(item);
+    }
+    final detail =
+        _recent[item.id]?.item ??
+        browse?.peek('detail:${item.id}')?.items.firstOrNull;
+    if (detail == null ||
+        detail.id != item.id ||
+        detail.type != item.type ||
+        detail.duration <= position) {
+      return ServerResumeItem(item);
+    }
+    // Copy only display duration. The Resume row still owns identity and time.
+    return ServerResumeItem(
+      MediaItem({...item.data, 'RunTimeTicks': ticks(detail.duration)}),
+    );
+  }
 
   static MediaItem withPosition(MediaItem item, Duration position) =>
       MediaItem({

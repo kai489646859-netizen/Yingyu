@@ -203,6 +203,8 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('ISO · Dolby Vision · 杜比视界 Profile 8'), findsOneWidget);
+      await tester.scrollUntilVisible(find.text('视频格式（内核识别）'), 100);
+      expect(find.widgetWithText(SettingsRow, '杜比视界'), findsOneWidget);
       final reads = backend.factReads;
       await tester.pump(const Duration(seconds: 3));
       expect(backend.factReads, reads);
@@ -215,6 +217,8 @@ void main() {
       session.changed();
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
+      expect(find.widgetWithText(SettingsRow, '未确认'), findsOneWidget);
+      await tester.scrollUntilVisible(find.text('资源类型'), -100);
       expect(find.text('ISO · HDR'), findsOneWidget);
       expect(find.textContaining('杜比视界 Profile 8'), findsNothing);
       expect(requests, before);

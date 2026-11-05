@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using EmbyDesktop.Core.Services;
@@ -97,9 +97,6 @@ public static class DesktopTheme
             // Each supported callback has its own exception boundary. There is
             // no optional system-event subscription during construction or load.
             system.Run("register-loaded", () => page.Loaded += OnLoaded);
-            if(Find<ItemsControl>("HomeLibrarySectionsControl") is {} home){
-                home.Loaded+=(_,_)=>QueueHomeRows();home.SizeChanged+=(_,_)=>QueueHomeRows();home.Items.VectorChanged+=(_,_)=>QueueHomeRows();
-            }
             system.Run("register-unloaded", () => page.Unloaded += OnUnloaded);
             system.Run("register-theme", () => page.ActualThemeChanged += OnActualThemeChanged);
             system.Run("register-size", () => page.SizeChanged += OnSizeChanged);
@@ -281,7 +278,7 @@ public static class DesktopTheme
                 foreach (var button in nav.Children.OfType<Button>())
                 { Button(button, active == "Library" && Equals(button.Tag, library)); button.Margin = new Thickness(8, 2, 8, 2); button.HorizontalAlignment = HorizontalAlignment.Stretch; }
             DesktopShellLayout.Apply(page, Options, palette);
-            ReferenceAppearance.Apply(page);
+            ReferenceAppearance.ApplyAfterNavigation(page);
         }
         public void Detail()
         {
@@ -326,24 +323,6 @@ public static class DesktopTheme
             if (Find<Border>("DetailPosterFallback") is { } poster) poster.CornerRadius = new(Options.Radius);
             ReferenceAppearance.Apply(page);
             DetailArtwork.EnsureSurface(page);
-        }
-        bool homeRowsQueued;
-        readonly ConditionalWeakTable<GridView,object> homeRows=new();
-        void QueueHomeRows(){
-            if(homeRowsQueued)return;homeRowsQueued=true;
-            if(!page.DispatcherQueue.TryEnqueue(()=>{
-                homeRowsQueued=false;if(!page.IsLoaded||Find<ItemsControl>("HomeLibrarySectionsControl") is not {} host)return;
-                foreach(var row in UiElements.Descendants(host).OfType<GridView>().ToArray()){
-                    // The bounded home strips already realize their cards inside an outer
-                    // horizontal ScrollViewer. Measure each configured container width
-                    // instead of retaining ItemsStackPanel's initial 184-DIP slot.
-                    if(!homeRows.TryGetValue(row,out _)){
-                        homeRows.Add(row,new());row.ContainerContentChanging+=(_,_)=>QueueHomeRows();row.Loaded+=(_,_)=>QueueHomeRows();
-                        row.ItemsPanel=(ItemsPanelTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load("<ItemsPanelTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><StackPanel Orientation=\"Horizontal\"/></ItemsPanelTemplate>");
-                    }
-                    foreach(var root in UiElements.Descendants(row).OfType<Grid>().Where(g=>g.Name=="PosterCardRoot"&&g.IsLoaded).ToArray())TrackCard(root);
-                }
-            }))homeRowsQueued=false;
         }
         public void TrackCard(FrameworkElement element)
         {
@@ -559,10 +538,33 @@ public static class DesktopTheme
             catch (Exception error) { status.Text = "外观保存失败，已保留原设置：" + error.GetType().Name; return false; }
             if(visualChanged){
                 LivePages.RemoveAll(weak => !weak.TryGetTarget(out _));
-                foreach (var weak in LivePages.ToArray()) if (weak.TryGetTarget(out var state)){if(transition||Options.ReducedMotion)ThemeTransition.Change(state.page,state.Apply);else state.Apply();}
-                PlayerDesktopStyle.RefreshAll();
+                bool repainted=false;
+                foreach (var weak in LivePages.ToArray()) if (weak.TryGetTarget(out var state))repainted|=state.ApplyPreference(before);
+                if(repainted)PlayerDesktopStyle.RefreshAll();
             }
             status.Text = "已保存并应用"; return true;
         }
+        bool ApplyPreference(DesktopThemeOptions before)
+        {
+            var snapshot=system.Read();
+            bool dark=Options.Mode==2||Options.Mode==0&&system.IsDark(page.ActualTheme==ElementTheme.Dark);
+            var target=DesktopThemePalette.Resolve(Options,dark);
+            if(snapshot is {HighContrast:true,Background:{} background,Foreground:{} text})target=new(background,background,background,text,text,text,text,background,background);
+            bool colorsChanged=target!=palette;
+            if(!colorsChanged&&before.Corners==Options.Corners&&before.ReducedMotion==Options.ReducedMotion){
+                // Persist System/explicit preference and cancel an obsolete
+                // queued transition without replacing equal brushes or cards.
+                ThemeTransition.Immediate(page,()=>{
+                    applying=true;
+                    try{var app=Application.Current;app.GetType().GetMethod("ApplyTheme",Flags)?.Invoke(app,new object[]{WindowTheme(AppThemePreference.System)});page.RequestedTheme=Options.Mode switch{1=>ElementTheme.Light,2=>ElementTheme.Dark,_=>ElementTheme.Default};systemSnapshot=snapshot;}
+                    finally{applying=false;}
+                });
+                return false;
+            }
+            if(colorsChanged)ThemeTransition.Change(page,Apply,snapshot.AnimationsEnabled&&!snapshot.HighContrast);
+            else ThemeTransition.Immediate(page,Apply);
+            return true;
+        }
     }
 }
+

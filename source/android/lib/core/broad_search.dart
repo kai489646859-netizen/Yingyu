@@ -100,7 +100,8 @@ class BroadSearch {
       final terms = <String>{
         query,
         match.needle,
-        for (final r in match.needle.runes) String.fromCharCode(r),
+        if (persons)
+          for (final r in match.needle.runes) String.fromCharCode(r),
       };
       _branches = [
         for (final term in terms) ...[

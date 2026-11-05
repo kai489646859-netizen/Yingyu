@@ -19,7 +19,7 @@ internal static class DesktopReadability
         // Played records can still have a partial rewatch. Do not use the
         // host's completed=100 shortcut, or invent a denominator when unknown.
         return item.RunTimeTicks is >0&&item.UserData is {PlaybackPositionTicks:>=0} data
-            ?Math.Clamp(data.PlaybackPositionTicks*100.0/item.RunTimeTicks.Value,0,100):0;
+            ?Math.Clamp(data.PlaybackPositionTicks*100.0/item.RunTimeTicks.Value,0,100):item.UserData is {PlaybackPositionTicks:>0,PlayedPercentage:>0 and <100} partial?partial.PlayedPercentage.Value:0;
     }
     internal static void Search(Control input,DesktopThemePalette p)
     {
@@ -69,7 +69,7 @@ internal static class DesktopReadability
         button.Padding=new(0);button.CornerRadius=new(17);button.BorderThickness=new(1);
         button.Background=DesktopVisuals.Brush(p.Surface);button.BorderBrush=DesktopVisuals.Brush(DesktopMaterial.Mix(p.Outline,p.Accent,.4));button.Foreground=DesktopVisuals.Brush(p.Text);
         button.HorizontalContentAlignment=HorizontalAlignment.Center;button.VerticalContentAlignment=VerticalAlignment.Center;
-        Positions.GetValue(button,b=>new ArrowPosition(b,right)).Queue();
+        Positions.GetValue(button,b=>new ArrowPosition(b,right)).Initialize();
     }
     // Keep original buttons, handlers and row parent. Put the existing heading
     // and both controls in a header row; the original viewport spans below it.
@@ -80,8 +80,9 @@ internal static class DesktopReadability
         Grid? row;ScrollViewer? scroll;bool queued;
         internal ArrowPosition(Button button,bool right)
         {
-            this.button=button;this.right=right;button.Loaded+=(_,_)=>Queue();button.Unloaded+=(_,_)=>Unbind();
+            this.button=button;this.right=right;button.Loaded+=(_,_)=>Initialize();button.Unloaded+=(_,_)=>Unbind();
         }
+        internal void Initialize(){if(button.IsLoaded)Paint();else Queue();}
         void Unbind(){if(row!=null)row.SizeChanged-=Changed;if(scroll!=null){scroll.ViewChanged-=Scrolled;scroll.SizeChanged-=Changed;if(scroll.Content is FrameworkElement content)content.SizeChanged-=Changed;}row=null;scroll=null;}
         void Changed(object sender,SizeChangedEventArgs args)=>Queue();
         void Scrolled(object? sender,ScrollViewerViewChangedEventArgs args)=>Queue();
@@ -121,7 +122,7 @@ internal static class DesktopReadability
     {Discoveries.GetValue(view,v=>new ContentDiscovery(v));PaintArrows(view);}
     static void PaintArrows(FrameworkElement view)
     {
-        foreach(var button in UiElements.Descendants(view).OfType<Button>())
+        foreach(var button in UiElements.Descendants(view).OfType<Button>().ToArray())
         {
             if(DesktopCardSurface.Owns(button))continue;
             string name=button.Name;string label=Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(button);

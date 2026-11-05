@@ -69,8 +69,16 @@ public static class AndroidCacheRuntime
         bool ActivePlayback => (bool)(page.GetType().GetProperty("IsPlaybackActive", Flags)?.GetValue(page) ?? false);
         void Check()
         {
-            var handle = (IntPtr)(page.GetType().GetProperty("MainWindowHandle", Flags)?.GetValue(page) ?? IntPtr.Zero);
-            bool paused = !element.IsLoaded || ActivePlayback || (handle != IntPtr.Zero && IsIconic(handle));
+            // Closing a window can detach XamlRoot before Unloaded stops this
+            // timer. A queued tick must release its owner without consulting
+            // the host's MainWindowHandle getter or resuming poster requests.
+            var root = element.XamlRoot;
+            if (!element.IsLoaded || root?.ContentIslandEnvironment is not { } island)
+            {
+                timer.Stop(); Pause(this, false); return;
+            }
+            var handle = Microsoft.UI.Win32Interop.GetWindowFromWindowId(island.AppWindowId);
+            bool paused = ActivePlayback || (handle != IntPtr.Zero && IsIconic(handle));
             Pause(this, paused);
             if (wasPaused == paused) return;
             wasPaused = paused;

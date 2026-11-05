@@ -28,11 +28,12 @@ public static class PlayerHover
         UIElement? _pointerRoot;
         UIElement? _cursorRoot;
         bool _buttonHover, _popupHover;
+        FrameworkElement? _popupPanel;
         public bool InBottomBand { get; private set; }
         public State(object overlay)
         {
             _overlay = overlay;
-            Access.Get<Microsoft.UI.Dispatching.DispatcherQueueTimer>(overlay,"_autoHideTimer").Interval=TimeSpan.FromSeconds(5);
+            Access.Get<Microsoft.UI.Dispatching.DispatcherQueueTimer>(overlay,"_autoHideTimer").Interval=TimeSpan.FromSeconds(3.5);
             overlay.GetType().GetEvent("ControlsVisibilityChanged")!.AddEventHandler(overlay,new EventHandler<bool>((_,visible)=>Cursor(visible)));
             _root = Access.Get<Grid>(overlay, "RootGrid");
             _position = Access.Get<Slider>(overlay, "PositionSlider");
@@ -43,7 +44,7 @@ public static class PlayerHover
             _close = _root.DispatcherQueue.CreateTimer();
             _close.IsRepeating = false;
             _close.Interval = TimeSpan.FromMilliseconds(180);
-            _close.Tick += (_, _) => { if (!_buttonHover && !_popupHover) _flyout.Hide(); };
+            _close.Tick += (_, _) => { if (PlayerSliderInput.VolumeDragging(_overlay)) { _close.Start(); return; } if (PlayerMenuPointer.Contains(_volume) || PlayerMenuPointer.Contains(_popupPanel)) { _close.Start(); return; } _flyout.Hide(); };
             ((FrameworkElement)overlay).Loaded += (_, _) => AttachPointerRoot();
             _volume.PointerEntered += (_, e) =>
             {
@@ -64,6 +65,7 @@ public static class PlayerHover
                     node = parent;
                     if (node is FlyoutPresenter presenter)
                     {
+                        _popupPanel=presenter;
                         presenter.PointerEntered -= PopupEnter;
                         presenter.PointerExited -= PopupExit;
                         presenter.PointerEntered += PopupEnter;
@@ -72,9 +74,9 @@ public static class PlayerHover
                     }
                 }
             };
-            _flyout.Closed += (_, _) => { _popupHover = false; _close.Stop(); };
+            _flyout.Closed += (_, _) => { _popupPanel=null; _popupHover = false; _close.Stop(); };
             ((FrameworkElement)overlay).Unloaded += (_, _) =>
-            { Cursor(true);DetachPointerRoot(); InBottomBand = false; _buttonHover = _popupHover = false; _close.Stop(); _flyout.Hide(); };
+            { Cursor(true);DetachPointerRoot(); InBottomBand = false; _buttonHover = false; _popupPanel=null; _popupHover = false; _close.Stop(); _flyout.Hide(); };
             if (((FrameworkElement)overlay).IsLoaded) AttachPointerRoot();
         }
         void AttachPointerRoot()
@@ -120,7 +122,7 @@ public static class PlayerHover
             _pointerRoot = null;
             _cursorRoot = null;
         }
-        void PopupEnter(object sender, PointerRoutedEventArgs e) { _popupHover = true; _close.Stop(); }
+        void PopupEnter(object sender, PointerRoutedEventArgs e) { _popupHover = true; _close.Start(); }
         void PopupExit(object sender, PointerRoutedEventArgs e) { _popupHover = false; CloseSoon(); }
         void CloseSoon() { _close.Stop(); if (!_buttonHover && !_popupHover) _close.Start(); }
         void Move(object sender, PointerRoutedEventArgs e)
@@ -172,3 +174,4 @@ public static class PlayerHover
         }
     }
 }
+

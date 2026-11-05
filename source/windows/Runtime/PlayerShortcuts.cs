@@ -38,6 +38,7 @@ public static class PlayerShortcuts
         readonly ConditionalWeakTable<KeyRoutedEventArgs, object> _processed = new();
         UIElement? _keyboardRoot;
         Slider? _volumeKeys;
+        int _wheelRemainder;
         [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
 
@@ -109,6 +110,7 @@ public static class PlayerShortcuts
             while (VisualTreeHelper.GetParent(root) is DependencyObject parent) root = parent;
             _keyboardRoot = root as UIElement ?? _element;
             _keyboardRoot.PreviewKeyDown += Preview;
+            _keyboardRoot.PointerWheelChanged += Wheel;
             _keyboardRoot.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(Bubble), true);
             _keyboardRoot.AddHandler(UIElement.KeyUpEvent, new KeyEventHandler(Up), true);
             // A Flyout has a separate event route. Its volume slider must use
@@ -132,6 +134,8 @@ public static class PlayerShortcuts
             }
             if (_keyboardRoot == null) return;
             _keyboardRoot.PreviewKeyDown -= Preview;
+            _keyboardRoot.PointerWheelChanged -= Wheel;
+            _wheelRemainder=0;
             _keyboardRoot.RemoveHandler(UIElement.KeyDownEvent, new KeyEventHandler(Bubble));
             _keyboardRoot.RemoveHandler(UIElement.KeyUpEvent, new KeyEventHandler(Up));
             _keyboardRoot = null;
@@ -217,8 +221,8 @@ public static class PlayerShortcuts
                 case VirtualKey.Left: Seek(-preferences.SeekStepSeconds); break;
                 case VirtualKey.J: Seek(-10); break;
                 case VirtualKey.L: Seek(10); break;
-                case VirtualKey.Up: Volume(10); break;
-                case VirtualKey.Down: Volume(-10); break;
+                case VirtualKey.Up: KeyboardVolume(true); break;
+                case VirtualKey.Down: KeyboardVolume(false); break;
                 case VirtualKey.M:
                     var slider = Access.Get<Slider>(_overlay, "VolumeSlider");
                     if (slider.Value > 0) { _unmutedVolume = slider.Value; slider.Value = 0; }
@@ -234,7 +238,7 @@ public static class PlayerShortcuts
                     var speed = Math.Clamp(Access.Get<double>(_overlay, "_currentSpeed") + ((int)key == 221 ? .25 : -.25), .25, 3);
                     Speed(speed); Feedback($"倍速 {speed:0.##}×"); break;
             }
-            if (command is not (VirtualKey.Up or VirtualKey.Down))
+            if (command is not (VirtualKey.Up or VirtualKey.Down or VirtualKey.Space or VirtualKey.Left or VirtualKey.J or VirtualKey.L))
                 Access.Call(_overlay, "ShowControlsTemporarily");
             e.Handled = true;
             return true;
@@ -262,7 +266,33 @@ public static class PlayerShortcuts
             var slider = Access.Get<Slider>(_overlay, "PositionSlider");
             Raise("SeekRequested", Math.Clamp(slider.Value + seconds, 0, slider.Maximum));
             Feedback(seconds > 0 ? $"快进 {seconds:0} 秒" : $"快退 {-seconds:0} 秒");
-            Access.Call(_overlay, "ShowControlsTemporarily");
+            if(Access.Get<bool>(_overlay,"_controlsVisible")) Access.Call(_overlay, "ShowControlsTemporarily");
+        }
+        void KeyboardVolume(bool up)
+        {
+            double current=Access.Get<Slider>(_overlay,"VolumeSlider").Value;
+            Volume(up ? (current<10?5:10) : -(current<=10?5:10));
+        }
+        bool WheelAllowed(DependencyObject? source)
+        {
+            if(_keyboardRoot==null||!_element.IsLoaded||Access.Get<bool>(_overlay,"_desktopDialogOpen")
+                ||Access.Get<HashSet<object>>(_overlay,"_openControlFlyouts").Count!=0
+                ||Access.Get<Border>(_overlay,"EpisodeDrawer").Visibility==Visibility.Visible)return false;
+            for(var node=source;node!=null&&node!=_keyboardRoot;node=VisualTreeHelper.GetParent(node))
+                if(node is TextBox or PasswordBox or NumberBox or ComboBox or ScrollViewer)return false;
+            return true;
+        }
+        void Wheel(object sender,PointerRoutedEventArgs e)
+        {
+            var point=e.GetCurrentPoint(_element);
+            if(e.Handled||point.Properties.IsHorizontalMouseWheel||!WheelAllowed(e.OriginalSource as DependencyObject))return;
+            WheelVolume(point.Properties.MouseWheelDelta);e.Handled=true;
+        }
+        void WheelVolume(int delta)
+        {
+            if(Math.Sign(delta)!=Math.Sign(_wheelRemainder))_wheelRemainder=0;
+            long total=(long)_wheelRemainder+delta;int steps=(int)(total/120);_wheelRemainder=(int)(total%120);
+            if(steps!=0)Volume(steps*5d);
         }
         void Volume(double delta)
         {

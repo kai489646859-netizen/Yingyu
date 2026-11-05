@@ -13,14 +13,16 @@ internal static class ThemeTransition
 {
     sealed class State{internal int Epoch;internal Image? Overlay;internal Storyboard? Animation;}
     static readonly ConditionalWeakTable<FrameworkElement,State> States=new();
-    internal static async void Change(FrameworkElement page,Action apply){
+    static void Remove(State state){state.Animation?.Stop();state.Animation=null;if(state.Overlay is {} old){old.Source=null;if(old.Parent is Panel parent)parent.Children.Remove(old);}state.Overlay=null;}
+    internal static void Immediate(FrameworkElement page,Action apply){var state=States.GetValue(page,_=>new());++state.Epoch;Remove(state);apply();}
+    internal static async void Change(FrameworkElement page,Action apply,bool animationsEnabled=true){
         var state=States.GetValue(page,_=>new());int epoch=++state.Epoch;
         Grid? root=null;for(DependencyObject? at=page;at!=null;at=VisualTreeHelper.GetParent(at))if(at is Grid grid)root=grid;
-        void Remove(){state.Animation?.Stop();state.Animation=null;if(state.Overlay is {} old){old.Source=null;if(old.Parent is Panel parent)parent.Children.Remove(old);}state.Overlay=null;}
+        void Remove()=>ThemeTransition.Remove(state);
         bool applied=false;
         async Task Deadline(){await Task.Delay(600);if(epoch!=state.Epoch||applied)return;Remove();applied=true;apply();}
         try{
-            if(root==null||!page.IsLoaded||root.ActualWidth<1||root.ActualHeight<1||DesktopTheme.Options.ReducedMotion||new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast){Remove();applied=true;apply();return;}
+            if(root==null||!page.IsLoaded||root.ActualWidth<1||root.ActualHeight<1||!animationsEnabled||DesktopTheme.Options.ReducedMotion||new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast){Remove();applied=true;apply();return;}
             _=Deadline();
             // Coalesce a quick sequence of mode selections before allocating a render.
             await Task.Delay(35);if(epoch!=state.Epoch)return;

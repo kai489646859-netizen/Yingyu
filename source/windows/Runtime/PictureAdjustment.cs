@@ -47,7 +47,7 @@ internal static class PictureAdjustment
             bool acknowledged=false;
             try
             {
-                await Send(MpvEventId.CommandReply,id=>MpvNative.SetCommandAsync(client.Handle,id,["set","file-local-options/gamma",target.ToString(CultureInfo.InvariantCulture)]),"set-ack").ConfigureAwait(false);
+                await Send(MpvEventId.CommandReply,id=>MpvNative.SetCommandAsync(client.Handle,id,["set","file-local-options/gamma",target.ToString(CultureInfo.InvariantCulture),null!]),"set-ack").ConfigureAwait(false);
                 acknowledged=true;
                 double actual=await Read("read-after").ConfigureAwait(false);
                 if(Math.Abs(actual-target)>.0001)throw new InvalidOperationException("播放器未确认画面明暗设置。");
@@ -57,7 +57,7 @@ internal static class PictureAdjustment
             {
                 if(acknowledged&&Current())
                 {
-                    await Send(MpvEventId.CommandReply,id=>MpvNative.SetCommandAsync(client.Handle,id,["set","file-local-options/gamma",before.ToString(CultureInfo.InvariantCulture)]),"restore-ack").ConfigureAwait(false);
+                    await Send(MpvEventId.CommandReply,id=>MpvNative.SetCommandAsync(client.Handle,id,["set","file-local-options/gamma",before.ToString(CultureInfo.InvariantCulture),null!]),"restore-ack").ConfigureAwait(false);
                     double restored=await Read("restore-read").ConfigureAwait(false);
                     if(Math.Abs(restored-before)>.0001)throw new InvalidOperationException("画面设置恢复未被确认，请退出本次播放后重试。");
                 }

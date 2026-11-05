@@ -1,4 +1,6 @@
+import 'dart:math' as math;
 // Controls forward to PlaybackSession; layout never owns playback state.
+import 'danmaku_icons.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../core/models.dart';
@@ -74,10 +76,15 @@ class PlayerChrome extends StatelessWidget {
     this.locked = false,
     this.unlockVisible = false,
     this.onLock,
+    this.onDanmakuSettings,
+    this.onDanmakuFeatured,
+    this.danmakuFeatured = false,
   });
   final VoidCallback? onPrevious, onNext, onInfo, onAudio, onSubtitles, onRate;
   final VoidCallback? onEpisodes, onQuality, onFit, onLock;
   final bool filled, episode, locked, unlockVisible;
+  final bool danmakuFeatured;
+  final VoidCallback? onDanmakuSettings, onDanmakuFeatured;
   final double speed;
   final Map<String, GlobalKey> menuAnchors;
   final PlayerStatusData? status;
@@ -219,6 +226,44 @@ class PlayerChrome extends StatelessWidget {
         ),
       ],
     );
+    Widget danmakuButton(
+      String label,
+      Widget icon,
+      VoidCallback? action, {
+      bool? toggled,
+    }) => Semantics(
+      label: label,
+      toggled: toggled,
+      child: IconButton(
+        tooltip: label,
+        onPressed: action,
+        icon: icon,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+      ),
+    );
+    final danmakuTools = onDanmakuSettings == null
+        ? null
+        : Row(
+            key: const Key('player-danmaku-tools'),
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              danmakuButton(
+                danmakuFeatured ? '精选弹幕：开' : '精选弹幕：关',
+                DanmakuToolbarIcon(featured: true, selected: danmakuFeatured),
+                onDanmakuFeatured,
+                toggled: danmakuFeatured,
+              ),
+              anchored(
+                'danmaku',
+                danmakuButton(
+                  '弹幕设置',
+                  const DanmakuToolbarIcon(),
+                  onDanmakuSettings,
+                ),
+              ),
+            ],
+          );
     final lockVisible = visible || (locked && unlockVisible);
     return Stack(
       children: [
@@ -431,15 +476,35 @@ class PlayerChrome extends StatelessWidget {
                                 final transportWidth =
                                     (episode ? 5 : 3) * 44 + (compact ? 8 : 24);
                                 final needed =
-                                    transportWidth + 2 * toolsWidth + 16;
+                                    transportWidth +
+                                    2 *
+                                        math.max(
+                                          toolsWidth,
+                                          danmakuTools == null ? 0 : 88,
+                                        ) +
+                                    16;
                                 if (bounds.maxWidth < needed) {
+                                  final alongside =
+                                      danmakuTools != null &&
+                                      bounds.maxWidth >= 88 + toolsWidth;
                                   return Column(
                                     children: [
+                                      if (danmakuTools != null && !alongside)
+                                        Align(
+                                          alignment: Alignment.centerLeft,
+                                          child: danmakuTools,
+                                        ),
                                       transport,
                                       Row(
                                         mainAxisAlignment:
                                             MainAxisAlignment.end,
-                                        children: [tools],
+                                        children: [
+                                          if (alongside) ...[
+                                            danmakuTools,
+                                            const Spacer(),
+                                          ],
+                                          tools,
+                                        ],
                                       ),
                                     ],
                                   );
@@ -450,6 +515,11 @@ class PlayerChrome extends StatelessWidget {
                                     alignment: Alignment.center,
                                     children: [
                                       transport,
+                                      if (danmakuTools != null)
+                                        Align(
+                                          alignment: Alignment.centerLeft,
+                                          child: danmakuTools,
+                                        ),
                                       Align(
                                         alignment: Alignment.centerRight,
                                         child: tools,

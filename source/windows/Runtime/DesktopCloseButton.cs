@@ -6,6 +6,12 @@ namespace Yingyu.Update;
 internal static class DesktopCloseButton
 {
     static ControlTemplate? template;
+    internal static uint Fill(DesktopThemePalette palette)
+    {
+        bool contrast=palette.Background==palette.Surface&&palette.Accent==palette.Text;
+        bool dark=(palette.Background&0xFFFFFF)<0x808080;
+        return dark&&!contrast?DesktopMaterial.Mix(palette.Surface,0xFFFFFFFF,.085):palette.Surface;
+    }
     internal static void Apply(Button button,DesktopThemePalette palette)
     {
         // The inherited detail action style enforces 88/116 DIP minimum widths.
@@ -13,7 +19,7 @@ internal static class DesktopCloseButton
         button.Template=template??=(ControlTemplate)XamlReader.Load(DesktopVisuals.ActionXaml);
         button.Width=button.Height=button.MinWidth=button.MinHeight=button.MaxWidth=button.MaxHeight=40;
         button.Padding=new(0);button.CornerRadius=new(20);button.BorderThickness=new(0);
-        button.Background=DesktopVisuals.Brush(palette.Surface);button.Foreground=DesktopVisuals.Brush(palette.Text);
+        button.Background=DesktopVisuals.Brush(Fill(palette));button.Foreground=DesktopVisuals.Brush(palette.Text);
         button.HorizontalContentAlignment=HorizontalAlignment.Center;button.VerticalContentAlignment=VerticalAlignment.Center;
         if(button.Content is not FontIcon{Glyph:"\uE8BB"})button.Content=new FontIcon{Glyph="\uE8BB"};
         if(button.Content is FontIcon icon){icon.FontSize=16;icon.IsTextScaleFactorEnabled=false;icon.Foreground=DesktopVisuals.Brush(palette.Text);icon.Margin=new(0);icon.HorizontalAlignment=HorizontalAlignment.Center;icon.VerticalAlignment=VerticalAlignment.Center;}

@@ -779,6 +779,7 @@ class PlaybackSession extends ChangeNotifier {
   Future<void> _completionSave = Future.value();
   bool get completed => _completed;
   bool get seeking => _seeking;
+  int get seekRevision => _seekCommands;
   MediaItem get currentMetadata => _serverBaseline ?? item;
   Future<void>? _closing;
   void changed() {

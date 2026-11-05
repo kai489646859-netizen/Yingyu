@@ -32,6 +32,7 @@ internal static class DesktopContentBounds
                     button.Margin=new(0,button.Margin.Top,12,button.Margin.Bottom);
                     if(VisualTreeHelper.GetParent(button) is Grid header)
                     {
+                        Canvas.SetZIndex(button,1);
                         int row=Grid.GetRow(button);Grid.SetColumn(button,0);Grid.SetColumnSpan(button,Math.Max(1,header.ColumnDefinitions.Count));
                         foreach(var sibling in header.Children.OfType<FrameworkElement>().Where(e=>e!=button&&Grid.GetRow(e)==row&&Grid.GetColumn(e)==0))
                         {var margin=ExitMargins.GetValue(sibling,e=>new(e.Margin)).Value;sibling.Margin=new(margin.Left,margin.Top,margin.Right+52,margin.Bottom);}

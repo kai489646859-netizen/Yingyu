@@ -37,6 +37,9 @@ Json displayMetadata(Json value) {
     'SeriesName',
     'SeasonId',
     'IndexNumber',
+    'IndexNumberEnd',
+    'IsMissing',
+    'IsVirtualItem',
     'ParentIndexNumber',
     'RecursiveItemCount',
     '_YingyuLibraryIdsV1',
@@ -98,6 +101,9 @@ Json displayMetadata(Json value) {
         ])
           if (object(value['UserData']).containsKey(key))
             key: value['UserData'][key],
+        if (value['UserData']['PlayedPercentage'] case final num percentage
+            when percentage.isFinite && percentage >= 0 && percentage <= 100)
+          'PlayedPercentage': percentage,
       },
     if (value['MediaSources'] is List)
       'MediaSources': [
@@ -134,6 +140,9 @@ List<Json> displayVideoStreams(dynamic value) => [
           'BitRate',
           'Profile',
           'DolbyVisionProfile',
+          'DoviProfile',
+          'DvProfile',
+          'ExtendedVideoType',
         ])
           if (stream.containsKey(key)) key: stream[key],
       },
@@ -1322,7 +1331,7 @@ class BrowseRepository {
       'catalogue:v1:${jsonEncode([parent, sort])}';
 
   static String episodeCatalogueKey(String id, String season) =>
-      'episode-catalogue:v1:$id:$season';
+      'episode-catalogue:v2:$id:$season';
 
   Future<ItemPage> episodeCatalogue(
     String id,

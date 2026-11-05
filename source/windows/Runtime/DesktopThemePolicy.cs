@@ -66,7 +66,7 @@ public readonly record struct DesktopThemePalette(uint Background, uint Surface,
             9 => dark ? 0xFF9CCCD6 : 0xFF2E7184,
             _ => dark ? 0xFFC9B9E3 : 0xFF725D99,
         };
-        uint background=dark?Blend(0xFF121419,accent,.08):0xFFDADCE3;
+        uint background=dark?Blend(0xFF121419,accent,.11):0xFFDADCE3;
         palette=palette with { Background=background, Surface=dark?Blend(0xFF202329,accent,.07):0xFFF7F5F6, Sidebar=dark?Blend(background,accent,.13):background, Text=dark?0xFFF5F5F7:0xFF1B1B1F, Secondary=dark?0xFFC7C7CC:0xFF5B5B63 };
         return palette with { Accent = accent,
             Selection = Blend(palette.Surface, accent, dark ? .38 : .30),

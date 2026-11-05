@@ -2,7 +2,7 @@
 
 | Area | Android | Windows |
 | --- | --- | --- |
-| Current release | 2.1.3 / code242 | 0.8.5 |
+| Current release | 2.2.4 / code253 | 1.2.2 |
 | Supported OS | Android 8.0+ | Windows 10/11 x64 |
 | Primary UI | phone and tablet touch layouts | desktop window, mouse and keyboard |
 | Server | user-provided Emby service | user-provided Emby service |

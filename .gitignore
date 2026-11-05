@@ -7,6 +7,9 @@ build/
 dist/
 out/
 *.log
+**/bin/
+**/obj/
+__pycache__/
 
 # Secrets and signing material
 *.jks

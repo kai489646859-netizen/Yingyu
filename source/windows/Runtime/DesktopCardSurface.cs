@@ -1,4 +1,7 @@
 using System.Numerics;
+using System.Collections;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using EmbyDesktop.Core.Models;
 using Microsoft.UI.Xaml;
@@ -12,10 +15,37 @@ namespace Yingyu.Update;
 internal static class DesktopCardSurface
 {
     static readonly ConditionalWeakTable<Grid,Surface> Surfaces=new();
+    static readonly ConditionalWeakTable<object,ResumeWatch> ResumeWatches=new();
+    sealed class ResumeWatch
+    {
+        readonly FrameworkElement page;bool queued;
+        internal ResumeWatch(object owner)
+        {
+            page=(FrameworkElement)owner;
+            if(Access.Call(owner,"get_ResumeItems") is INotifyCollectionChanged collection)collection.CollectionChanged+=(_,_)=>Queue();
+        }
+        internal void Queue()
+        {
+            if(queued)return;queued=true;
+            if(!page.DispatcherQueue.TryEnqueue(()=>{queued=false;try{if(page.IsLoaded)RefreshUserState(page);}catch(Exception e){PlaybackTransport.Write("Warning","Library.Resume","卡片进度显示暂未刷新；"+e.GetType().Name);}}))queued=false;
+        }
+    }
+    static EmbyItem? ResumeFor(object? page,EmbyItem item)
+    {
+        if(page is null||Access.Get<object?>(page,"_session") is null||Access.Call(page,"get_ResumeItems") is not IEnumerable cards)return null;
+        foreach(var card in cards)
+        {
+            if(card?.GetType().GetProperty("Item")?.GetValue(card) is not EmbyItem resume)continue;
+            if(string.Equals(item.Id,resume.Id,StringComparison.OrdinalIgnoreCase)
+                ||item.Type=="Series"&&!string.IsNullOrEmpty(resume.SeriesId)&&string.Equals(item.Id,resume.SeriesId,StringComparison.OrdinalIgnoreCase)
+                ||item.Type=="Season"&&!string.IsNullOrEmpty(resume.SeasonId)&&string.Equals(item.Id,resume.SeasonId,StringComparison.OrdinalIgnoreCase))return resume;
+        }
+        return null;
+    }
     internal static void Apply(Grid root,DesktopThemeOptions options,DesktopThemePalette palette)
         => Surfaces.GetValue(root,g=>new Surface(g)).Update(options,palette);
     internal static void Apply(Grid root,DesktopThemeOptions options,DesktopThemePalette palette,object page)
-    {var surface=Surfaces.GetValue(root,g=>new Surface(g));surface.Owner=page;surface.Update(options,palette);}
+    {if(page is FrameworkElement)ResumeWatches.GetValue(page,p=>new ResumeWatch(p));var surface=Surfaces.GetValue(root,g=>new Surface(g));surface.Owner=page;surface.Update(options,palette);}
     internal static bool Ready(Grid root,object card)=>Surfaces.TryGetValue(root,out var surface)&&surface.Current(card);
     internal static bool PaintPoster(Grid root,object card)=>Surfaces.TryGetValue(root,out var surface)&&surface.PaintPoster(card);
     internal static void RefreshAfterScroll(object page)
@@ -53,6 +83,7 @@ internal static class DesktopCardSurface
         readonly Microsoft.UI.Composition.CompositionRoundedRectangleGeometry geometry;
         double radius,percentage;
         bool landscape;
+        INotifyPropertyChanged? resumeModel;
         ImageSource? paintedSource;
         bool missingVisible=true;
         bool hovered,pressed;
@@ -112,7 +143,10 @@ internal static class DesktopCardSurface
             }),true);
             root.AddHandler(UIElement.PointerReleasedEvent,new PointerEventHandler((_,e)=>{pressed=false;hovered=Inside(e);PaintHover();}),true);
             root.PointerCanceled+=(_,_)=>ResetHover();root.PointerCaptureLost+=(_,_)=>{pressed=false;PaintHover();};
-            root.GotFocus+=(_,_)=>PaintHover();root.LostFocus+=(_,_)=>PaintHover();root.Unloaded+=(_,_)=>ResetHover();root.DataContextChanged+=(_,_)=>ResetHover();ResetHover();
+            root.GotFocus+=(_,_)=>PaintHover();root.LostFocus+=(_,_)=>PaintHover();root.Unloaded+=(_,_)=>{ResetHover();WatchResumeModel(null);};
+            root.Loaded+=(_,_)=>WatchResumeModel(root.DataContext);
+            root.DataContextChanged+=(_,_)=>{ResetHover();WatchResumeModel(root.DataContext);};
+            ResetHover();
             Grid.SetRow(title,1);title.Margin=new(0,8,0,0);root.Children.Add(title);
             Grid.SetRow(subtitle,2);subtitle.Margin=new(0,4,0,10);root.Children.Add(subtitle);
             var visual=ElementCompositionPreview.GetElementVisual(rounded);geometry=visual.Compositor.CreateRoundedRectangleGeometry();visual.Clip=visual.Compositor.CreateGeometricClip(geometry);
@@ -149,9 +183,13 @@ internal static class DesktopCardSurface
         {
             double inset=PosterMotion.Inset(frame.ActualWidth,frame.ActualHeight);
             double width=Math.Max(0,frame.ActualWidth-2*inset),height=Math.Max(0,frame.ActualHeight-2*inset);
+            // Horizontal strips measure with unbounded available width. Give
+            // ellipsis a real boundary instead of letting a long title overflow.
             // A row has one aperture, independent of each server image's ratio.
             // Loading a different source must never shrink one card in the row.
             var fit=CardFit.Resolve(width,height,landscape?16:2,landscape?9:3);
+            title.MaxWidth=subtitle.MaxWidth=fit.Width;
+            title.HorizontalAlignment=subtitle.HorizontalAlignment=landscape?HorizontalAlignment.Center:HorizontalAlignment.Left;
             rounded.Width=fit.Width;rounded.Height=fit.Height;geometry.Size=new((float)fit.Width,(float)fit.Height);geometry.CornerRadius=new((float)Math.Min(radius,Math.Min(fit.Width,fit.Height)/2));
             picture.Width=image.Width=fit.Width;picture.Height=image.Height=fit.Height;
             footer.Spacing=12;
@@ -165,11 +203,30 @@ internal static class DesktopCardSurface
             root.ContextFlyout=DesktopCardActions.Menu(Owner,root,card);
             menuOwner=Owner;menuCard=card;menuType=item.Type;menuPlayed=played;menuFavorite=favorited;
         }
+        void WatchResumeModel(object? card)
+        {
+            var next = root.IsLoaded && card?.GetType().GetProperty("PreferLandscapeArtwork")?.GetValue(card) is true
+                ? card as INotifyPropertyChanged : null;
+            if (ReferenceEquals(resumeModel,next)) return;
+            if (resumeModel != null) resumeModel.PropertyChanged -= ResumeChanged;
+            resumeModel = next;
+            if (resumeModel != null) resumeModel.PropertyChanged += ResumeChanged;
+        }
+
+        void ResumeChanged(object? sender, PropertyChangedEventArgs args)
+        {
+            if (args.PropertyName is "ResumeLabel" or "Progress" or "Item" or null or "")
+            {
+                if (Owner != null && ResumeWatches.TryGetValue(Owner,out var watcher)) watcher.Queue();
+            }
+        }
+
         public void Update(DesktopThemeOptions options,DesktopThemePalette palette)
         {
             if(root.DataContext is not {} card)return;
             var item=card.GetType().GetProperty("Item")?.GetValue(card) as EmbyItem;if(item==null)return;
             landscape=card.GetType().GetProperty("PreferLandscapeArtwork")?.GetValue(card) is true;
+            WatchResumeModel(card);
             bool animating=Owner!=null&&DesktopScroll.IsAnimating(Owner);Deferred=animating;
             string playLabel=item.Type is "Series" or "Season"?"选择集数":"播放／继续观看";
             ToolTipService.SetToolTip(play,playLabel);Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(play,playLabel);
@@ -185,7 +242,7 @@ internal static class DesktopCardSurface
                 foreach(var icon in UiElements.Descendants(button).OfType<IconElement>())icon.Foreground=DesktopVisuals.Brush(0xFFFFFFFF);
                 foreach(var text in UiElements.Descendants(button).OfType<TextBlock>())text.Foreground=DesktopVisuals.Brush(0xFFFFFFFF);
             }
-            bool isPlayed=item.UserData?.Played==true,isFavorite=item.UserData?.IsFavorite==true;
+            bool isPlayed=item.Type is not ("Series" or "Season")&&item.UserData?.Played==true&&!(landscape&&item.UserData.PlaybackPositionTicks>0),isFavorite=item.UserData?.IsFavorite==true;
             stateBadge.Visibility=isPlayed||isFavorite?Visibility.Visible:Visibility.Collapsed;
             stateBadge.Background=DesktopVisuals.Brush(palette.Selection);
             if(stateBadge.Child is not TextBlock stateText){stateText=new TextBlock{FontSize=11,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold};stateBadge.Child=stateText;}
@@ -207,8 +264,10 @@ internal static class DesktopCardSurface
             title.Foreground=DesktopVisuals.Brush(palette.Text);subtitle.Foreground=DesktopVisuals.Brush(palette.Secondary);
             title.TextAlignment=subtitle.TextAlignment=landscape?TextAlignment.Center:TextAlignment.Left;
             ToolTipService.SetToolTip(title,title.Text);ToolTipService.SetToolTip(subtitle,subtitle.Text);
-            percentage=DesktopReadability.Percentage(item,(double?)card.GetType().GetProperty("Progress")?.GetValue(card)??0,landscape);
-            track.Visibility=(landscape&&item.RunTimeTicks is >0||percentage>0&&percentage<100)?Visibility.Visible:Visibility.Collapsed;
+            var progressItem=landscape?item:ResumeFor(Owner,item);
+            percentage=progressItem is not null?DesktopReadability.Percentage(progressItem,0,true)
+                :item.Type is "Series" or "Season"?0:DesktopReadability.Percentage(item,(double?)card.GetType().GetProperty("Progress")?.GetValue(card)??0,false);
+            track.Visibility=(progressItem?.UserData?.PlaybackPositionTicks>0||progressItem?.RunTimeTicks is >0||percentage>0&&percentage<100)?Visibility.Visible:Visibility.Collapsed;
             track.Background=DesktopVisuals.Brush(0xEE101018);track.BorderBrush=DesktopVisuals.Brush(0);track.BorderThickness=new Thickness(0);fill.Background=DesktopVisuals.Brush(DesktopReadability.Progress(palette));
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(frame,$"{title.Text}，已观看 {percentage:0}%");
             rating.Visibility=!landscape&&item.CommunityRating is >=0 and <=10?Visibility.Visible:Visibility.Collapsed;

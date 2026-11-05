@@ -12,6 +12,16 @@ internal static class DesktopRefinement
 {
     const BindingFlags Flags=BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic;
     static readonly ConditionalWeakTable<FrameworkElement,State> Pages=new();
+    internal static void Heading(Button button,DesktopThemePalette palette,bool knownHeading=false)
+    {
+        if(DesktopCardSurface.Owns(button))return;
+        var labels=UiElements.Descendants(button).OfType<TextBlock>().Where(t=>t.FontSize>=18).ToArray();
+        if(labels.Length==0&&!knownHeading)return;
+        button.Background=DesktopVisuals.Brush(0);button.BorderThickness=new(0);button.Padding=new(0,6,8,10);
+        foreach(var icon in UiElements.Descendants(button).OfType<FontIcon>()){icon.FontSize=16;icon.Foreground=DesktopVisuals.Brush(palette.Accent);}
+        button.CornerRadius=new(Math.Min(DesktopTheme.Options.Radius,8));
+        foreach(var label in labels){label.FontSize=20;label.FontWeight=Microsoft.UI.Text.FontWeights.SemiBold;}
+    }
     static T? Find<T>(FrameworkElement page,string name) where T:class
         =>page.GetType().GetField(name,Flags)?.GetValue(page) as T??page.FindName(name) as T;
     internal static void Apply(FrameworkElement page,DesktopThemePalette palette,bool reference,bool detail,bool settings)
@@ -126,13 +136,7 @@ internal static class DesktopRefinement
         {
             foreach(var button in UiElements.Descendants(section).OfType<Button>())
             {
-                if(DesktopCardSurface.Owns(button))continue;
-                var labels=UiElements.Descendants(button).OfType<TextBlock>().Where(t=>t.FontSize>=18).ToArray();
-                if(labels.Length==0)continue;
-                button.Background=clear;button.BorderThickness=new(0);button.Padding=new(0,6,8,10);
-                foreach(var icon in UiElements.Descendants(button).OfType<FontIcon>()){icon.FontSize=16;icon.Foreground=DesktopVisuals.Brush(palette.Accent);}
-                button.CornerRadius=new(Math.Min(DesktopTheme.Options.Radius,8));
-                foreach(var label in labels){label.FontSize=20;label.FontWeight=Microsoft.UI.Text.FontWeights.SemiBold;}
+                Heading(button,palette);
             }
         }
     }

@@ -4,8 +4,10 @@ import '../core/subtitle_document.dart';
 
 class SubtitleImport {
   static const channel = MethodChannel('yingyu/subtitle-import');
-  static Future<SubtitleDocument?> pick() async {
-    final data = await channel.invokeMapMethod<String, dynamic>('pick');
+  static Future<SubtitleDocument?> pick({bool danmaku = false}) async {
+    final data = await channel.invokeMapMethod<String, dynamic>(
+      danmaku ? 'pickDanmaku' : 'pick',
+    );
     if (data == null) return null;
     final path = data['path'] as String?,
         name = data['name'] as String?,

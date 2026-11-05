@@ -8,6 +8,7 @@ from urllib.parse import unquote
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SKIP_DIRS = {".git", "bin", "obj"}
 
 REQUIRED = [
     "README.md",
@@ -60,7 +61,7 @@ def fail(message: str, errors: list[str]) -> None:
 def text_files() -> list[Path]:
     result: list[Path] = []
     for path in ROOT.rglob("*"):
-        if not path.is_file() or ".git" in path.parts:
+        if not path.is_file() or SKIP_DIRS.intersection(path.parts):
             continue
         if path.suffix.lower() in {
             ".md", ".txt", ".yml", ".yaml", ".json", ".py", ".dart",
@@ -72,7 +73,7 @@ def text_files() -> list[Path]:
 
 def check_links(errors: list[str]) -> None:
     for md in ROOT.rglob("*.md"):
-        if ".git" in md.parts:
+        if SKIP_DIRS.intersection(md.parts):
             continue
         content = md.read_text("utf-8", errors="replace")
         for raw in LINK.findall(content):
@@ -97,14 +98,14 @@ def main() -> int:
             fail(f"missing required file: {name}", errors)
 
     readme = (ROOT / "README.md").read_text("utf-8")
-    for expected in ("Android 2.1.3", "Windows 0.8.5", "COMPATIBILITY.md", "SECURITY.md"):
+    for expected in ("Android 2.2.4", "Windows 1.2.2", "COMPATIBILITY.md", "SECURITY.md"):
         if expected not in readme:
             fail(f"README missing current reference: {expected}", errors)
     if "界面预览" in readme:
         fail("README must not restore the removed interface-preview section", errors)
 
     for path in ROOT.rglob("*"):
-        if path.is_file() and ".git" not in path.parts and path.suffix.lower() in FORBIDDEN_SUFFIXES:
+        if path.is_file() and not SKIP_DIRS.intersection(path.parts) and path.suffix.lower() in FORBIDDEN_SUFFIXES:
             fail(f"release binary or secret-like file committed: {path.relative_to(ROOT)}", errors)
 
     for path in text_files():

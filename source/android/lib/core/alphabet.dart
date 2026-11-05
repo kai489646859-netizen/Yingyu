@@ -36,7 +36,7 @@ List<MediaItem> alphabetize(Iterable<MediaItem> items) {
 bool matchesTitle(MediaItem item, String search) {
   final match = SearchMatch(search);
   if (match.needle.isEmpty ||
-      match.accepts(item.title) ||
+      searchText(item.title).contains(match.needle) ||
       searchText(titleInitials(item.title)).contains(match.needle)) {
     return true;
   }

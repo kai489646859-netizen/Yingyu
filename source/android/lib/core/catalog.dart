@@ -74,7 +74,7 @@ CatalogView selectCatalog((List<MediaItem>, String, bool?) input) {
     }
     final keys = object(item.data[titleKeysField]);
     if (match.needle.isNotEmpty &&
-        !match.accepts(item.title) &&
+        !searchText(item.title).contains(match.needle) &&
         !['initials', 'full'].any(
           (key) =>
               searchText(keys[key]?.toString() ?? '').contains(match.needle),

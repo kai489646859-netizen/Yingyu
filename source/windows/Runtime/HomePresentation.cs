@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.Specialized;
 using System.Runtime.CompilerServices;
 using EmbyDesktop.Core.Models;
@@ -19,6 +19,7 @@ internal static class HomePresentation
 {
     static readonly ConditionalWeakTable<FrameworkElement,State> States=new();
     internal static void Apply(FrameworkElement page,DesktopThemePalette palette)=>States.GetValue(page,p=>new State(p)).Apply(palette);
+    internal static void Refresh(FrameworkElement page){if(States.TryGetValue(page,out var state))state.Refresh();}
     internal static void Header(FrameworkElement page){if(States.TryGetValue(page,out var state))state.Header();}
     internal static Task<EmbyItem[]> Choose(IEnumerable<EmbyItem> items,string path,CancellationToken token)=>ChooseCached(items,path,token,null);
     internal static Task<EmbyItem[]> ChooseCached(IEnumerable<EmbyItem> items,string path,CancellationToken token,Func<EmbyItem,bool>? cached)=>Task.Run(async()=>{
@@ -61,12 +62,17 @@ internal static class HomePresentation
     }
     sealed class State
     {
-        const int DisplayCount=2;
+        const int DisplayCount=6;
+        readonly StackPanel recommendation=new(){Name="HomeDailyRecommendation",Spacing=10};
+        readonly TextBlock heading=new(){Text="今日精选",FontSize=20,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold};
+        readonly HeroCarousel carousel;
+        readonly Microsoft.UI.Dispatching.DispatcherQueueTimer midnight;
+        DateTime day=DateTime.Today;
         readonly FrameworkElement page;
         readonly Grid mosaic=new(){Name="HomeCinemaMosaic",ColumnSpacing=14,RowSpacing=14,Margin=new(0,4,0,28),Visibility=Visibility.Collapsed};
         object[] models=[];object[]? discoveries;readonly HashSet<object> owned=new(ReferenceEqualityComparer.Instance);
-        CancellationTokenSource? selection;object? selectionOwner;object? owner;DesktopThemePalette last;bool queued;bool? compact;int layoutCount=-1;
-        bool bootstrapStarted,bootstrapDone,planningStarted,freshRunning,freshAttempted;volatile bool visible;
+        CancellationTokenSource? selection;object? selectionOwner;object? owner;DesktopThemePalette last;bool queued;
+        bool bootstrapStarted,bootstrapDone,planningStarted,planningRunning,freshRunning,freshAttempted,resetScroll;volatile bool visible;
         TaskCompletionSource<bool> heroReady=new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal async Task WaitForHero(CancellationToken token){if(!visible)return;try{await heroReady.Task.WaitAsync(TimeSpan.FromSeconds(3),token);}catch(TimeoutException){}}
         void Reset(){heroReady.TrySetResult(true);heroReady=new(TaskCreationOptions.RunContinuationsAsynchronously);}
@@ -83,10 +89,17 @@ internal static class HomePresentation
         public State(FrameworkElement page)
         {
             this.page=page;
+            carousel=new HeroCarousel(page.DispatcherQueue);recommendation.Children.Add(heading);recommendation.Children.Add(mosaic);
+            midnight=page.DispatcherQueue.CreateTimer();midnight.IsRepeating=false;
+            midnight.Tick+=(_,_)=>{CheckDay();ScheduleMidnight();};
+
             foreach(string name in new[]{"ResumeItems","HomeLibrarySections"})if(Access.Call(page,"get_"+name) is INotifyCollectionChanged source)source.CollectionChanged+=(_,_)=>Queue();
-            page.Unloaded+=(_,_)=>{visible=false;heroReady.TrySetResult(true);selection?.Cancel();selection?.Dispose();selection=null;bootstrapStarted=bootstrapDone=planningStarted=freshRunning=freshAttempted=false;discoveries=null;owned.Clear();pool=[];fresh=[];freshCards=[];models=[];mosaic.Children.Clear();mosaic.Visibility=Visibility.Collapsed;owner=selectionOwner=null;};
-            page.Loaded+=(_,_)=>Queue();
+            page.Unloaded+=(_,_)=>{midnight.Stop();carousel.Active(false);visible=false;heroReady.TrySetResult(true);selection?.Cancel();selection?.Dispose();selection=null;bootstrapStarted=bootstrapDone=planningStarted=planningRunning=freshRunning=freshAttempted=false;discoveries=null;owned.Clear();pool=[];fresh=[];freshCards=[];models=[];mosaic.Children.Clear();mosaic.Visibility=Visibility.Collapsed;owner=selectionOwner=null;};
+            page.Loaded+=(_,_)=>{CheckDay();ScheduleMidnight();Queue();};
         }
+        void ScheduleMidnight(){midnight.Stop();if(!page.IsLoaded)return;var delay=DateTime.Today.AddDays(1)-DateTime.Now;midnight.Interval=TimeSpan.FromMilliseconds(Math.Clamp(delay.TotalMilliseconds,50,60000));midnight.Start();}
+        void CheckDay(){if(day==DateTime.Today)return;day=DateTime.Today;selection?.Cancel();selection?.Dispose();selectionOwner=null;selection=null;carousel.Active(false);Queue();}
+        internal void Refresh()=>Queue();
         void Queue()
         {
             if(queued||!page.IsLoaded)return;queued=true;
@@ -105,12 +118,13 @@ internal static class HomePresentation
         }
         internal void Apply(DesktopThemePalette p)
         {
-            bool home=IsHome;
+            CheckDay();ScheduleMidnight();bool home=IsHome;heading.Foreground=DesktopVisuals.Brush(p.Text);
             bool paletteChanged=last!=p;last=p;bool entered=home&&!visible;visible=home;
             var account=Access.Get<object?>(page,"_session");
             if(!ReferenceEquals(selectionOwner,account)){
+                resetScroll|=selectionOwner is EmbySession&&account is EmbySession;
                 selection?.Cancel();selection?.Dispose();selection=account==null?null:new();selectionOwner=account;Reset();
-                bootstrapStarted=bootstrapDone=planningStarted=freshRunning=freshAttempted=false;discoveries=null;owned.Clear();pool=[];fresh=[];freshCards=[];models=[];mosaic.Children.Clear();
+                bootstrapStarted=bootstrapDone=planningStarted=planningRunning=freshRunning=freshAttempted=false;discoveries=null;owned.Clear();pool=[];fresh=[];freshCards=[];models=[];mosaic.Children.Clear();
             }
             if(entered||!ReferenceEquals(posterGeneration,Access.Get<object?>(page,"_posterLoadCts"))){freshAttempted=false;if(home&&(discoveries==null||discoveries.Any(card=>!Ready(card))))Reset();posterGeneration=Access.Get<object?>(page,"_posterLoadCts");}
             if(page.IsLoaded&&account is EmbySession session&&selection!=null&&!bootstrapStarted){bootstrapStarted=true;_=Bootstrap(session,selection.Token);}
@@ -118,48 +132,48 @@ internal static class HomePresentation
             if(bootstrapDone&&!planningStarted&&!AndroidCacheRuntime.IsPaused&&account is EmbySession planning&&selection!=null&&snapshot is {} local&&local.ServerId==planning.ServerId&&local.UserId==planning.UserId&&local.Entries.Count>0){
                 planningStarted=true;_=Plan(local,planning,selection.Token);
             }
-            if(!home){heroReady.TrySetResult(true);mosaic.Visibility=Visibility.Collapsed;if(!ReferenceEquals(account,owner)){models=[];mosaic.Children.Clear();owner=account;}return;}
+            if(!home){carousel.Active(false);recommendation.Visibility=Visibility.Collapsed;heroReady.TrySetResult(true);mosaic.Visibility=Visibility.Collapsed;if(!ReferenceEquals(account,owner)){models=[];mosaic.Children.Clear();owner=account;}return;}
             // Content is available before WinUI establishes the first visual parent.
             // Membership also prevents duplicate insertion during that initial layout.
-            if(Find<ScrollViewer>("MainContentScrollViewer")?.Content is not StackPanel host
-                ||Find<StackPanel>("ResumeSection") is not {} resume||!host.Children.Contains(resume))return;
-            if(!host.Children.Contains(mosaic))host.Children.Insert(host.Children.IndexOf(resume),mosaic);
+            if(Find<ScrollViewer>("MainContentScrollViewer") is not {Content:StackPanel host} scroll)return;
+            if(resetScroll){resetScroll=false;scroll.ChangeView(null,0,null,true);}
+            if(!host.Children.Contains(recommendation))
+            {
+                int anchor=Find<StackPanel>("ResumeSection") is {} resume?host.Children.IndexOf(resume):-1;
+                if(anchor<0&&Find<ItemsControl>("HomeLibrarySectionsControl") is {} sections)anchor=host.Children.IndexOf(sections);
+                if(anchor>=0)host.Children.Insert(anchor,recommendation);
+                else return;
+            }
+            recommendation.Visibility=Visibility.Visible;
             var available=(Find<StackPanel>("ResumeSection")?.Visibility==Visibility.Visible?Values("ResumeItems"):[]).Concat(Find<ItemsControl>("HomeLibrarySectionsControl")?.Visibility==Visibility.Visible?Values("HomeLibrarySections").SelectMany(section=>(section.GetType().GetProperty("Items")?.GetValue(section) as IEnumerable)?.Cast<object>()??[]):[])
                 .Where(card=>card.GetType().GetProperty("Item")?.GetValue(card) is EmbyItem{Type:"Movie" or "Series" or "Episode"})
-                .DistinctBy(card=>((EmbyItem)card.GetType().GetProperty("Item")!.GetValue(card)!).Id).Take(DisplayCount).ToArray();
+                .DistinctBy(card=>((EmbyItem)card.GetType().GetProperty("Item")!.GetValue(card)!).Id).ToArray();
             // Commit each slot's identity before loading. No temporary films or later promotion.
-            if(bootstrapDone&&!planningStarted&&discoveries is not {Length:>0}&&(snapshot==null||snapshot.Entries.Count==0)&&available.Length>0){
+            if(bootstrapDone&&!planningRunning&&!Access.Get<bool>(page,"_profileSwitchInProgress")&&discoveries is not {Length:>0}&&available.Length>0){
                 // First-use fallback commits the original visible cards once. Later catalogue sync never swaps them.
-                discoveries=available;heroReady.TrySetResult(true);
+                var candidates=available.Select(CardItem).Where(i=>i.Type is "Movie" or "Series").OrderBy(_=>Random.Shared.Next()).ToArray();
+                Select(candidates);if(account is EmbySession fallback&&selection!=null)_=SaveFallback(fallback,selection.Token);
             }
             if(discoveries!=null&&discoveries.Any(card=>!owned.Contains(card))){
                 discoveries=discoveries.Where(card=>owned.Contains(card)||available.Contains(card)).ToArray();
             }
             if(fresh.Length>0&&!freshRunning&&!freshAttempted&&account is EmbySession active&&selection!=null&&!AndroidCacheRuntime.IsPaused){freshRunning=freshAttempted=true;_=LoadFresh(active,selection.Token);}
             var cards=discoveries??[];bool rebuild=!ReferenceEquals(owner,account);owner=account;
-            bool narrow=page.ActualWidth<1100;
             double height=Math.Clamp((page.ActualWidth-260)*.22,200,360);if(Math.Abs(mosaic.Height-height)>.5||double.IsNaN(mosaic.Height))mosaic.Height=height;
             if(rebuild){mosaic.Children.Clear();models=[];}
-            for(int i=0;i<cards.Length;i++){
-                if(i<mosaic.Children.Count&&i<models.Length&&ReferenceEquals(models[i],cards[i]))continue;
-                var tile=Tile(cards[i],p,i==0);if(i<mosaic.Children.Count)mosaic.Children[i]=tile;else mosaic.Children.Add(tile);
+            bool changed=!cards.SequenceEqual(models);
+            if(rebuild||changed||mosaic.Children.Count==0){
+                mosaic.Children.Clear();
+                mosaic.Children.Add(cards.Length>0?Tile(cards[0],p,true):new Border{Name="HomeCinemaPlaceholder",CornerRadius=new(14),Background=DesktopVisuals.Brush(p.Surface),IsHitTestVisible=false});
+                if(cards.Length>1){carousel.Set(cards.Skip(1).Select(c=>Tile(c,p,false)).ToArray());mosaic.Children.Add(carousel.Root);}
+                else{carousel.Set([]);mosaic.Children.Add(new Border{Name="HomeCinemaPlaceholder",CornerRadius=new(14),Background=DesktopVisuals.Brush(p.Surface),IsHitTestVisible=false});}
+                mosaic.ColumnDefinitions.Clear();mosaic.ColumnDefinitions.Add(new(){Width=new(41,GridUnitType.Star)});mosaic.ColumnDefinitions.Add(new(){Width=new(59,GridUnitType.Star)});
+                Grid.SetColumn((FrameworkElement)mosaic.Children[0],0);Grid.SetColumn((FrameworkElement)mosaic.Children[1],1);
+                models=cards;
             }
-            // Reserve the final two-slot geometry while local selection is pending.
-            int slots=cards.Length==0?DisplayCount:cards.Length;
-            while(mosaic.Children.Count>slots)mosaic.Children.RemoveAt(mosaic.Children.Count-1);
-            while(mosaic.Children.Count<slots)mosaic.Children.Add(new Border{Name="HomeCinemaPlaceholder",CornerRadius=new(Math.Min(DesktopTheme.Options.Radius,14)),Background=DesktopVisuals.Brush(p.Surface),IsHitTestVisible=false});
             foreach(var placeholder in mosaic.Children.OfType<Border>())placeholder.Background=DesktopVisuals.Brush(p.Surface);
-            bool changed=!cards.SequenceEqual(models);models=cards;int count=slots;
-            if(rebuild||changed||compact!=narrow||layoutCount!=count){compact=narrow;layoutCount=count;
-            mosaic.ColumnDefinitions.Clear();mosaic.RowDefinitions.Clear();
-            mosaic.ColumnDefinitions.Add(new(){Width=new(41,GridUnitType.Star)});mosaic.ColumnDefinitions.Add(new(){Width=new(59,GridUnitType.Star)});
-            mosaic.RowDefinitions.Add(new(){Height=new(1,GridUnitType.Star)});
-            for(int i=0;i<mosaic.Children.Count;i++){
-                var tile=(FrameworkElement)mosaic.Children[i];Grid.SetColumn(tile,i);Grid.SetRow(tile,0);Grid.SetRowSpan(tile,1);Grid.SetColumnSpan(tile,count==1?2:1);tile.Visibility=Visibility.Visible;
-            }
-            }
-            foreach(var tile in mosaic.Children.OfType<Button>()){tile.CornerRadius=new(Math.Min(DesktopTheme.Options.Radius,14));if(tile.Content is Grid surface)surface.Background=DesktopVisuals.Brush(p.Surface);}
-            mosaic.Visibility=count>0?Visibility.Visible:Visibility.Collapsed;
+            foreach(var tile in UiElements.Descendants(mosaic).OfType<Button>().Where(b=>b.DataContext!=null))tile.CornerRadius=new(Math.Min(DesktopTheme.Options.Radius,14));
+            mosaic.Visibility=Visibility.Visible;carousel.Active(true);
             if(Find<Grid>("LibraryHeaderGrid") is {} header)header.Margin=new(32,20,32,14);
             if(Find<TextBlock>("PageTitleText") is {} title){title.Text="首页";title.FontSize=32;title.FontWeight=Microsoft.UI.Text.FontWeights.SemiBold;}
             if(Find<ScrollViewer>("MainContentScrollViewer") is {} content)content.Padding=new(32,0,32,32);
@@ -175,31 +189,37 @@ internal static class HomePresentation
             try{
                 var cache=Access.Get<PosterCacheService>(page,"_posterCache");var ready=await HomeStartupDeck.Read(cache,session,token);if(!Current(session,token))return;
                 pool=ready.Pool;
+                if(ready.SameDay)Select(ready.Picks.Select(e=>e.Item));
                 // Prefer the already available catalogue, without waiting for network or decoding.
                 var snapshot=(LocalSearchIndexSnapshot?)Access.Call(page,"get__localSearchIndex");
                 if(snapshot is {} local&&local.ServerId==session.ServerId&&local.UserId==session.UserId&&local.Entries.Count>0){planningStarted=true;await Plan(local,session,token);}
-                else Select(ready.Picks.Select(e=>e.Item));
+                else {Select(ready.Picks.Select(e=>e.Item));await Save(session,token);}
             }catch(OperationCanceledException){}catch(Exception e){Warn(e);}
             finally{if(Current(session,token)){bootstrapDone=true;Queue();}}
         }
         async Task Plan(LocalSearchIndexSnapshot snapshot,EmbySession session,CancellationToken token){
+            planningRunning=true;
             try{
                 var shown=(discoveries??[]).Select(ItemKey).ToHashSet(StringComparer.OrdinalIgnoreCase);var cache=Access.Get<PosterCacheService>(page,"_posterCache");
                 var plan=await HomeStartupDeck.Build(cache,session,snapshot,shown,token);if(!Current(session,token))return;
                 pool=plan.Pool;Select(plan.Fresh);await Save(session,token);Queue();
             }catch(OperationCanceledException){}catch(Exception e){Warn(e);}
-            finally{if(Current(session,token)&&discoveries is not {Length:>0})heroReady.TrySetResult(true);}
+            finally{if(Current(session,token)){planningRunning=false;if(discoveries is not {Length:>0})heroReady.TrySetResult(true);Queue();}}
         }
+        async Task SaveFallback(EmbySession session,CancellationToken token){try{await Save(session,token);}catch(OperationCanceledException){}catch(Exception e){Warn(e);}}
         async Task Save(EmbySession session,CancellationToken token){
-            var cache=Access.Get<PosterCacheService>(page,"_posterCache");var entries=pool.ToArray();var ids=(discoveries??[]).Select(ItemKey).ToArray();
-            await saveGate.WaitAsync(token);try{await HomeStartupDeck.Save(cache,session,entries,ids,token);}finally{saveGate.Release();}
+            var cache=Access.Get<PosterCacheService>(page,"_posterCache");var entries=(discoveries??[]).Select(CardItem).Select(HomeStartupDeck.Candidate).OfType<HomeStartupDeck.Entry>().Concat(pool).DistinctBy(e=>e.Item.Id,StringComparer.OrdinalIgnoreCase).Take(64).ToArray();var ids=(discoveries??[]).Select(ItemKey).ToArray();
+            await saveGate.WaitAsync(token);try{await HomeStartupDeck.Save(cache,session,entries,ids,token,day);}finally{saveGate.Release();}
         }
         async Task LoadFresh(EmbySession session,CancellationToken token){
             var generation=Access.Get<CancellationTokenSource?>(page,"_posterLoadCts");var client=Access.Get<object?>(page,"_client");
             using var cancel=CancellationTokenSource.CreateLinkedTokenSource(token,generation?.Token??CancellationToken.None);
             bool Needed()=>visible&&!cancel.IsCancellationRequested&&ReferenceEquals(session,Access.Get<object?>(page,"_session"))&&ReferenceEquals(client,Access.Get<object?>(page,"_client"))&&ReferenceEquals(generation,Access.Get<CancellationTokenSource?>(page,"_posterLoadCts"));
             var targets=fresh.ToArray();var results=freshCards;int index=-1;
-            async Task Worker(){while(true){int at=Interlocked.Increment(ref index);if(at>=targets.Length)return;if(results[at] is {} loaded&&Ready(loaded))continue;
+            // Start the first visible carousel image first, then the left hero.
+            // Hidden slides remain eager queued work on the same two workers.
+            var order=Enumerable.Range(0,targets.Length).OrderBy(i=>i==1?-1:i).ToArray();
+            async Task Worker(){while(true){int next=Interlocked.Increment(ref index);if(next>=order.Length)return;int at=order[next];if(results[at] is {} loaded&&Ready(loaded))continue;
                 try{
                     var item=targets[at];if(!Needed())return;var image=await AndroidCacheCards.CachedHomeLandscape(page,item,cancel.Token);
                     if(image==null)foreach(var candidate in MediaArtworkPolicy.GetLandscapeCandidates(item).Where(c=>c.ImageType is "Thumb" or "Backdrop")){
@@ -241,10 +261,8 @@ internal static class HomePresentation
             surface.Children.Add(new Border{Background=shade,IsHitTestVisible=false});
             var words=new Grid{Margin=new(Math.Clamp(page.ActualWidth*.022,18,32))};words.RowDefinitions.Add(new(){Height=new(1,GridUnitType.Star)});words.RowDefinitions.Add(new(){Height=GridLength.Auto});
             var title=new TextBlock{FontSize=Math.Clamp(page.ActualWidth/48,22,38),FontWeight=Microsoft.UI.Text.FontWeights.SemiBold,Foreground=DesktopVisuals.Brush(0xFFFFFFFF),TextWrapping=TextWrapping.Wrap,MaxLines=3,VerticalAlignment=VerticalAlignment.Top,MaxWidth=Math.Clamp(page.ActualWidth*.18,160,350),HorizontalAlignment=HorizontalAlignment.Left};title.SetBinding(TextBlock.TextProperty,new Binding{Source=card,Path=new(item.Type.Equals("Episode",StringComparison.OrdinalIgnoreCase)&&!string.IsNullOrWhiteSpace(item.SeriesName)?"Item.SeriesName":"Item.Name"),Mode=BindingMode.OneWay});words.Children.Add(title);
-            var action=new StackPanel{Orientation=Orientation.Horizontal,Spacing=10,Margin=new(0,18,0,0),VerticalAlignment=VerticalAlignment.Bottom};Grid.SetRow(action,1);
-            action.Children.Add(new Border{Width=34,Height=34,CornerRadius=new(17),Background=DesktopVisuals.Brush(0xB0101820),Child=new FontIcon{Glyph="\uE768",FontSize=14,Foreground=DesktopVisuals.Brush(0xFFFFFFFF)}});
-            action.Children.Add(new TextBlock{Text="查看影片详情",FontSize=14,Foreground=DesktopVisuals.Brush(0xFFFFFFFF),VerticalAlignment=VerticalAlignment.Center});words.Children.Add(action);
-            surface.Children.Add(words);button.Content=surface;
+            surface.Children.Add(words);var frame=new Border{CornerRadius=new(Math.Min(DesktopTheme.Options.Radius,14)),Child=surface};button.Content=frame;
+            if(lead)PosterMotion.Attach(button,surface); // Carousel owns one shared hover transform.
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button,"查看详情："+item.Name);
             // These two slots own their loading; ordinary viewport loaders must not race them.
             object? displayed=null;
@@ -258,7 +276,7 @@ internal static class HomePresentation
             }
             image.Opacity=0;image.ImageOpened+=(_,_)=>Reveal();image.Loaded+=(_,_)=>Reveal();
             image.RegisterPropertyChangedCallback(Image.SourceProperty,(_,_)=>Reveal());
-            button.Click+=async(_,_)=>await Open(card,button);
+            button.Click+=(_,_)=>PosterTap.Queue(page,button,card,()=>{_=Open(card,button);},HeroCarousel.TapAnchor(button));
             return button;
         }
     }

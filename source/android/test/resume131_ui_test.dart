@@ -72,7 +72,19 @@ void main() {
             if (path.endsWith('/Resume')) {
               return response(
                 jsonEncode({
-                  'Items': [selected.data],
+                  'Items': [
+                    if (brightness == Brightness.dark)
+                      {
+                        ...selected.data,
+                        'RunTimeTicks': null,
+                        'UserData': {
+                          ...object(selected.data['UserData']),
+                          'PlayedPercentage': 2388 / 3318 * 100,
+                        },
+                      }
+                    else
+                      selected.data,
+                  ],
                 }),
                 200,
               );

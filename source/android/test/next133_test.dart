@@ -157,26 +157,20 @@ void main() {
 
       emit();
       await tester.pumpAndSettle();
-      expect(
-        calls.where((id) => id == episode(2).id).length,
-        transition == 'disabled' ? 0 : 1,
-      );
+      expect(calls.where((id) => id == episode(2).id).length, 0);
       if (transition == 'pause') emit(playing: false);
       if (transition == 'buffer') emit(buffering: true);
       if (transition == 'eof') emit(playing: false, completed: true);
       if (transition == 'seek') {
         final seeking = sessions.first.seek(const Duration(seconds: 100));
-        state.prepareNext();
         await seeking;
       }
       if (transition == 'background') {
         sessions.first.background = true;
-        state.prepareNext();
         sessions.first.background = false;
       }
       if (transition == 'account') {
         api.session = syntheticSession();
-        state.prepareNext();
       }
       await tester.pump();
       final target = episode(transition == 'other-target' ? 3 : 2);
@@ -192,10 +186,7 @@ void main() {
       } else {
         expect(sessions.length, 2);
         expect(sessions.last.item.id, target.id);
-        expect(
-          calls.where((id) => id == target.id).length,
-          ['seek', 'background'].contains(transition) ? 2 : 1,
-        );
+        expect(calls.where((id) => id == target.id).length, 1);
       }
       await tester.pumpWidget(const SizedBox());
       for (var n = 0; n < 25 && !backends.last.disposed; n++) {

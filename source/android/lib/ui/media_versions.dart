@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import '../core/models.dart';
+import '../core/video_labels.dart';
 import 'style.dart';
 
 List<Json> playableVersions(MediaItem item) {
@@ -12,42 +13,7 @@ List<Json> playableVersions(MediaItem item) {
       .toList(growable: false);
 }
 
-String mediaVersionFacts(Json source) {
-  final video =
-      objects(
-        source['MediaStreams'],
-      ).where((stream) => stream['Type'] == 'Video').firstOrNull ??
-      <String, dynamic>{};
-  final width = integer(video['Width']), height = integer(video['Height']);
-  final resolution = width >= 7600 || height >= 4200
-      ? '8K'
-      : width >= 3800 || height >= 2100
-      ? '4K'
-      : width >= 2500 || height >= 1400
-      ? '1440p'
-      : width >= 1900 || height >= 1000
-      ? '1080p'
-      : height > 0
-      ? '${height}p'
-      : '';
-  final range = (video['VideoRangeType'] ?? video['VideoRange'] ?? '')
-      .toString();
-  final normalized = range.toLowerCase();
-  final dolby =
-      integer(video['DvProfile']) > 0 ||
-      integer(video['DolbyVisionProfile']) > 0 ||
-      normalized.contains('dovi') ||
-      normalized.contains('dolby') ||
-      normalized == 'dv';
-  final size = integer(source['Size']);
-  return [
-    resolution,
-    if (width > 0 && height > 0) '$width×$height',
-    if (dolby) '杜比视界' else if (range.isNotEmpty) range.toUpperCase(),
-    if (size > 0) '${(size / 1000000000).toStringAsFixed(2)} GB',
-    if (video['Codec'] != null) '${video['Codec']}'.toUpperCase(),
-  ].where((value) => value.isNotEmpty).join(' · ');
-}
+String mediaVersionFacts(Json source) => mediaSourceFacts(source);
 
 class MediaVersions extends StatelessWidget {
   const MediaVersions({
@@ -68,11 +34,31 @@ class MediaVersions extends StatelessWidget {
     final chosen = sources.any((s) => s['Id'].toString() == selected)
         ? selected
         : sources.first['Id'].toString();
+    final current = sources.firstWhere((s) => s['Id'].toString() == chosen);
+    String shortName(Json source) => resourceName(
+      resourceVideo(
+        MediaItem({
+          'MediaSources': [source],
+        }),
+      ),
+    );
+    final currentFacts = shortName(current);
+    final names = sources.map(shortName).toList();
     Widget card(Json source, double width) {
       final id = source['Id'].toString();
       final active = id == chosen;
-      final name = source['Name']?.toString().trim() ?? '';
-      final facts = mediaVersionFacts(source);
+      final name = shortName(source);
+      final index = sources.indexOf(source);
+      final video = resourceVideo(
+        MediaItem({
+          'MediaSources': [source],
+        }),
+      );
+      final size = integer(source['Size']);
+      final facts = [
+        if (video['Codec'] != null) '${video['Codec']}'.toUpperCase(),
+        if (size > 0) '${(size / 1000000000).toStringAsFixed(2)} GB',
+      ].join(' · ');
       return SizedBox(
         width: width,
         child: Semantics(
@@ -83,8 +69,8 @@ class MediaVersions extends StatelessWidget {
             onPressed: enabled ? () => onSelected(id) : null,
             child: Container(
               width: double.infinity,
-              constraints: const BoxConstraints(minHeight: 96),
-              padding: const EdgeInsets.all(12),
+              constraints: const BoxConstraints(minHeight: 64),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                 color: active
                     ? accentColor(context).withValues(alpha: .12)
@@ -103,31 +89,33 @@ class MediaVersions extends StatelessWidget {
                     active
                         ? CupertinoIcons.checkmark_circle_fill
                         : CupertinoIcons.film,
-                    size: 22,
+                    size: 18,
                     color: active
                         ? accentColor(context)
                         : secondaryColor(context),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Text(
-                          name.isEmpty ? '原文件版本' : name,
+                          names.where((n) => n == name).length > 1
+                              ? '$name · 版本${index + 1}'
+                              : name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontSize: 14,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
                             color: labelColor(context),
                           ),
                         ),
                         const SizedBox(height: 5),
                         Text(
-                          facts.isEmpty ? '版本信息未提供' : facts,
-                          maxLines: 2,
+                          facts.isEmpty ? '原文件' : facts,
+                          maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 12,
@@ -146,22 +134,35 @@ class MediaVersions extends StatelessWidget {
     }
 
     return Padding(
-      padding: const EdgeInsets.only(top: 18, bottom: 8),
+      padding: const EdgeInsets.only(top: 12, bottom: 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '影片版本',
+            '资源版本',
             style: TextStyle(
-              fontSize: 19,
+              fontSize: 16,
               fontWeight: FontWeight.w600,
               color: labelColor(context),
             ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '当前选择：$currentFacts',
+            key: const Key('selected-version-summary'),
+            style: TextStyle(fontSize: 13, color: labelColor(context)),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            sources.length > 1 ? '选择版本后播放 · 格式为服务器标注' : '当前仅提供一个版本 · 格式为服务器标注',
+            style: TextStyle(fontSize: 12, color: secondaryColor(context)),
           ),
           const SizedBox(height: 10),
           LayoutBuilder(
             builder: (context, constraints) {
               final width = constraints.maxWidth;
+              final scale = (MediaQuery.textScalerOf(context).scale(13) / 13)
+                  .clamp(1.0, 2.0);
               if (phoneLayout(context)) {
                 return SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
@@ -172,16 +173,19 @@ class MediaVersions extends StatelessWidget {
                           padding: const EdgeInsets.only(right: 10),
                           child: card(
                             source,
-                            (width * .86).clamp(160, 310).toDouble(),
+                            (width * .65)
+                                .clamp(150 * scale, 230 * scale)
+                                .clamp(0.0, width)
+                                .toDouble(),
                           ),
                         ),
                     ],
                   ),
                 );
               }
-              final columns = width >= 900
+              final columns = width >= 150 * scale * 3 + 20
                   ? 3
-                  : width >= 560
+                  : width >= 150 * scale * 2 + 10
                   ? 2
                   : 1;
               return Wrap(

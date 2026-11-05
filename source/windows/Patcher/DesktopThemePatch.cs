@@ -1,4 +1,4 @@
-﻿using Mono.Cecil;
+using Mono.Cecil;
 using Mono.Cecil.Cil;
 
 static class DesktopThemePatch
@@ -10,6 +10,21 @@ static class DesktopThemePatch
         TypeDefinition Type(AssemblyDefinition assembly, string name) => Types(assembly.MainModule.Types).Single(t => t.FullName == name);
         var page = Type(app, "EmbyDesktop.MainPage");
         var hooks = Type(helper, "Yingyu.Update.DesktopTheme");
+        foreach(var bindingConnector in page.Methods.Where(m=>m.Name is "GetBindingConnector" or "Connect"))
+        {
+        mark(bindingConnector);
+        var connectorHook=bindingConnector.Module.ImportReference(Type(helper,"Yingyu.Update.HomeRowPresentation").Methods.Single(m=>m.Name=="Connect"));
+        var connectorIl=bindingConnector.Body.GetILProcessor();
+        foreach(var ret in bindingConnector.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray())
+        {
+            // The original return value stays below the hook arguments.
+            ret.OpCode=OpCodes.Ldarg_0;ret.Operand=null;
+            var a=Instruction.Create(OpCodes.Ldarg_1);connectorIl.InsertAfter(ret,a);
+            var b=Instruction.Create(OpCodes.Ldarg_2);connectorIl.InsertAfter(a,b);
+            var call=Instruction.Create(OpCodes.Call,connectorHook);connectorIl.InsertAfter(b,call);
+            connectorIl.InsertAfter(call,Instruction.Create(OpCodes.Ret));
+        }
+        }
         MethodReference Hook(MethodDefinition target, string name) => target.Module.ImportReference(hooks.Methods.Single(m => m.Name == name && m.IsPublic && m.IsStatic));
         void After(MethodDefinition target, string name, bool argument = false)
         {
@@ -54,3 +69,4 @@ static class DesktopThemePatch
         }
     }
 }
+

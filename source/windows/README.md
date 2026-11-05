@@ -1,6 +1,6 @@
 # Yingyu Windows source snapshot
 
-This is the directly browsable integration snapshot for **Yingyu Windows 0.8.5**.
+This is the directly browsable integration snapshot for **Yingyu Windows 1.2.2**.
 
 Included:
 
@@ -14,6 +14,6 @@ This is a reconstruction/integration project rather than the original upstream a
 
 Local release-machine paths are parameterized in this public snapshot. `build.ps1` accepts `YINGYU_DOTNET`, `YINGYU_PYTHON`, `YINGYU_AUDIT_DIR`, `YINGYU_INNO_ISCC` and `YINGYU_OUTPUT_DIR`; native scripts accept the `YINGYU_NATIVE_*`, `YINGYU_MPV_*`, `YINGYU_MSVC_ROOT`, `YINGYU_WINDOWS_SDK`, `YINGYU_WINDOWS_SDK_VERSION`, `YINGYU_FXC` and `YINGYU_VC_RUNTIME` variables used by their inputs. The complete release archive retains canonical build evidence.
 
-The authoritative archive is `Yingyu-0.8.5-source-and-symbols.zip` on the [Windows 0.8.5 release](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.8.5). Its SHA-256 is published on the same page.
+The authoritative archive is `Yingyu-1.2.2-source-and-symbols.zip` on the [Windows 1.2.2 release](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.2.2). Its SHA-256 is published on the same page.
 
 See [`BUILDING.md`](../../BUILDING.md), [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md) and [`OPEN_SOURCE_AND_DISCLAIMER.md`](../../OPEN_SOURCE_AND_DISCLAIMER.md).

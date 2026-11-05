@@ -2,6 +2,7 @@ import 'accounts.dart';
 import 'catalog.dart';
 import 'image_identity.dart';
 import 'models.dart';
+import 'video_labels.dart';
 
 /// Presentation projection only. Each member keeps its original item ID and
 /// user data. An account owner travels with the group to reject stale actions.
@@ -37,27 +38,21 @@ CatalogView groupVersions(List<MediaItem> items, Session account) {
 
 String versionDescription(MediaItem item) {
   final sources = objects(item.data['MediaSources']);
-  final streams = [
-    ...objects(item.data['MediaStreams']),
-    ...sources.expand((s) => objects(s['MediaStreams'])),
-  ];
-  final video = streams.where((s) => s['Type'] == 'Video').firstOrNull ?? {};
-  final width = integer(video['Width']), height = integer(video['Height']);
-  final resolution = width >= 3800 || height >= 2100
-      ? '4K'
-      : width >= 1900 || height >= 1000
-      ? '1080p'
-      : height > 0
-      ? '${height}p'
-      : '';
-  final range =
-      video['VideoRangeType']?.toString() ??
-      video['VideoRange']?.toString() ??
-      '';
-  final dolby =
-      range.toLowerCase().contains('dovi') ||
-      range.toLowerCase().contains('dolby') ||
-      integer(video['DolbyVisionProfile']) > 0;
+  // A source describes one file. Do not combine dimensions from a different
+  // top-level or second-source stream with the first file's name.
+  final source = sources.firstOrNull;
+  final streams = objects(source?['MediaStreams']);
+  final video =
+      (streams.isNotEmpty
+              ? streams
+              : sources.length <= 1
+              ? objects(item.data['MediaStreams'])
+              : <Json>[])
+          .where((s) => s['Type'] == 'Video')
+          .firstOrNull ??
+      {};
+  final resolution = videoResolutionLabel(video);
+  final range = videoRangeLabel(video);
   final rate = integer(video['BitRate']);
   final name = sources
       .map((s) => s['Name']?.toString() ?? '')
@@ -67,7 +62,7 @@ String versionDescription(MediaItem item) {
     resolution,
     if (name.isNotEmpty && name != item.title) name,
     if (video['Codec'] != null) '${video['Codec']}'.toUpperCase(),
-    if (dolby) '杜比视界' else if (range.isNotEmpty) range.toUpperCase(),
+    range,
     if (rate > 0) '${(rate / 1000000).toStringAsFixed(1)} Mbps',
     if (item.year.isNotEmpty) item.year,
   ].where((s) => s.isNotEmpty).join(' · ');

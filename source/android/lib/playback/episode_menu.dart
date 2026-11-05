@@ -91,7 +91,10 @@ class _EpisodeMenuState extends State<EpisodeMenu> {
   List<MediaItem>? _bandSource;
   EpisodeBands? _bands;
   EpisodeBands get bands {
-    if (!identical(_bandSource, episodes)) { _bandSource = episodes; _bands = EpisodeBands(episodes); }
+    if (!identical(_bandSource, episodes)) {
+      _bandSource = episodes;
+      _bands = EpisodeBands(episodes);
+    }
     return _bands!;
   }
 
@@ -308,27 +311,35 @@ class _EpisodeMenuState extends State<EpisodeMenu> {
                   children: [
                     SizedBox(
                       width: 130,
-                      child: CupertinoButton(
+                      child: EpisodeBandButton(
                         key: const Key('player-episode-range'),
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
-                        onPressed: () async {
-                          setState(() => rangeOpen = true);
-                          final picked = await showSurface<int>(
-                            context,
-                            playerMenu: true,
-                            (_) => EpisodeBandPicker(
-                              count: bands.count, label: bands.labelAt,
-                              selected: range,
-                            ),
-                          );
-                          if (mounted) setState(() => rangeOpen = false);
-                          if (mounted && picked != null) {
-                            setState(() => range = picked);
-                            reveal(0);
-                          }
+                        id: 'player-episode-ranges',
+                        count: bands.count,
+                        selected: range,
+                        label: bands.labelAt,
+                        onOpenChanged: (open) {
+                          if (mounted) setState(() => rangeOpen = open);
                         },
-                        child: Row(children: [Expanded(child: Text(rangeLabel(range), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                          ExpansionChevron(expanded: rangeOpen, opensUp: false, size: 12)]),
+                        onSelected: (picked) {
+                          setState(() => range = picked);
+                          reveal(0);
+                        },
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                rangeLabel(range),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            ExpansionChevron(
+                              expanded: rangeOpen,
+                              opensUp: false,
+                              size: 12,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                     const Spacer(),

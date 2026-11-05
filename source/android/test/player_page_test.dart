@@ -8,6 +8,8 @@ import 'package:yingyu/core/emby.dart';
 import 'package:yingyu/core/models.dart';
 import 'package:yingyu/core/store.dart';
 import 'package:yingyu/playback/device.dart';
+import 'package:yingyu/playback/danmaku_sources.dart';
+import 'package:yingyu/playback/danmaku_overlay.dart';
 import 'package:yingyu/playback/page.dart';
 import 'package:yingyu/playback/controls.dart';
 import 'package:yingyu/playback/session.dart';
@@ -134,151 +136,187 @@ void main() {
       store.dispose();
     },
   );
-  testWidgets(
-    'player gestures and lifecycle use fake backend, never native MPV',
-    (tester) async {
-      tester.view.physicalSize = const Size(1280, 800);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final calls = <MethodCall>[];
-      final messenger = tester.binding.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(Device.channel, (call) async {
-        calls.add(call);
-        if (call.method == 'focus') return true;
-        if (call.method == 'levels') return {'brightness': .5, 'volume': .5};
-        return null;
-      });
-      addTearDown(
-        () => messenger.setMockMethodCallHandler(Device.channel, null),
-      );
-      SharedPreferences.setMockInitialValues({
-        'yingyu.ui.controlsSeconds.v1': 8,
-      });
-      final store = AppStore(await SharedPreferences.getInstance());
-      final backend = FakeBackend()..gate.complete();
-      final api = EmbyClient(
-        client: MockClient((request) async {
-          if (request.url.path.endsWith('PlaybackInfo')) {
-            return response(jsonEncode(playbackData()), 200);
-          }
-          if (request.url.path.contains('Sessions/Playing')) {
-            return response('', 204);
-          }
-          return response('{"Id":"movie","Type":"Movie"}', 200);
-        }),
-      )..session = syntheticSession();
-      final session = PlaybackSession(
-        api: api,
-        store: store,
-        item: MediaItem({'Id': 'movie', 'Name': '合成播放测试'}),
-        backend: backend,
-      );
-      await tester.pumpWidget(
-        MaterialApp(home: PlayerPage(createSession: () => session)),
-      );
-      await tester.pumpAndSettle();
-      expect(session.ready, true);
-      expect(backend.snapshot.playing, true);
-      // Notification shade and side panels make Flutter inactive while the
-      // player remains visible. They must not turn a playing session into pause.
-      for (var attempt = 0; attempt < 2; attempt++) {
-        tester.binding.handleAppLifecycleStateChanged(
-          AppLifecycleState.inactive,
-        );
-        await tester.pump(const Duration(milliseconds: 50));
-        expect(backend.snapshot.playing, true);
-        expect(session.background, false);
-        tester.binding.handleAppLifecycleStateChanged(
-          AppLifecycleState.resumed,
-        );
-        await tester.pump(const Duration(milliseconds: 50));
-        expect(backend.snapshot.playing, true);
-      }
-      // Reset the timer through the normal single-tap interaction, then verify
-      // the five-second deadline without loading a native decoder.
-      await tester.tapAt(const Offset(800, 250));
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.tapAt(const Offset(800, 250));
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.pump(const Duration(milliseconds: 4500));
-      expect(
-        tester.widget<PlayerChrome>(find.byType(PlayerChrome)).visible,
-        true,
-      );
-      await tester.pump(const Duration(milliseconds: 500));
-      expect(
-        tester.widget<PlayerChrome>(find.byType(PlayerChrome)).visible,
-        false,
-      );
-      await tester.tapAt(const Offset(800, 250));
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('暂停'));
-      await tester.pumpAndSettle();
-      expect(backend.snapshot.playing, false);
-      await tester.pump(const Duration(seconds: 6));
-      expect(
-        tester.widget<PlayerChrome>(find.byType(PlayerChrome)).visible,
-        false,
-      );
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-      await tester.pump();
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await tester.pump();
-      expect(backend.snapshot.playing, false);
-
-      // Use the unobstructed upper-middle video area, outside all controls.
-      await tester.tapAt(const Offset(800, 250));
-      await tester.pump(const Duration(milliseconds: 70));
-      await tester.tapAt(const Offset(800, 250));
-      await tester.pumpAndSettle();
-      expect(backend.snapshot.playing, true);
-      await session.setSpeed(1.5);
-      for (final x in [200.0, 640.0, 1000.0]) {
-        final hold = await tester.startGesture(Offset(x, 250));
-        await tester.pump(const Duration(milliseconds: 650));
-        expect(backend.speed, 3);
-        if (x == 640) {
-          await hold.cancel();
-        } else {
-          await hold.up();
+  testWidgets('player gestures and lifecycle use fake backend, never native MPV', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final calls = <MethodCall>[];
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(Device.channel, (call) async {
+      calls.add(call);
+      if (call.method == 'focus') return true;
+      if (call.method == 'levels') return {'brightness': .5, 'volume': .5};
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(Device.channel, null));
+    SharedPreferences.setMockInitialValues({'yingyu.ui.controlsSeconds.v1': 8});
+    final store = AppStore(await SharedPreferences.getInstance());
+    final backend = FakeBackend()..gate.complete();
+    final api = EmbyClient(
+      client: MockClient((request) async {
+        if (request.url.path.endsWith('PlaybackInfo')) {
+          return response(jsonEncode(playbackData()), 200);
         }
-        await tester.pump();
-        await tester.pumpAndSettle();
-        expect(backend.speed, 1.5);
-      }
-
-      await tester.dragFrom(const Offset(400, 250), const Offset(300, 0));
-      await tester.pumpAndSettle();
-      expect(session.position, greaterThan(Duration.zero));
-      await tester.dragFrom(const Offset(200, 300), const Offset(0, -100));
-      await tester.pumpAndSettle();
-      expect(calls.where((c) => c.method == 'brightness'), isNotEmpty);
-      await tester.dragFrom(const Offset(1000, 300), const Offset(0, -100));
-      await tester.pumpAndSettle();
-      expect(calls.where((c) => c.method == 'volume'), isNotEmpty);
-      await messenger.handlePlatformMessage(
-        Device.channel.name,
-        const StandardMethodCodec().encodeMethodCall(
-          const MethodCall('interruption', '耳机已断开'),
+        if (request.url.path.contains('Sessions/Playing')) {
+          return response('', 204);
+        }
+        return response(
+          '{"Id":"movie","Type":"Movie","Name":"合成播放测试","RunTimeTicks":1200000000}',
+          200,
+        );
+      }),
+    )..session = syntheticSession();
+    final session = PlaybackSession(
+      api: api,
+      store: store,
+      item: MediaItem({'Id': 'movie', 'Name': '合成播放测试'}),
+      backend: backend,
+    );
+    final danmakuRequests = <Uri>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PlayerPage(
+          createSession: () => session,
+          createDanmakuSource: () => DanmakuSources(
+            read: (uri) async {
+              danmakuRequests.add(uri);
+              return Uint8List.fromList(utf8.encode('{}'));
+            },
+          ),
         ),
-        (_) {},
-      );
-      await tester.pumpAndSettle();
-      expect(backend.snapshot.playing, false);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-      // Cancellation can cross Flutter's real and fake async zones. Drain both.
-      for (var count = 0; count < 20 && !backend.disposed; count++) {
-        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-        await tester.pump();
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(session.ready, true);
+    expect(find.byType(DanmakuOverlay), findsOneWidget);
+    expect(danmakuRequests, isNotEmpty);
+    await tester.tap(find.byTooltip('弹幕设置'));
+    await tester.pumpAndSettle();
+    expect(find.text('显示弹幕'), findsOneWidget);
+    await tester.tap(find.text('弹幕来源'));
+    await tester.pumpAndSettle();
+    expect(find.text('重新匹配公开弹幕'), findsOneWidget);
+    Navigator.of(tester.element(find.text('弹幕来源'))).pop();
+    await tester.pumpAndSettle();
+    expect(backend.snapshot.playing, true);
+    // Notification shade and side panels make Flutter inactive while the
+    // player remains visible. They must not turn a playing session into pause.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(backend.snapshot.playing, true);
+      expect(session.background, false);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(backend.snapshot.playing, true);
+    }
+    // Reset the timer through the normal single-tap interaction, then verify
+    // the five-second deadline without loading a native decoder.
+    await tester.tapAt(const Offset(800, 250));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tapAt(const Offset(800, 250));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 4500));
+    expect(
+      tester.widget<PlayerChrome>(find.byType(PlayerChrome)).visible,
+      true,
+    );
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(
+      tester.widget<PlayerChrome>(find.byType(PlayerChrome)).visible,
+      false,
+    );
+    await tester.tapAt(const Offset(800, 250));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('暂停'));
+    await tester.pumpAndSettle();
+    expect(backend.snapshot.playing, false);
+    await tester.pump(const Duration(seconds: 6));
+    expect(
+      tester.widget<PlayerChrome>(find.byType(PlayerChrome)).visible,
+      false,
+    );
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(backend.snapshot.playing, false);
+
+    // Use the unobstructed upper-middle video area, outside all controls.
+    final chromeBeforeDoubleTap = tester
+        .widget<PlayerChrome>(find.byType(PlayerChrome))
+        .visible;
+    await tester.tapAt(const Offset(800, 250));
+    await tester.pump(const Duration(milliseconds: 70));
+    await tester.tapAt(const Offset(800, 250));
+    await tester.pump();
+    final feedback = find.byKey(const Key('player-transport-feedback'));
+    expect(backend.snapshot.playing, true);
+    expect(tester.widget<Icon>(feedback).icon, Icons.pause_rounded);
+    expect(
+      tester.widget<PlayerChrome>(find.byType(PlayerChrome)).visible,
+      chromeBeforeDoubleTap,
+    );
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(feedback, findsNothing);
+    await tester.tapAt(const Offset(800, 250));
+    await tester.pump(const Duration(milliseconds: 70));
+    await tester.tapAt(const Offset(800, 250));
+    await tester.pump();
+    expect(backend.snapshot.playing, false);
+    expect(tester.widget<Icon>(feedback).icon, Icons.play_arrow_rounded);
+    await tester.tapAt(const Offset(800, 250));
+    await tester.pump(const Duration(milliseconds: 70));
+    await tester.tapAt(const Offset(800, 250));
+    await tester.pumpAndSettle();
+    await session.setSpeed(1.5);
+    for (final x in [200.0, 640.0, 1000.0]) {
+      final hold = await tester.startGesture(Offset(x, 250));
+      await tester.pump(const Duration(milliseconds: 650));
+      expect(backend.speed, 3);
+      if (x == 640) {
+        await hold.cancel();
+      } else {
+        await hold.up();
       }
-      expect(backend.disposed, true);
-      api.close();
-      await store.log.flush();
-      store.log.dispose();
-      store.dispose();
-    },
-  );
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(backend.speed, 1.5);
+    }
+
+    await tester.dragFrom(const Offset(400, 250), const Offset(300, 0));
+    await tester.pumpAndSettle();
+    expect(session.position, greaterThan(Duration.zero));
+    await tester.dragFrom(const Offset(200, 300), const Offset(0, -100));
+    await tester.pumpAndSettle();
+    expect(calls.where((c) => c.method == 'brightness'), isNotEmpty);
+    await tester.dragFrom(const Offset(1000, 300), const Offset(0, -100));
+    await tester.pumpAndSettle();
+    expect(calls.where((c) => c.method == 'volume'), isNotEmpty);
+    await messenger.handlePlatformMessage(
+      Device.channel.name,
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('interruption', '耳机已断开'),
+      ),
+      (_) {},
+    );
+    await tester.pumpAndSettle();
+    expect(backend.snapshot.playing, false);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    // Cancellation can cross Flutter's real and fake async zones. Drain both.
+    for (var count = 0; count < 20 && !backend.disposed; count++) {
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump();
+    }
+    expect(backend.disposed, true);
+    api.close();
+    await store.log.flush();
+    store.log.dispose();
+    store.dispose();
+  });
 }

@@ -210,7 +210,7 @@ void main() {
           );
           await tester.tap(find.byKey(const Key('episode-ranges-all')));
           await tester.pumpAndSettle();
-          final panel = find.byKey(const Key('selection-menu-panel'));
+          final panel = find.byKey(const Key('anchored-menu-panel'));
           expect(tester.getSize(panel).width, lessThan(150));
           expect(tester.getSize(panel).height, lessThanOrEqualTo(420));
           await capture('picker');

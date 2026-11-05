@@ -15,6 +15,7 @@ internal static partial class ReferenceAppearance
 {
     static readonly ConditionalWeakTable<FrameworkElement, State> States = new();
     internal static void Apply(FrameworkElement page) => States.GetValue(page, p => new State(p)).Apply();
+    internal static void ApplyAfterNavigation(FrameworkElement page) => States.GetValue(page,p=>new State(p)).Apply(navigationApplied:true);
     internal static void FocusSearch(FrameworkElement page){var state=States.GetValue(page,p=>new State(p));state.ShowSearch();}
     // Re-enable the retained account/tag scoped backdrop cache for the authorized detail design.
     internal static bool WantsDetailBackground(FrameworkElement page)=>true;
@@ -80,12 +81,17 @@ internal static partial class ReferenceAppearance
         static void Warn(Exception e) { try { PlaybackTransport.Write("Warning", "Desktop.Appearance", "参考外观未完全应用；" + e.GetType().Name); } catch { } }
         static void Move(DependencyObject from, Panel to, UIElement element)
         { if (to.Children.Contains(element)) return; if (DesktopShellActions.Detach(from, element)) { if(element is FrameworkElement control){Grid.SetRow(control, 0); Grid.SetColumn(control, 0);} to.Children.Add(element); } }
-        void PlaceChrome(Grid shell,bool reference)
+        void PlaceChrome(Grid shell,bool reference,bool navigationApplied)
         {
             if(sidebar==null)return;
             sidebar.Visibility=reference?Visibility.Collapsed:Visibility.Visible;
             shell.ColumnDefinitions[0].Width=new(reference?0:page.ActualWidth is >0 and <1080?176:204);
-            if(!reference){DesktopTheme.Navigation(page);DesktopShellLayout.Apply(page,DesktopTheme.Options,Palette);ReferenceSurfaces.Apply(sidebar);}
+            if(!reference)
+            {
+                if(navigationApplied)DesktopShellLayout.Apply(page,DesktopTheme.Options,Palette);
+                else DesktopTheme.Navigation(page);
+                ReferenceSurfaces.Apply(sidebar);
+            }
         }
         void Attach(Grid shell)
         {
@@ -100,7 +106,7 @@ internal static partial class ReferenceAppearance
             shell.Children.Insert(0,background);Grid.SetColumnSpan(background,Math.Max(1,shell.ColumnDefinitions.Count));Grid.SetRowSpan(background,Math.Max(1,shell.RowDefinitions.Count));
             attached=true;
         }
-        public void Apply()
+        public void Apply(bool navigationApplied=false)
         {
             if (applying || !page.IsLoaded || Find<Grid>("ShellGrid") is not { } shell) return;
             applying = true;
@@ -116,7 +122,7 @@ internal static partial class ReferenceAppearance
                 bool settings = Find<Grid>("SettingsView")?.Visibility == Visibility.Visible;
                 if(settings&&searchExpanded)CloseSearchPage(false);
                 bool reference=detail||searchExpanded;
-                PlaceChrome(shell,reference);
+                PlaceChrome(shell,reference,navigationApplied);
                 var bar=shell.Children.OfType<Border>().First(b=>b.Name=="DesktopAccountToolbar");
                 bool fullSearch=searchExpanded&&!detail;
                 bar.Visibility=fullSearch||settings?Visibility.Collapsed:Visibility.Visible;
@@ -167,6 +173,8 @@ internal static partial class ReferenceAppearance
                 HomePresentation.Apply(page,Palette);
                 if(settings)SettingsPresentation.Apply(page);
                 DetailPresentation.Apply(page,Palette,detail&&!settings&&Find<Grid>("CollectionView")?.Visibility!=Visibility.Visible);
+                AccountAvatars.Style(page);
+                if(Find<TextBlock>("SidebarVersionText") is {} version)version.Text=((System.Reflection.AssemblyInformationalVersionAttribute)typeof(ReferenceAppearance).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute),false)[0]).InformationalVersion.Split('+')[0];
             }
             finally { applying = false; }
         }
@@ -216,6 +224,16 @@ internal static partial class ReferenceAppearance
                     }
                     if(text.Children.Contains(toggle))anchor=toggle;
                 }
+                foreach(string name in new[]{"DetailTranslationNote","DetailOriginalToggle","DetailTranslationRetry"})
+                {
+                    if(Find<FrameworkElement>(name) is not {} translation)continue;
+                    if(!text.Children.Contains(translation))Move(view,text,translation);
+                    if(!text.Children.Contains(translation))continue;
+                    text.Children.Remove(translation);text.Children.Insert(text.Children.IndexOf(anchor)+1,translation);
+                    translation.HorizontalAlignment=HorizontalAlignment.Left;translation.Margin=new(0,0,0,0);
+                    if(translation is TextBlock note){note.TextWrapping=TextWrapping.Wrap;note.Foreground=Brush(Palette.Secondary);}
+                    anchor=translation;
+                }
                 int at = text.Children.IndexOf(anchor); int current = text.Children.IndexOf(actions);
                 if (at >= 0 && current != at+1) { text.Children.Remove(actions);text.Children.Insert(text.Children.IndexOf(anchor)+1,actions); }
                 actions.Margin = new(0, 6, 0, 4); actions.ColumnSpacing = 8;
@@ -232,6 +250,7 @@ internal static partial class ReferenceAppearance
             }
             if (Find<Border>("EpisodesSection") is { } episodes) { episodes.Margin = new(0, 28, 0, 0); episodes.Padding = new(0); episodes.Background = Brush(0); episodes.BorderThickness = new(0); }
             DesktopDetailLayout.Apply(page);
+            DetailResourceBadges.Refresh(page);
         }
         void Genres(StackPanel text, double available)
         {

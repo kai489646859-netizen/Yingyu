@@ -21,6 +21,8 @@ import 'watch_progress.dart';
 import '../core/personal_sync.dart';
 import 'poster_actions.dart';
 import 'media_versions.dart';
+import 'resource_tags.dart';
+import '../core/video_labels.dart';
 
 class DetailPage extends StatefulWidget {
   const DetailPage({
@@ -439,7 +441,10 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
       }
     }
     try {
-      bool allowed() => mounted && revision == generation;
+      bool allowed() =>
+          mounted &&
+          revision == generation &&
+          widget.api.session == personalAccount;
       final page =
           await (widget.browse?.episodeCatalogue(
                 seriesId,
@@ -452,7 +457,11 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                 seasonId,
                 allowed: allowed,
               ));
-      if (!mounted || revision != generation) return;
+      if (!mounted ||
+          revision != generation ||
+          widget.api.session != personalAccount) {
+        return;
+      }
       setState(() {
         episodes = List.of(page.items);
       });
@@ -561,24 +570,50 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
     });
   }
 
-  String rangeLabel(int index) => bands.labelAt(index);
-  Future<void> chooseRange() async {
-    final picked = await showSurface<int>(
-      context,
-      (_) => EpisodeBandPicker(
-        count: rangeCount,
-        selected: episodeRange,
-        label: bands.labelAt,
-      ),
-    );
-    if (mounted && picked != null) jumpRange(picked);
+  MediaItem versionEntry(MediaItem entry) {
+    final match = episodes.where((e) => e.id == entry.id).firstOrNull;
+    if (match == null) return entry;
+    return MediaItem({
+      ...entry.data,
+      if (match.data['MediaSources'] is List)
+        'MediaSources': match.data['MediaSources'],
+      if (match.data['MediaStreams'] is List)
+        'MediaStreams': match.data['MediaStreams'],
+    });
   }
 
+  Future<void> chooseEpisodeVersion(MediaItem entry) async {
+    if (openingEntry != null || widget.api.session != personalAccount) return;
+    final choice = await showSurface<String>(
+      context,
+      (context) => SurfacePage(
+        title: '选择资源版本',
+        heightRatio: .5,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: MediaVersions(
+            sources: playableVersions(entry),
+            selected: selectedSources[entry.id],
+            onSelected: (id) {
+              if (mounted && widget.api.session == personalAccount) {
+                Navigator.pop(context, id);
+              }
+            },
+          ),
+        ),
+      ),
+    );
+    if (mounted && widget.api.session == personalAccount && choice != null) {
+      setState(() => selectedSources[entry.id] = choice);
+    }
+  }
+
+  String rangeLabel(int index) => bands.labelAt(index);
   Future<void> play(MediaItem entry, {bool fromBeginning = false}) async {
     if (openingEntry != null || widget.api.session != personalAccount) return;
     setState(() => openingEntry = entry);
     try {
-      final versions = playableVersions(entry);
+      final versions = playableVersions(versionEntry(entry));
       final selected = selectedSources[entry.id];
       final sourceId =
           selected ??
@@ -806,6 +841,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
         : historyLoaded
         ? focusEpisode ?? episodes.firstOrNull
         : null;
+    final resource = target == null ? null : versionEntry(target);
     final continuing =
         target != null &&
         (target.id == focusEpisode?.id || resumeOf(target) > Duration.zero);
@@ -861,6 +897,126 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
       ),
     );
 
+    final artwork = posterUrl(widget.api, entry);
+    final posterHeight = phoneValue(context, 156.0, 195.0);
+    final metadata = Column(
+      key: const Key('phone-detail-metadata'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (!phone) ...[
+          if (entry.rating.isNotEmpty) ...[
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  '评分: ',
+                  style: valueStyle.copyWith(fontWeight: FontWeight.w600),
+                ),
+                for (var i = 0; i < 5; i++)
+                  Icon(
+                    (double.tryParse(entry.rating) ?? 0) >= (i + 1) * 2
+                        ? CupertinoIcons.star_fill
+                        : (double.tryParse(entry.rating) ?? 0) > i * 2
+                        ? CupertinoIcons.star_lefthalf_fill
+                        : CupertinoIcons.star,
+                    size: 14,
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? const Color(0xFFFFD761)
+                        : const Color(0xFF876000),
+                  ),
+                Text(
+                  ' ${entry.rating}',
+                  style: TextStyle(
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? const Color(0xFFFFD761)
+                        : const Color(0xFF876000),
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+          ],
+          if (genres.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final genre in genres)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: .08),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: color.withValues(alpha: .12),
+                        width: .5,
+                      ),
+                    ),
+                    child: Text(
+                      genre,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: secondaryColor(context),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ],
+        if (phone) row('评分', entry.rating),
+        row('年份', entry.year),
+        row(
+          '时长',
+          entry.duration.inMinutes > 0 ? '${entry.duration.inMinutes} 分钟' : '',
+        ),
+        row('分级', entry.data['OfficialRating']?.toString() ?? ''),
+        if (phone) row('类型', genres.join(' / ')),
+      ],
+    );
+    final actions = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 4),
+        ResourceTags(
+          key: const Key('detail-resource-tags'),
+          video: resource == null || widget.api.session != personalAccount
+              ? {}
+              : resourceVideo(resource, sourceId: selectedSources[resource.id]),
+        ),
+        const SizedBox(height: 6),
+        playButton(),
+      ],
+    );
+    // Keep the established poster-aligned button at normal text size. When
+    // text is enlarged, let the outer detail page scroll the full metadata.
+    final details =
+        artwork != null && MediaQuery.textScalerOf(context).scale(13) <= 13
+        ? SizedBox(
+            height: posterHeight,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: SingleChildScrollView(child: metadata)),
+                actions,
+              ],
+            ),
+          )
+        : ConstrainedBox(
+            constraints: BoxConstraints(minHeight: posterHeight),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [metadata, actions],
+            ),
+          );
+
     return SingleChildScrollView(
       key: const PageStorageKey('detail-info'),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -892,7 +1048,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (posterUrl(widget.api, entry) != null)
+              if (artwork != null)
                 Padding(
                   padding: const EdgeInsets.only(right: 16, bottom: 8),
                   child: ClipRRect(
@@ -900,7 +1056,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                     child: SizedBox(
                       key: const Key('detail-poster'),
                       width: phoneValue(context, 104, 130),
-                      height: phoneValue(context, 156, 195),
+                      height: posterHeight,
                       child: PosterActionRegion(
                         item: entry,
                         externalMenu:
@@ -908,129 +1064,26 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                             widget.personalSync != null,
                         detail: true,
                         onChanged: () => load(force: true),
-                        child: Poster(url: posterUrl(widget.api, entry)),
+                        child: Poster(url: artwork),
                       ),
                     ),
                   ),
                 ),
-              Expanded(
-                child: SizedBox(
-                  height: phoneValue(context, 156, 195),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(
-                        child: SingleChildScrollView(
-                          child: Column(
-                            key: const Key('phone-detail-metadata'),
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              row('评分', entry.rating),
-                              row('年份', entry.year),
-                              row(
-                                '时长',
-                                entry.duration.inMinutes > 0
-                                    ? '${entry.duration.inMinutes} 分钟'
-                                    : '',
-                              ),
-                              row(
-                                '分级',
-                                entry.data['OfficialRating']?.toString() ?? '',
-                              ),
-                              row('类型', genres.join(' / ')),
-                            ],
-                          ),
-                        ),
-                      ),
-                      playButton(),
-                    ],
-                  ),
-                ),
-              ),
+              Expanded(child: details),
             ],
           ),
-          if (target != null && playableVersions(target).isNotEmpty)
+          if (resource != null && playableVersions(resource).isNotEmpty)
             MediaVersions(
-              sources: playableVersions(target),
-              selected: selectedSources[target.id],
+              sources: playableVersions(resource),
+              selected: selectedSources[resource.id],
               enabled:
                   openingEntry == null && widget.api.session == personalAccount,
               onSelected: (id) {
                 if (widget.api.session == personalAccount) {
-                  setState(() => selectedSources[target.id] = id);
+                  setState(() => selectedSources[resource.id] = id);
                 }
               },
             ),
-          if (!phone) ...[
-            const SizedBox(height: 16),
-            Divider(color: color.withValues(alpha: .15)),
-            const SizedBox(height: 8),
-            if (entry.rating.isNotEmpty) ...[
-              Wrap(
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Text(
-                    '评分: ',
-                    style: valueStyle.copyWith(fontWeight: FontWeight.w600),
-                  ),
-                  for (var i = 0; i < 5; i++)
-                    Icon(
-                      (double.tryParse(entry.rating) ?? 0) >= (i + 1) * 2
-                          ? CupertinoIcons.star_fill
-                          : (double.tryParse(entry.rating) ?? 0) > i * 2
-                          ? CupertinoIcons.star_lefthalf_fill
-                          : CupertinoIcons.star,
-                      size: 14,
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? const Color(0xFFFFD761)
-                          : const Color(0xFF876000),
-                    ),
-                  Text(
-                    ' ${entry.rating}',
-                    style: TextStyle(
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? const Color(0xFFFFD761)
-                          : const Color(0xFF876000),
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-            ],
-            if (genres.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final genre in genres)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: .08),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: color.withValues(alpha: .12),
-                          width: .5,
-                        ),
-                      ),
-                      child: Text(
-                        genre,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: secondaryColor(context),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ],
           if (objects(entry.data['People']).isNotEmpty) ...[
             const SizedBox(height: 20),
             PeopleRail(
@@ -1128,288 +1181,360 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
       focusRevision++;
       focusResume = false;
     },
-    child: Column(
-      children: [
-        if (locatingEpisode)
-          const Padding(
-            padding: EdgeInsets.all(8),
-            child: Text('正在定位到上次观看的剧集…', key: Key('episode-locating')),
-          ),
-        if (focusEpisode != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '上次观看：第 ${focusEpisode!.data['ParentIndexNumber'] ?? "?"} 季 · 第 ${focusEpisode!.data['IndexNumber'] ?? "?"} 集',
-                  style: TextStyle(fontSize: 13, color: labelColor(context)),
-                ),
-                const SizedBox(height: 4),
-                WatchProgress(
-                  item:
-                      episodes
-                          .where((e) => e.id == focusEpisode!.id)
-                          .firstOrNull ??
-                      focusEpisode!,
-                  account: personalAccount,
-                  store: widget.store,
-                ),
-              ],
-            ),
-          ),
-        if (seasons.isNotEmpty)
-          Container(
-            height: 40,
-            margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              children: [
-                for (final entry in seasons)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 12),
-                    child: CupertinoButton(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      onPressed: () {
-                        if (season == entry.id) return;
-                        setState(() {
-                          focusRevision++;
-                          season = entry.id;
-                          focusResume = false;
-                          episodeRange = 0;
-                        });
-                        if (episodeScroll.hasClients) episodeScroll.jumpTo(0);
-                        if (rangeScroll.hasClients) rangeScroll.jumpTo(0);
-                        loadEpisodes(reset: true);
-                      },
-                      child: Text(
-                        entry.title,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: season == entry.id
-                              ? FontWeight.w600
-                              : FontWeight.w400,
-                          color: season == entry.id
-                              ? accentColor(context)
-                              : secondaryColor(context),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        const Divider(height: 1, indent: 16, endIndent: 16),
-        if (episodes.isNotEmpty)
-          SizedBox(
-            height: 44,
-            child: Row(
-              children: [
-                Expanded(
-                  child: ListView.builder(
-                    key: const Key('episode-ranges'),
-                    controller: rangeScroll,
-                    scrollDirection: Axis.horizontal,
-                    itemExtent: rangeWidth,
-                    itemCount: rangeCount,
-                    itemBuilder: (context, index) => Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 4,
-                        vertical: 5,
-                      ),
-                      child: CupertinoButton(
-                        key: ValueKey('episode-range-$index'),
-                        padding: EdgeInsets.zero,
-                        color: episodeRange == index
-                            ? accentColor(context).withValues(alpha: .14)
-                            : null,
-                        onPressed: () {
-                          focusRevision++;
-                          focusResume = false;
-                          jumpRange(index);
-                        },
+    child: LayoutBuilder(
+      builder: (context, bounds) {
+        final headerLimit = bounds.maxHeight > 300
+            ? (bounds.maxHeight - episodeHeight).clamp(0.0, bounds.maxHeight)
+            : bounds.maxHeight * .55;
+        return Column(
+          children: [
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: headerLimit),
+              child: SingleChildScrollView(
+                key: const Key('episode-header-scroll'),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (locatingEpisode)
+                      const Padding(
+                        padding: EdgeInsets.all(8),
                         child: Text(
-                          rangeLabel(index),
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: episodeRange == index
-                                ? FontWeight.w600
-                                : FontWeight.w400,
-                            color: episodeRange == index
-                                ? accentColor(context)
-                                : secondaryColor(context),
-                          ),
+                          '正在定位到上次观看的剧集…',
+                          key: Key('episode-locating'),
                         ),
                       ),
-                    ),
-                  ),
-                ),
-                CupertinoButton(
-                  key: const Key('episode-ranges-all'),
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  onPressed: chooseRange,
-                  child: const Icon(
-                    CupertinoIcons.list_bullet,
-                    size: 20,
-                    semanticLabel: '选择集数区间',
-                  ),
-                ),
-              ],
-            ),
-          ),
-        if (historyError != null)
-          SettingsRow(
-            historyError!,
-            subtitle: '点击重试观看记录',
-            onTap: () => load(force: true),
-          ),
-        if (seasonError != null && (episodes.isNotEmpty || seasons.isNotEmpty))
-          SettingsRow(
-            seasonError!,
-            subtitle: '点击重试季列表',
-            onTap: () => load(force: true),
-          ),
-        if (episodeError != null && episodes.isNotEmpty)
-          SettingsRow(
-            '更新失败，显示本机缓存',
-            subtitle: episodeError,
-            onTap: () => loadEpisodes(force: true),
-          ),
-        if (focusEpisode != null &&
-            !episodes.any((e) => e.id == focusEpisode!.id) &&
-            (season == focusEpisode!.data['SeasonId'] ||
-                seasons
-                        .where((s) => s.id == season)
-                        .firstOrNull
-                        ?.data['IndexNumber'] ==
-                    focusEpisode!.data['ParentIndexNumber']))
-          SettingsRow(
-            '上次观看',
-            subtitle: focusEpisode!.title,
-            icon: CupertinoIcons.play_circle,
-            onTap: () => play(focusEpisode!),
-          ),
-        Expanded(
-          child: NotificationListener<UserScrollNotification>(
-            onNotification: (notification) {
-              if (notification.depth == 0 &&
-                  notification.direction != ScrollDirection.idle) {
-                focusRevision++;
-                focusResume = false;
-              }
-              return false;
-            },
-            child: episodes.isEmpty
-                ? MessagePanel(
-                    episodeError ??
-                        seasonError ??
-                        (episodeBusy
-                            ? '正在读取剧集'
-                            : episodesPaused
-                            ? '剧集读取已暂停'
-                            : '暂无可用剧集'),
-                    busy: episodeBusy,
-                    retry: episodeError != null
-                        ? loadEpisodes
-                        : seasonError != null || episodesPaused
-                        ? () => load(force: true)
-                        : null,
-                    icon: CupertinoIcons.film,
-                  )
-                : ListView.builder(
-                    key: const PageStorageKey('detail-episodes'),
-                    controller: episodeScroll,
-                    itemExtent: episodeHeight,
-                    padding: const EdgeInsets.only(top: 8, bottom: 24),
-                    itemCount: episodes.length,
-                    itemBuilder: (context, index) {
-                      final entry = episodes[index];
-                      return CupertinoButton(
-                        key: ValueKey('detail-episode-${entry.id}'),
-                        color: entry.id == focusEpisode?.id
-                            ? accentColor(context).withValues(alpha: .14)
-                            : null,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
+                    if (focusEpisode != null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '上次观看：第 ${focusEpisode!.data['ParentIndexNumber'] ?? "?"} 季 · 第 ${focusEpisode!.data['IndexNumber'] ?? "?"} 集',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: labelColor(context),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            WatchProgress(
+                              item:
+                                  episodes
+                                      .where((e) => e.id == focusEpisode!.id)
+                                      .firstOrNull ??
+                                  focusEpisode!,
+                              account: personalAccount,
+                              store: widget.store,
+                            ),
+                          ],
                         ),
-                        onPressed: () => play(entry),
+                      ),
+                    if (seasons.isNotEmpty)
+                      Container(
+                        height: 40,
+                        margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                        child: ListView(
+                          scrollDirection: Axis.horizontal,
+                          children: [
+                            for (final entry in seasons)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 12),
+                                child: CupertinoButton(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                  ),
+                                  onPressed: () {
+                                    if (season == entry.id) return;
+                                    setState(() {
+                                      focusRevision++;
+                                      season = entry.id;
+                                      focusResume = false;
+                                      episodeRange = 0;
+                                    });
+                                    if (episodeScroll.hasClients) {
+                                      episodeScroll.jumpTo(0);
+                                    }
+                                    if (rangeScroll.hasClients) {
+                                      rangeScroll.jumpTo(0);
+                                    }
+                                    loadEpisodes(reset: true);
+                                  },
+                                  child: Text(
+                                    entry.title,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: season == entry.id
+                                          ? FontWeight.w600
+                                          : FontWeight.w400,
+                                      color: season == entry.id
+                                          ? accentColor(context)
+                                          : secondaryColor(context),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    const Divider(height: 1, indent: 16, endIndent: 16),
+                    if (episodes.isNotEmpty)
+                      SizedBox(
+                        height: 44,
                         child: Row(
                           children: [
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
-                              child: SizedBox(
-                                width: 60 * posterAspectRatio,
-                                height: 60,
-                                child: PosterActionRegion(
-                                  item: entry,
-                                  externalMenu: true,
-                                  detail: true,
-                                  onChanged: () => load(force: true),
-                                  child: Poster(
-                                    url: posterUrl(
-                                      widget.api,
-                                      entry,
-                                      series: item,
+                            Expanded(
+                              child: ListView.builder(
+                                key: const Key('episode-ranges'),
+                                controller: rangeScroll,
+                                scrollDirection: Axis.horizontal,
+                                itemExtent: rangeWidth,
+                                itemCount: rangeCount,
+                                itemBuilder: (context, index) => Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                    vertical: 5,
+                                  ),
+                                  child: CupertinoButton(
+                                    key: ValueKey('episode-range-$index'),
+                                    padding: EdgeInsets.zero,
+                                    color: episodeRange == index
+                                        ? accentColor(
+                                            context,
+                                          ).withValues(alpha: .14)
+                                        : null,
+                                    onPressed: () {
+                                      focusRevision++;
+                                      focusResume = false;
+                                      jumpRange(index);
+                                    },
+                                    child: Text(
+                                      rangeLabel(index),
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: episodeRange == index
+                                            ? FontWeight.w600
+                                            : FontWeight.w400,
+                                        color: episodeRange == index
+                                            ? accentColor(context)
+                                            : secondaryColor(context),
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: PosterActionTitle(
-                                item: entry,
-                                detail: true,
-                                onChanged: () => load(force: true),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      entry.title,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color: labelColor(context),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      entry.id == focusEpisode?.id
-                                          ? '上次观看 · 第 ${entry.data['IndexNumber'] ?? "?"} 集'
-                                          : '第 ${entry.data['IndexNumber'] ?? index + 1} 集',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: secondaryColor(context),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    WatchProgress(
-                                      item: entry,
-                                      account: personalAccount,
-                                      store: widget.store,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Icon(
-                              CupertinoIcons.play_circle,
-                              size: 24,
-                              color: secondaryColor(context),
+                            EpisodeBandButton(
+                              key: const Key('episode-ranges-all'),
+                              id: 'detail-episode-ranges',
+                              count: rangeCount,
+                              selected: episodeRange,
+                              label: bands.labelAt,
+                              onSelected: jumpRange,
                             ),
                           ],
                         ),
-                      );
-                    },
-                  ),
-          ),
-        ),
-      ],
+                      ),
+                    if (historyError != null)
+                      SettingsRow(
+                        historyError!,
+                        subtitle: '点击重试观看记录',
+                        onTap: () => load(force: true),
+                      ),
+                    if (seasonError != null &&
+                        (episodes.isNotEmpty || seasons.isNotEmpty))
+                      SettingsRow(
+                        seasonError!,
+                        subtitle: '点击重试季列表',
+                        onTap: () => load(force: true),
+                      ),
+                    if (episodeError != null && episodes.isNotEmpty)
+                      SettingsRow(
+                        '更新失败，显示本机缓存',
+                        subtitle: episodeError,
+                        onTap: () => loadEpisodes(force: true),
+                      ),
+                    if (focusEpisode != null &&
+                        !episodes.any((e) => e.id == focusEpisode!.id) &&
+                        (season == focusEpisode!.data['SeasonId'] ||
+                            seasons
+                                    .where((s) => s.id == season)
+                                    .firstOrNull
+                                    ?.data['IndexNumber'] ==
+                                focusEpisode!.data['ParentIndexNumber']))
+                      SettingsRow(
+                        '上次观看',
+                        subtitle: focusEpisode!.title,
+                        icon: CupertinoIcons.play_circle,
+                        onTap: () => play(focusEpisode!),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            Expanded(
+              child: NotificationListener<UserScrollNotification>(
+                onNotification: (notification) {
+                  if (notification.depth == 0 &&
+                      notification.direction != ScrollDirection.idle) {
+                    focusRevision++;
+                    focusResume = false;
+                  }
+                  return false;
+                },
+                child: episodes.isEmpty
+                    ? MessagePanel(
+                        episodeError ??
+                            seasonError ??
+                            (episodeBusy
+                                ? '正在读取剧集'
+                                : episodesPaused
+                                ? '剧集读取已暂停'
+                                : '暂无可用剧集'),
+                        busy: episodeBusy,
+                        retry: episodeError != null
+                            ? loadEpisodes
+                            : seasonError != null || episodesPaused
+                            ? () => load(force: true)
+                            : null,
+                        icon: CupertinoIcons.film,
+                      )
+                    : ListView.builder(
+                        key: const PageStorageKey('detail-episodes'),
+                        controller: episodeScroll,
+                        itemExtent: episodeHeight,
+                        padding: const EdgeInsets.only(top: 8, bottom: 24),
+                        itemCount: episodes.length,
+                        itemBuilder: (context, index) {
+                          final entry = episodes[index];
+                          return CupertinoButton(
+                            key: ValueKey('detail-episode-${entry.id}'),
+                            color: entry.id == focusEpisode?.id
+                                ? accentColor(context).withValues(alpha: .14)
+                                : null,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 8,
+                            ),
+                            onPressed: () => play(entry),
+                            child: Row(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: SizedBox(
+                                    width: 60 * posterAspectRatio,
+                                    height: 60,
+                                    child: PosterActionRegion(
+                                      item: entry,
+                                      externalMenu: true,
+                                      detail: true,
+                                      onChanged: () => load(force: true),
+                                      child: Poster(
+                                        url: posterUrl(
+                                          widget.api,
+                                          entry,
+                                          series: item,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: PosterActionTitle(
+                                    item: entry,
+                                    detail: true,
+                                    onChanged: () => load(force: true),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          entry.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            color: labelColor(context),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                entry.id == focusEpisode?.id
+                                                    ? '上次观看 · 第 ${entry.data['IndexNumber'] ?? "?"} 集'
+                                                    : '第 ${entry.data['IndexNumber'] ?? index + 1} 集',
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: secondaryColor(
+                                                    context,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 4),
+                                            Flexible(
+                                              child: ResourceTags(
+                                                compact: true,
+                                                key: ValueKey(
+                                                  'episode-resource-${entry.id}',
+                                                ),
+                                                video: resourceVideo(
+                                                  entry,
+                                                  sourceId:
+                                                      selectedSources[entry.id],
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 4),
+                                        WatchProgress(
+                                          item: entry,
+                                          account: personalAccount,
+                                          store: widget.store,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                if (playableVersions(entry).length > 1)
+                                  CupertinoButton(
+                                    key: ValueKey(
+                                      'episode-versions-${entry.id}',
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                    ),
+                                    minimumSize: const Size(36, 36),
+                                    onPressed: openingEntry == null
+                                        ? () => chooseEpisodeVersion(entry)
+                                        : null,
+                                    child: const Text(
+                                      '版本',
+                                      style: TextStyle(fontSize: 12),
+                                    ),
+                                  )
+                                else
+                                  Icon(
+                                    CupertinoIcons.play_circle,
+                                    size: 24,
+                                    color: secondaryColor(context),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ),
+          ],
+        );
+      },
     ),
   );
 }

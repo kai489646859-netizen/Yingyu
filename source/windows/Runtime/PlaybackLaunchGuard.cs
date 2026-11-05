@@ -8,6 +8,12 @@ public static class PlaybackLaunchGuard
 {
     sealed class State{internal object? Account;internal long Accepted;}
     static readonly ConditionalWeakTable<object,State> States=new();
+    public static async Task<T> JoinPreparation<T>(Task<T> metadata, Task pause)
+    {
+        await Task.WhenAll(metadata, pause);
+        return await metadata;
+    }
+
     public static Task<bool>? Repeated(object page,bool waitForTurn){
         if(waitForTurn)return null;
         const BindingFlags flags=BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic;

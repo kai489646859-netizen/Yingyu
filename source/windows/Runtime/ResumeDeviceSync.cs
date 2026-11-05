@@ -20,7 +20,7 @@ public static class ResumeDeviceSync
     sealed record Checkpoint(string Item,string? Title);
     static readonly ConditionalWeakTable<EmbyApiClient,ConcurrentDictionary<string,Checkpoint>> Captured=new();
     static readonly ConditionalWeakTable<EmbyApiClient,ConcurrentDictionary<string,string>> ObservedTitles=new();
-    sealed record ActivityScope(string Server,string User,string Url);
+    sealed record ActivityScope(string Server,string User,string Url,EmbyItem? Item);
     static readonly ConditionalWeakTable<object,ActivityScope> Activities=new();
     static readonly SemaphoreSlim Files=new(1,1);
     public sealed record Baseline(string Session,long Position,long At,string Observed,string? TitleObserved=null);
@@ -40,11 +40,11 @@ public static class ResumeDeviceSync
     {
         var data=Captured.GetValue(client,_=>new());if(data.Count>256)data.Clear();
         var value=Fingerprint(item);string? title=null;if(ObservedTitles.TryGetValue(client,out var observed))observed.TryGetValue(CaptureKey(User(client),TitleKey(item),""),out title);
-        if(value.Length>0&&play.Length>0)data.TryAdd(CaptureKey(User(client),item.Id,play),new(value,title));
+        if(value.Length>0)data.TryAdd(CaptureKey(User(client),item.Id,play),new(value,title));
     }
     internal static void CaptureStop(EmbyApiClient client,EmbyItem item,string play)
     {
-        if(string.IsNullOrWhiteSpace(play)||string.IsNullOrWhiteSpace(item.Id))return;
+        if(string.IsNullOrWhiteSpace(item.Id))return;
         var data=Captured.GetValue(client,_=>new());string? title=null;
         if(ObservedTitles.TryGetValue(client,out var observed))observed.TryGetValue(CaptureKey(User(client),TitleKey(item),""),out title);
         data[CaptureKey(User(client),item.Id,play)]=new(Fingerprint(item),title);
@@ -60,13 +60,20 @@ public static class ResumeDeviceSync
         var session=Access.Get<EmbySession?>(page,"_session");var client=Access.Get<EmbyApiClient?>(page,"_client");
         if(session==null||client==null||sender?.GetType().GetField("_embyClient",Flags)?.GetValue(sender) is not EmbyApiClient source)return;
         if(source.ServerUrl!=client.ServerUrl||User(source)!=session.UserId||User(client)!=session.UserId)return;
-        Activities.GetValue(args,_=>new(session.ServerId,session.UserId,client.ServerUrl));
+        var playing = sender.GetType().GetField("_item",Flags)?.GetValue(sender) as EmbyItem;
+        if (playing != null && !string.Equals(playing.Id, (string?)Access.Call(args,"get_ItemId"), StringComparison.OrdinalIgnoreCase))
+            playing = null;
+        Activities.GetValue(args,_=>new(session.ServerId,session.UserId,client.ServerUrl,playing));
     }
     public static bool CanApplyActivity(object page,object args)
     {
         var session=Access.Get<EmbySession?>(page,"_session");var client=Access.Get<EmbyApiClient?>(page,"_client");
         return session!=null&&client!=null&&Activities.TryGetValue(args,out var owner)&&owner.Server==session.ServerId&&owner.User==session.UserId&&owner.Url==client.ServerUrl&&User(client)==session.UserId;
     }
+    public static IEnumerable<EmbyItem> WithActivityItem(IEnumerable<EmbyItem> cached,object args)
+        => Activities.TryGetValue(args,out var activity) && activity.Item is { } item
+            ? cached.DefaultIfEmpty(item) : cached;
+
     static bool Same(PendingPlaybackSyncEntry e,Baseline b)=>b.Session==e.Playback.PlaySessionId&&b.Position==e.Playback.PositionTicks&&b.At==e.UpdatedAt.UtcTicks;
     public static bool CanProject(PendingPlaybackSyncEntry e,EmbyItem remote,IReadOnlyDictionary<string,Baseline> bases,IEnumerable<EmbyItem> server)
     {
@@ -91,25 +98,54 @@ public static class ResumeDeviceSync
     public static async Task Save(object page,PlaybackRequest playback,bool completed)
     {
         var session=Access.Get<EmbySession?>(page,"_session");var client=Access.Get<EmbyApiClient?>(page,"_client");if(session==null||client==null)return;
-        var store=Access.Get<PendingPlaybackSyncStore>(page,"_pendingPlaybackSyncStore");var entry=new PendingPlaybackSyncEntry(session.ServerId,session.UserId,playback,DateTimeOffset.UtcNow,completed);
+        if(!DurablePlaybackSync.ShouldSave(client,playback))return;
+        var store=Access.Get<PendingPlaybackSyncStore>(page,"_pendingPlaybackSyncStore");
         try{
-            await Files.WaitAsync();try{
-                await store.UpsertAsync(entry);
-                if(Captured.TryGetValue(client,out var captures)&&captures.TryGetValue(CaptureKey(session.UserId,playback.ItemId,playback.PlaySessionId),out var baseline)){
-                    var path=PathFor(store);var data=Read(path);data[Key(entry)]=new(playback.PlaySessionId,playback.PositionTicks,entry.UpdatedAt.UtcTicks,baseline.Item,baseline.Title);Write(path,data);
-                }
-            }finally{Files.Release();}
+            await Persist(store,session,client,playback,completed);
             if(!Current(page,session,client))return;
             Access.Set(page,"_playbackSyncRequested",true);
             await (Task)Access.Call(page,"RefreshPendingPlaybackSyncStatusAsync",CancellationToken.None)!;
             if(Access.Get<bool>(page,"_playbackSyncRequested")&&!Playing(page))await Drain(page);
         }catch(Exception e){Warn("待同步进度保留核对未完成",e);}
     }
+    internal static async Task<PendingPlaybackSyncEntry> Persist(PendingPlaybackSyncStore store,EmbySession session,EmbyApiClient client,PlaybackRequest playback,bool completed)
+    {
+        var entry=new PendingPlaybackSyncEntry(session.ServerId,session.UserId,playback,DateTimeOffset.UtcNow,completed);
+        await Files.WaitAsync();
+        try
+        {
+            if(!DurablePlaybackSync.ShouldSave(client,playback))return entry;
+            // The inherited store treats damaged JSON as an empty list. A new
+            // stop must not overwrite existing records on a corrupt/read-failed file.
+            var file=Access.Get<string>(store,"_filePath");
+            if(File.Exists(file))
+            {
+                var existing=JsonSerializer.Deserialize<List<PendingPlaybackSyncEntry>>(await File.ReadAllTextAsync(file));
+                if(existing==null||existing.Any(e=>e==null||e.Playback==null||string.IsNullOrWhiteSpace(e.ServerId)||string.IsNullOrWhiteSpace(e.UserId)||string.IsNullOrWhiteSpace(e.Playback.ItemId)))throw new InvalidDataException("待同步文件结构无效");
+            }
+            await store.UpsertAsync(entry);
+            SaveBaseline(store,client,entry);
+            return entry;
+        }
+        finally{Files.Release();}
+    }
+    static void SaveBaseline(PendingPlaybackSyncStore store,EmbyApiClient client,PendingPlaybackSyncEntry entry)
+    {
+        var playback=entry.Playback;
+        if(Captured.TryGetValue(client,out var captures)&&captures.TryGetValue(CaptureKey(entry.UserId,playback.ItemId,playback.PlaySessionId),out var baseline))
+        {
+            var path=PathFor(store);var data=Read(path);data[Key(entry)]=new(playback.PlaySessionId,playback.PositionTicks,entry.UpdatedAt.UtcTicks,baseline.Item,baseline.Title);Write(path,data);
+        }
+    }
+    internal static async Task RefreshBaseline(PendingPlaybackSyncStore store,EmbyApiClient client,PendingPlaybackSyncEntry entry)
+    {
+        await Files.WaitAsync();try{if(await Exists(store,entry,CancellationToken.None))SaveBaseline(store,client,entry);}finally{Files.Release();}
+    }
     static bool Playing(object page)=>page.GetType().GetProperty("IsPlaybackActive",Flags)?.GetValue(page) is true;
     static bool Current(object page,EmbySession session,EmbyApiClient client)=>ReferenceEquals(session,Access.Get<EmbySession?>(page,"_session"))&&ReferenceEquals(client,Access.Get<EmbyApiClient?>(page,"_client"))&&User(client)==session.UserId;
     static bool SameEntry(PendingPlaybackSyncEntry a,PendingPlaybackSyncEntry b)=>a.ServerId==b.ServerId&&a.UserId==b.UserId&&a.Playback.ItemId==b.Playback.ItemId&&a.Playback.PlaySessionId==b.Playback.PlaySessionId&&a.Playback.PositionTicks==b.Playback.PositionTicks&&a.UpdatedAt==b.UpdatedAt;
     static async Task<bool> Exists(PendingPlaybackSyncStore store,PendingPlaybackSyncEntry e,CancellationToken token)=>(await store.LoadAsync(e.ServerId,e.UserId,token)).Any(x=>SameEntry(x,e));
-    static async Task Remove(PendingPlaybackSyncStore store,PendingPlaybackSyncEntry e,CancellationToken token)
+    internal static async Task Remove(PendingPlaybackSyncStore store,PendingPlaybackSyncEntry e,CancellationToken token)
     {
         await Files.WaitAsync(token);try{
             if(!await Exists(store,e,token))return;
@@ -126,9 +162,9 @@ public static class ResumeDeviceSync
         var store=Access.Get<PendingPlaybackSyncStore>(page,"_pendingPlaybackSyncStore");
         Access.Set(page,"_playbackSyncInProgress",true);Access.Set(page,"_playbackSyncRequested",false);
         Access.Get<CancellationTokenSource?>(page,"_playbackSyncCts")?.Cancel();Access.Get<CancellationTokenSource?>(page,"_playbackSyncCts")?.Dispose();
-        using var source=new CancellationTokenSource();Access.Set(page,"_playbackSyncCts",source);var token=source.Token;
+        using var source=new CancellationTokenSource();source.CancelAfter(TimeSpan.FromSeconds(45));Access.Set(page,"_playbackSyncCts",source);var token=source.Token;
         Access.Get<Button>(page,"SyncPlaybackToEmbyButton").IsEnabled=false;Access.Get<ProgressRing>(page,"PlaybackSyncProgressRing").IsActive=true;Access.Get<ProgressRing>(page,"PlaybackSyncProgressRing").Visibility=Visibility.Visible;
-        int done=0,conflicts=0;
+        int done=0,conflicts=0,failed=0;
         bool Active()=>!token.IsCancellationRequested&&Current(page,session,client)&&!Playing(page);
         try{
             await (Task)Access.Call(page,"WaitForPlaybackControlPlaneRecoveryAsync")!;
@@ -136,35 +172,50 @@ public static class ResumeDeviceSync
             var entries=await store.LoadAsync(session.ServerId,session.UserId,token);if(!Active())return;
             if(entries.Count==0){await (Task)Access.Call(page,"RefreshResumeItemsAsync",true)!;if(Active())Status(page,"继续观看已按当前服务器账号刷新。");return;}
             var fresh=await client.GetResumeAsync(cancellationToken:token);if(!Active())return;
-            foreach(var e in entries){
+            foreach(var e in entries.OrderByDescending(e=>e.UpdatedAt)){
                 if(!Active())return;
-                var remote=await client.GetItemAsync(e.Playback.ItemId,token);if(!Active()||!await Exists(store,e,token))return;
+                string stage="item-read";
+                try {
+
+                var remote=await client.GetItemAsync(e.Playback.ItemId,token);if(!Active())return;if(!await Exists(store,e,token))continue;
                 if(!Confirmed(remote,e)){
                     if(!CanProject(e,remote,await LoadBaselines(store),fresh.Items)){conflicts++;continue;}
                     if(!Active())return;
-                    await client.ReportPlaybackStoppedInBackgroundAsync(e.Playback,token);if(!Active())return;
-                    remote=await client.GetItemAsync(e.Playback.ItemId,token);if(!Active()||!await Exists(store,e,token))return;
+                    stage="stopped-post";await client.ReportPlaybackStoppedInBackgroundAsync(e.Playback,token);if(!Active())return;
+                    stage="stopped-readback";
+                    remote=await client.GetItemAsync(e.Playback.ItemId,token);if(!Active())return;if(!await Exists(store,e,token))continue;
                     if(!Confirmed(remote,e)){
                         // Preserve the complete fresh user-data object, including fields
                         // absent from the old Windows DTO (e.g. PlayCount and Rating).
-                        var raw=await new EmbyPeopleApi(client,session.UserId).Get($"Users/{Uri.EscapeDataString(session.UserId)}/Items/{Uri.EscapeDataString(e.Playback.ItemId)}",token);
-                        if(!Active()||!await Exists(store,e,token))return;
+                        stage="userdata-read";var raw=await new EmbyPeopleApi(client,session.UserId).Get($"Users/{Uri.EscapeDataString(session.UserId)}/Items/{Uri.EscapeDataString(e.Playback.ItemId)}",token);
+                        if(!Active())return;if(!await Exists(store,e,token))continue;
                         var latest=JsonSerializer.Deserialize<EmbyItem>(raw.GetRawText(),new JsonSerializerOptions{PropertyNameCaseInsensitive=true})!;
                         if(!Confirmed(latest,e)){
                             if(Fingerprint(latest)!=Fingerprint(remote)){conflicts++;continue;}
-                            await Correct(client,session.UserId,e,raw,token);if(!Active())return;
+                            stage="userdata-post";await Correct(client,session.UserId,e,raw,token);if(!Active())return;
                             remote=await client.GetItemAsync(e.Playback.ItemId,token);if(!Active())return;
                         }else remote=latest;
                     }
                 }
                 if(Confirmed(remote,e)){await Remove(store,e,token);done++;}
+                }
+                catch(OperationCanceledException)when(token.IsCancellationRequested){throw;}
+                catch(EmbyApiException error)
+                {
+                    failed++;
+                    PlaybackTransport.Write("Warning","Playback.Sync","单条待同步记录保留；stage="+stage+"; HTTP="+(error.StatusCode.HasValue?((int)error.StatusCode.Value).ToString():"unknown")+"。");
+                    // Authentication belongs to the account. Missing/forbidden
+                    // individual items must not prevent later records from syncing.
+                    if(error.StatusCode==System.Net.HttpStatusCode.Unauthorized)throw;
+                }
+                catch(Exception error){failed++;Warn("单条待同步记录保留；stage="+stage,error);}
             }
             if(!Active())return;
             await (Task)Access.Call(page,"RefreshPendingPlaybackSyncStatusAsync",token)!;
             var remaining=(await store.LoadAsync(session.ServerId,session.UserId,token)).Count;if(!Active())return;
-            Status(page,remaining>0?$"已确认 {done} 条；仍有 {remaining} 条保留在本机"+(conflicts>0?"，服务器记录已变化或缺少核对基线。":"，等待服务器确认。"):$"已回读确认 {done} 条进度，正在更新继续观看。");
+            Status(page,remaining>0?$"已确认 {done} 条；仍有 {remaining} 条保留在本机"+(conflicts>0?"，服务器记录已变化或缺少核对基线。":"，等待服务器确认。")+(failed>0?$"（{failed} 条本次请求未完成）":""):$"已回读确认 {done} 条进度，正在更新继续观看。");
             await (Task)Access.Call(page,"RefreshResumeItemsAsync",true)!;
-        }catch(OperationCanceledException){}
+        }catch(OperationCanceledException){if(Current(page,session,client)&&!Playing(page))Status(page,"本次同步已暂停，未确认的记录仍保留，稍后继续重试。");}
         catch(Exception e){if(Current(page,session,client)){if(e is EmbyApiException)Access.Set(page,"_playbackControlPlaneRecoveryUntil",PlaybackControlPlaneRecoveryPolicy.GetRecoveryUntil(DateTimeOffset.UtcNow));Status(page,"同步未完成，进度仍保留在本机。");}Warn("继续观看同步未完成",e);}
         finally{
             if(ReferenceEquals(source,Access.Get<CancellationTokenSource?>(page,"_playbackSyncCts"))){
@@ -176,7 +227,11 @@ public static class ResumeDeviceSync
     static async Task Correct(EmbyApiClient client,string userId,PendingPlaybackSyncEntry e,JsonElement raw,CancellationToken token)
     {
         if(raw.ValueKind!=JsonValueKind.Object||!raw.TryGetProperty("UserData",out var user)||user.ValueKind!=JsonValueKind.Object||!user.TryGetProperty("PlaybackPositionTicks",out _)||!user.TryGetProperty("Played",out _)||!user.TryGetProperty("IsFavorite",out _)||!user.TryGetProperty("PlayCount",out _))throw new InvalidDataException("服务器未提供完整用户数据，保留待同步记录");
-        var body=JsonNode.Parse(user.GetRawText())!.AsObject();body["PlaybackPositionTicks"]=e.Completed?0:e.Playback.PositionTicks;body["Played"]=e.Completed||(e.Playback.PositionTicks>0&&user.GetProperty("Played").GetBoolean());
+        var body=JsonNode.Parse(user.GetRawText())!.AsObject();body["PlaybackPositionTicks"]=e.Completed?0:e.Playback.PositionTicks;body["Played"]=e.Completed;
+        // A stopped-session endpoint may acknowledge without persisting user data.
+        // Preserve all unrelated fields/counts; date reflects this real pending stop,
+        // without moving a newer server date backwards.
+        if((e.Completed||e.Playback.PositionTicks>0)&&(!user.TryGetProperty("LastPlayedDate",out var playedAt)||playedAt.ValueKind!=JsonValueKind.String||!playedAt.TryGetDateTimeOffset(out var last)||last<e.UpdatedAt))body["LastPlayedDate"]=e.UpdatedAt;
         var create=typeof(EmbyApiClient).GetMethods(Flags).Single(m=>m.Name=="CreateRequest"&&m.GetParameters().Length==3&&m.GetParameters()[1].ParameterType==typeof(string));
         using var request=(HttpRequestMessage)create.Invoke(client,new object[]{HttpMethod.Post,$"Users/{Uri.EscapeDataString(userId)}/Items/{Uri.EscapeDataString(e.Playback.ItemId)}/UserData",true})!;
         request.Content=new StringContent(body.ToJsonString(),Encoding.UTF8,"application/json");

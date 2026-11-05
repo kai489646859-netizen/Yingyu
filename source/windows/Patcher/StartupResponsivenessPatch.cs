@@ -50,6 +50,37 @@ static class StartupResponsivenessPatch
             var method = page.Methods.Single(m => m.Name == name); Changed(method);
             Stage(method, method.Body.Instructions[0], name == "ShowShell" ? "shell-visible" : "home-content");
         }
+        // Switching accounts clears the old cards before loading the new home.
+        // Match the normal Home button's active snapshot key before either restore.
+        var switching=page.NestedTypes.Single(t=>t.Name.StartsWith("<SwitchServerProfileAsync>d__"));
+        var switchMove=switching.Methods.Single(m=>m.Name=="MoveNext");
+        var switchOwner=switching.Fields.Single(f=>f.Name=="<>4__this");
+        var sectionGetter=switchMove.Body.Instructions.Single(i=>i.Operand is MethodReference m&&m.Name=="get_HomeLibrarySections");
+        var cleared=sectionGetter.Next;
+        if(cleared?.Operand is not MethodReference {Name:"Clear"})throw new InvalidOperationException("Missing profile home clear");
+        var profileIl=switchMove.Body.GetILProcessor();
+        var afterClear=cleared.Next;
+        profileIl.InsertBefore(afterClear,Instruction.Create(OpCodes.Ldarg_0));
+        profileIl.InsertBefore(afterClear,Instruction.Create(OpCodes.Ldfld,switchOwner));
+        profileIl.InsertBefore(afterClear,Instruction.Create(OpCodes.Ldstr,"home"));
+        profileIl.InsertBefore(afterClear,Instruction.Create(OpCodes.Stfld,page.Fields.Single(f=>f.Name=="_activeSnapshotKey")));
+        var afterSwitch=switchMove.Body.Instructions.Single(i=>i.OpCode==OpCodes.Stfld&&i.Previous?.OpCode==OpCodes.Ldc_I4_0&&i.Operand is FieldReference f&&f.Name=="_profileSwitchInProgress").Next;
+        profileIl.InsertBefore(afterSwitch,Instruction.Create(OpCodes.Ldarg_0));
+        profileIl.InsertBefore(afterSwitch,Instruction.Create(OpCodes.Ldfld,switchOwner));
+        profileIl.InsertBefore(afterSwitch,Instruction.Create(OpCodes.Call,Hook(switchMove,"ProfileHomeReady")));
+        Changed(switchMove);
+
+        // Cancel the pending single click before the existing double-click
+        // handler invokes fullscreen and potentially detaches its overlay.
+        var doubleTap=app.MainModule.Types.Single(t=>t.FullName=="EmbyDesktop.Controls.PlayerOverlay")
+            .Methods.Single(m=>m.Name=="RootGrid_DoubleTapped");
+        var cancelClick=helper.MainModule.Types.Single(t=>t.FullName=="Yingyu.Update.PlayerDesktopStyle")
+            .Methods.Single(m=>m.Name=="CancelClick");
+        var doubleIl=doubleTap.Body.GetILProcessor();
+        var start=doubleTap.Body.Instructions[0];
+        doubleIl.InsertBefore(start,Instruction.Create(OpCodes.Ldarg_0));
+        doubleIl.InsertBefore(start,Instruction.Create(OpCodes.Call,doubleTap.Module.ImportReference(cancelClick)));
+        Changed(doubleTap);
         // Use the existing combined playback/background ownership decision.
         var pause = helper.MainModule.Types.Single(t => t.FullName == "Yingyu.Update.AndroidCacheRuntime").Methods.Single(m => m.Name == "Pause");
         var isPaused = pause.DeclaringType.Methods.Single(m => m.Name == "get_IsPaused");

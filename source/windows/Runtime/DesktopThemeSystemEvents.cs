@@ -51,6 +51,11 @@ public sealed class DesktopThemeSystemEvents
         }
         return new(contrast, motion, back, fore);
     }
+    public bool IsDark(bool fallback)=>Optional("read-system-theme",()=>{
+        uint value=foreground();
+        // Windows foreground is light when the system's app theme is dark.
+        return 5*((value>>8)&255)+2*((value>>16)&255)+(value&255)>8*128;
+    },fallback);
     public bool Run(string stage, Action action)
     {
         try { action(); return true; }

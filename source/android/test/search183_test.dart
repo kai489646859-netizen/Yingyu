@@ -152,7 +152,7 @@ void main() {
       expect(api.session!.userId, 'user1');
       coordinator.dispose();
       await api.items(search: 'still live');
-      expect(seen.length, 16);
+      expect(seen.length, 4);
       api.close();
     },
   );
@@ -226,7 +226,7 @@ void main() {
       }
       await job;
       expect(peak, 3);
-      expect(calls, 15);
+      expect(calls, 5);
       expect(c.sources.last.error, '需要重新登录');
       c.dispose();
       api.close();
@@ -266,9 +266,6 @@ void main() {
       expect(c.sources.single.items.first.id, 'new');
       expect(c.sources.single.items.map((i) => i.id).toSet(), {
         'new',
-        'n',
-        'e',
-        'w',
       });
       c.dispose();
       api.close();

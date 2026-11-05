@@ -2,10 +2,10 @@
 
 ## Android
 
-Android 2.1.3 APK SHA-256:
+Android 2.2.4 APK SHA-256:
 
 ```text
-7a26d2d99ead5ce6f18277a28c5c703e24b691a8e3a0a6e6b4c3f0b2c93b2b25
+a22d47b83a6a6b0309b1b8f3dcf25337fb115e678e7327b10ae4e21ed85d59b2
 ```
 
 Signing-certificate SHA-256:
@@ -18,10 +18,10 @@ The release audit confirms the certificate matches the previous published applic
 
 ## Windows
 
-Windows 0.8.5 installer SHA-256:
+Windows 1.2.2 installer SHA-256:
 
 ```text
-ae7e5cff6cc0f10b835853f4d5004fbf463f05d1caf1ccc96ed5c7e159618770
+c5b0015ac8872f2a2a87123aee5c56852483aa4c20643dac559157090dc07278
 ```
 
 The current Windows installer is **not Authenticode-signed**. Windows may therefore show an unknown-publisher or reputation warning. Verify the SHA-256 against the Release before running it.

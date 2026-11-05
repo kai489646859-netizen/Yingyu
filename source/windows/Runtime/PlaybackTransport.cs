@@ -51,11 +51,12 @@ public static class PlaybackTransport
         var client = Access.Get<MpvClient?>(session, "_mpvClient");
         if (client == null) return;
         var state = States.GetValue(client, _ => new State(session));
+        KeepOpenCompletion.Bind(client);
         state.NewMedia();
         PlayerFeedback.Bind(session);
         PlaybackOutput.Configure(session, client);
         PlaybackTelemetry.Start(session, client);
-        // Keep the new renderer/decoder, but use the HTTP backend used by 0.8.5/6.
+        // Keep the new renderer/decoder, but use the HTTP backend used by 1.2.2/6.
         // curl takes unescaped URLs literally; FFmpeg normalizes them and retains
         // the existing 302/Range, proxy and HTTP-header behavior.
         int result = Native.Value.Set(Handle(client), "curl-enabled", "no");
@@ -87,7 +88,9 @@ public static class PlaybackTransport
     {
         if (!Access.Get<bool>(session, "_acceptPlaybackEvents") || (bool)session.GetType().GetProperty("_isClosing",
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!.GetValue(session)!) return;
+        PlayerDanmaku.Observe(session, e);
         PlaybackTelemetry.Notify(session, e);
+        KeepOpenCompletion.Notify(session, e);
         if(e.Id is MpvClientEventId.PlaybackRestart or MpvClientEventId.PositionChanged or MpvClientEventId.StateChanged)ColorDiagnostics.Capture(session,"property-change");
         SubtitleReliability.Notify(session, e);
         SubtitlePlacement.Notify(session,e);

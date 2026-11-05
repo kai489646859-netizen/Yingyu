@@ -25,9 +25,9 @@ public static class DesktopMaterial
                 brush.GradientStops.Add(new(){Offset=stop.Item1,Color=Color(Mix(stop.Item2,p.Accent,.065))});
             return brush;
         }
-        brush.GradientStops.Add(new(){Offset=0,Color=Color(Mix(0xFF151923,p.Accent,.12))});
-        brush.GradientStops.Add(new(){Offset=.48,Color=Color(Mix(0xFF151923,p.Accent,.025))});
-        brush.GradientStops.Add(new(){Offset=1,Color=Color(Mix(0xFF151923,p.Accent,.065))});
+        brush.GradientStops.Add(new(){Offset=0,Color=Color(Mix(0xFF151923,p.Accent,.17))});
+        brush.GradientStops.Add(new(){Offset=.48,Color=Color(Mix(0xFF151923,p.Accent,.085))});
+        brush.GradientStops.Add(new(){Offset=1,Color=Color(Mix(0xFF151923,p.Accent,.12))});
         return brush;
     }
     internal static uint Mix(uint background,uint foreground,double amount)

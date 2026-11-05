@@ -5,8 +5,8 @@
   <p>原文件播放 · 媒体库管理 · 多账号 · 观看进度 · 手机/平板/桌面适配</p>
   <p><a href="README_EN.md">English</a></p>
   <p>
-    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.1.3"><img src="https://img.shields.io/badge/Android-2.1.3-19A974?style=for-the-badge&logo=android" alt="Android 2.1.3"></a>
-    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.8.5"><img src="https://img.shields.io/badge/Windows-0.8.5-0078D4?style=for-the-badge&logo=windows11" alt="Windows 0.8.5"></a>
+    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.2.4"><img src="https://img.shields.io/badge/Android-2.2.4-19A974?style=for-the-badge&logo=android" alt="Android 2.2.4"></a>
+    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.2.2"><img src="https://img.shields.io/badge/Windows-1.2.2-0078D4?style=for-the-badge&logo=windows11" alt="Windows 1.2.2"></a>
     <a href="https://github.com/kai489646859-netizen/Yingyu/releases"><img src="https://img.shields.io/github/downloads/kai489646859-netizen/Yingyu/total?style=for-the-badge&logo=github&label=Downloads" alt="GitHub 下载量"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue?style=for-the-badge" alt="GPL-3.0"></a>
   </p>
@@ -21,8 +21,8 @@
 
 | 平台 | 当前公开版本 | 安装要求 | 下载 |
 | --- | --- | --- | --- |
-| Android | **2.1.3 / code242** | Android 8.0+ | [Android 2.1.3](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.1.3) |
-| Windows | **0.8.5** | Windows 10/11 x64 | [Windows 0.8.5](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.8.5) |
+| Android | **2.2.4 / code253** | Android 8.0+ | [Android 2.2.4](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.2.4) |
+| Windows | **1.2.2** | Windows 10/11 x64 | [Windows 1.2.2](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.2.2) |
 
 ## 主要功能
 
@@ -39,22 +39,23 @@
 
 ## 最新版本摘要
 
-### Android 2.1.3
+### Android 2.2.4
 
-- 支持影片多版本选择、跨已保存账号搜索、演员/作品关系检索、底栏拖动交互和可选人声增强。
-- 改善网络切换和可靠文件断流续读，修复部分 302/字幕签名地址、并发字幕缓存及异常资料响应问题。
-- 修复部分普通 50/60 帧影片长播后的追赶不足，并减少诊断、日志保存、系统查询和底层命令失败带来的资源开销。
-- 加强 HLS/DASH/RTSP 等媒体解析安全检查；保留已确认的 2× 基线及现有 3×、定位、字幕、HDR/杜比和原盘策略。
-- 2.1.3 修复大媒体库图片引用记录超过旧日志窗口或写入中断时可能误删仍在使用图片的问题；记录不完整时改为保守保留缓存。
+- 手机和平板选集菜单进一步适配；改善搜索相关性、本地优先结果、跨季连播和异常分集保护。
+- 电影、剧集和分集统一显示资源技术标签，保留实际资源版本选择，并以更简洁的分辨率、HDR/杜比等名称展示。
+- 播放器加入公开弹幕匹配、精选弹幕、显示区域/字号/速度/时间偏移设置与本地 XML 导入；弹幕只在媒体时间到达后从边缘入场。
+- 调整弹幕设置时，已经出现的弹幕继续沿原轨道离场；区域和精选设置只影响后续入场弹幕。
+- 2×、3× 弹幕采用单向时钟和平滑校正，避免迟到的位置回报造成前后跳动；真实定位仍独立重置，切回 1× 保持连续。
 
 完整累计变化见 [Android 更新历史](CHANGELOG-Android.md)。
 
-### Windows 0.8.5
+### Windows 1.2.2
 
-- 完成首页双图、桌面标题区、详情大图与滚动衔接、紧凑设置、深浅主题和海报间距等桌面布局调整。
-- 改善随机推荐、共享图片缓存、详情背景、缺图与 HTTP 415 图片兼容；首屏直接预留最终双图布局，内容加载后不再突然整体下移。
-- 0.8.5 修复首页双图延后挂载、标题约 2 DIP 跳动、确认框可能重复弹出，以及滚动过程中误打开详情。
-- 最终 1093 项运行/隔离检查与 2237 项静态包核对通过；一次隔离设置页底层退出未稳定复现、根因未确认，仍作为已知风险保留。
+- 完善“今日精选”轮播、首帧首页布局、账号切换后自动轮播、主题切换、海报点击与桌面启动恢复。
+- 播放器增加本地字幕导入、指定时间跳转、服务端缩略图预览、季度/整季连续选集和跨季自动衔接。
+- 控制栏按最终要求 3.5 秒隐藏；暂停/继续使用中央反馈，播放时显示暂停符号、暂停时显示播放符号。
+- 弹幕支持哔哩哔哩、腾讯视频和爱奇艺公开来源，增加精选、区域设置、倍速平滑、连续编号国漫补查及分集列表迟到后的自动重查。
+- 1.2.2 已通过编译、静态包与 12,646 个 IL 方法核对；真实 Emby 自动匹配、界面交互和长期播放仍以用户环境验证为准。
 
 完整累计变化见 [Windows 更新历史](CHANGELOG-Windows.md)。
 
@@ -62,17 +63,17 @@
 
 ### Android
 
-在 [Android 2.1.3 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.1.3) 下载 `Yingyu-2.1.3.apk`。从旧版升级时直接覆盖安装，**不要先卸载**，否则本机账号、设置和缓存可能丢失。
+在 [Android 2.2.4 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.2.4) 下载 `Yingyu-2.2.4.apk`。从旧版升级时直接覆盖安装，**不要先卸载**，否则本机账号、设置和缓存可能丢失。
 
 ### Windows
 
-在 [Windows 0.8.5 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v0.8.5) 下载 `Yingyu-Setup-x64-0.8.5.exe`。关闭正在运行的映屿后覆盖安装；安装程序沿用既有应用身份和目录，不要求卸载旧版或清空个人数据。
+在 [Windows 1.2.2 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.2.2) 下载 `Yingyu-Setup-x64-1.2.2.exe`。关闭正在运行的映屿后覆盖安装；安装程序沿用既有应用身份和目录，不要求卸载旧版或清空个人数据。
 
 每个发布页同时提供与二进制对应的源码归档、调试符号、SHA-256 校验文件，以及累计更新说明和验证边界。
 
 ```powershell
-Get-FileHash .\Yingyu-2.1.3.apk -Algorithm SHA256
-Get-FileHash .\Yingyu-Setup-x64-0.8.5.exe -Algorithm SHA256
+Get-FileHash .\Yingyu-2.2.4.apk -Algorithm SHA256
+Get-FileHash .\Yingyu-Setup-x64-1.2.2.exe -Algorithm SHA256
 ```
 
 ## 快速开始

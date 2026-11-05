@@ -8,18 +8,18 @@ import urllib.request
 
 
 REQUIRED = {
-    "android-v2.1.3": {
-        "Yingyu-2.1.3.apk",
-        "Yingyu-2.1.3-source.zip",
-        "Yingyu-2.1.3-symbols.zip",
-        "android-2.1.3.md",
-        "android-2.1.3-SHA256SUMS.txt",
+    "android-v2.2.4": {
+        "Yingyu-2.2.4.apk",
+        "Yingyu-2.2.4-source.zip",
+        "Yingyu-2.2.4-symbols.zip",
+        "android-2.2.4.md",
+        "android-2.2.4-SHA256SUMS.txt",
     },
-    "windows-v0.8.5": {
-        "Yingyu-Setup-x64-0.8.5.exe",
-        "Yingyu-0.8.5-source-and-symbols.zip",
-        "windows-0.8.5.md",
-        "windows-0.8.5-SHA256SUMS.txt",
+    "windows-v1.2.2": {
+        "Yingyu-Setup-x64-1.2.2.exe",
+        "Yingyu-1.2.2-source-and-symbols.zip",
+        "windows-1.2.2.md",
+        "windows-1.2.2-SHA256SUMS.txt",
     },
 }
 

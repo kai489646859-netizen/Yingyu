@@ -12,6 +12,8 @@ namespace Yingyu.Update;
 internal static class AndroidPlayerTools
 {
     static readonly ConditionalWeakTable<object, AudioState> Audio = new();
+    static readonly ConditionalWeakTable<object, PictureState> Pictures = new();
+    sealed class PictureState { internal int Generation; internal double Preset; }
     sealed class AudioState { internal int Generation; internal string? Written; internal int Mode; }
     internal static UIElement Build(object session, object overlay, UIElement original,bool subtitlesFirst=false)
         => new Menu(session, overlay, original,subtitlesFirst).Root;
@@ -22,23 +24,24 @@ internal static class AndroidPlayerTools
         readonly MpvClient client;
         readonly int generation;
         readonly FrameworkElement element;
-        readonly StackPanel body = new() { Spacing=2 };
-        readonly TextBlock title = new() { Text="播放器菜单",FontSize=18,TextWrapping=TextWrapping.Wrap };
+        readonly StackPanel body = new() { Spacing=8 };
+        readonly TextBlock title = new() { Text="播放器菜单",FontSize=14,TextWrapping=TextWrapping.Wrap };
         readonly TextBlock status = new() { FontSize=13,TextWrapping=TextWrapping.Wrap };
         readonly Button back = new() { Content="返回",Visibility=Visibility.Collapsed,MinWidth=64 };
         readonly List<(string Label,UIElement View)> pages = new();
         readonly List<UIElement> originalStatus = new();
-        internal Grid Root { get; } = new() { MinWidth=0,MaxWidth=292,RowSpacing=6,Margin=new(8) };
+        internal Grid Root { get; } = new() { MinWidth=0,MaxWidth=360,RowSpacing=10,Margin=new(0) };
         bool Current => client is {IsDisposed:false} && generation==Access.Get<int>(session,"_mediaGeneration")
             && ReferenceEquals(client,Access.Get<MpvClient?>(session,"_mpvClient"))
             && !(bool)session.GetType().GetProperty("_isClosing",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)!.GetValue(session)!;
         internal Menu(object session,object overlay,UIElement original,bool subtitlesFirst)
         {
             this.session=session;this.overlay=overlay;client=Access.Get<MpvClient>(session,"_mpvClient");generation=Access.Get<int>(session,"_mediaGeneration");element=(FrameworkElement)overlay;
-            Root.Width=Math.Max(1,Math.Min(276,element.ActualWidth-56));
+            Root.Width=Math.Max(1,Math.Min(336,element.ActualWidth-72));
+            Root.Height=Math.Max(1,Math.Min(480,element.ActualHeight-160));
             Root.RowDefinitions.Add(new(){Height=GridLength.Auto});Root.RowDefinitions.Add(new(){Height=new(1,GridUnitType.Star)});Root.RowDefinitions.Add(new(){Height=GridLength.Auto});
             var header=new StackPanel{Orientation=Orientation.Horizontal,Spacing=12};header.Children.Add(back);header.Children.Add(title);Root.Children.Add(header);
-            var scroll=new ScrollViewer{Content=body,MaxHeight=Math.Max(1,Math.Min(540,element.ActualHeight-170)),VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};Grid.SetRow(scroll,1);Root.Children.Add(scroll);
+            var scroll=new ScrollViewer{Content=body,MaxHeight=Math.Max(1,Math.Min(480,element.ActualHeight-190)),VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};Grid.SetRow(scroll,1);Root.Children.Add(scroll);
             var footer=new StackPanel{Spacing=6};footer.Children.Add(status);Grid.SetRow(footer,2);Root.Children.Add(footer);
             var source=new List<UIElement>();
             void Extract(UIElement view)
@@ -49,43 +52,74 @@ internal static class AndroidPlayerTools
                 else source.Add(view);
             }
             Extract(original);
-            var intro=Pane();var subtitles=Pane();var extras=Pane();var information=Pane();UIElement? position=null;
+            var intro=Pane();var subtitles=Pane();var extras=Pane();var windows=Pane();var information=Pane();UIElement? position=null;
             int section=0;
             foreach(var item in source)
             {
                 string text=item switch{Button b=>b.Content?.ToString()??"",NumberBox n=>n.Header?.ToString()??"",ComboBox c=>c.Header?.ToString()??"",TextBlock label=>label.Text,_=>""};
                 if(item is Expander e&&e.Header?.ToString()=="字幕位置"){position=e;e.IsExpanded=true;continue;}
                 if(item is NumberBox&&text.StartsWith("字幕",StringComparison.Ordinal))continue;
+                if(item is NumberBox skipNumber && (text.Contains("片头") || text.Contains("片尾")))
+                {
+                    intro.Children.Add(SkipTimeEditor.Build(skipNumber,text.Contains("片尾"),()=>
+                    {
+                        if(!Current)throw new InvalidOperationException("播放会话已改变，请重新打开菜单。");
+                        var raw=Read("time-pos");
+                        if(!double.TryParse(raw,NumberStyles.Float,CultureInfo.InvariantCulture,out double current)||!double.IsFinite(current)||current<0)
+                            current=Access.Get<double>(session,"_position");
+                        return (current,Access.Get<double>(session,"_duration"));
+                    },message=>status.Text=message));section=1;continue;
+                }
                 if(item is Button actionButton){StyleRow(actionButton);string category=text.Contains("字幕")?"desktop-subtitles":text.Contains("跳过")?"intro-save":text.Contains("定时")?"sleep":text.Contains("窗口")?"window":"desktop-action";actionButton.Click+=(_,_)=>PlaybackFeatureLog.Write(session,category,"requested");}
+                if(item is Button save && text=="记住本剧跳过时间")
+                {
+                    save.Content="保存片头片尾";
+                    save.HorizontalAlignment=HorizontalAlignment.Stretch;
+                    save.HorizontalContentAlignment=HorizontalAlignment.Center;
+                    save.MinHeight=42;
+                    save.FontWeight=Microsoft.UI.Text.FontWeights.SemiBold;
+                    save.Background=DesktopVisuals.Brush(0xFF5059BD);
+                    save.Foreground=DesktopVisuals.Brush(0xFFFFFFFF);
+                    save.Resources["ButtonBackgroundPointerOver"]=DesktopVisuals.Brush(0xFF5C66CF);
+                    save.Resources["ButtonBackgroundPressed"]=DesktopVisuals.Brush(0xFF414AA3);
+                    intro.Children.Add(save);
+                    section=1;
+                    continue;
+                }
                 if(item is TextBlock metadata&&text.StartsWith("播放信息",StringComparison.Ordinal))metadata.Text="片源信息（服务器提供）\n"+text;
                 if(text.Contains("片头")||text.Contains("片尾")||text.Contains("本剧"))section=1;
                 else if(text.Contains("睡眠")||text.Contains("定时")||text.Contains("窗口"))section=2;
                 else if(text.StartsWith("播放信息")||text.Contains("实时解码"))section=3;
                 if(item is TextBlock t&&string.IsNullOrEmpty(t.Text)){originalStatus.Add(item);continue;}
-                (section switch{0=>subtitles,1=>intro,2=>extras,_=>information}).Children.Add(item);
+                (text.Contains("窗口")?windows:section switch{0=>subtitles,1=>intro,2=>extras,_=>information}).Children.Add(item);
             }
             foreach(var item in originalStatus)footer.Children.Add(item);
             var outputFact=new TextBlock{TextWrapping=TextWrapping.Wrap};information.Children.Insert(0,outputFact);information.Loaded+=(_,_)=>{if(Current)outputFact.Text="当前播放方式："+MediaNotice.PlaybackMessage(session,NetworkBluray.MenuTitles(session).Count>0);};
             pages.Add(("片头片尾",intro));
             pages.Add(("章节选择",Chapters()));
-            pages.Add(("字幕延迟",Adjustment("sub-delay","_liveSubtitleDelay",-3600,3600,0.1,0,"字幕延迟（秒；正数晚出现）",new[]{-1d,-.1,.1,1})));
-            if(position!=null)pages.Add(("字幕位置",position));
-            pages.Add(("字幕大小",Adjustment("sub-scale","_liveSubtitleScale",.6,2,.1,1,"字幕大小（倍）",new[]{-.1,.1})));
+            pages.Add(("弹幕",PlayerDanmaku.Menu(session)));
+            subtitles.Children.Insert(0,Action("选择本地字幕文件…",()=>DesktopSubtitles.Pick(session)));
+            subtitles.Children.Insert(1,new TextBlock{Text="也可将字幕文件直接拖入播放画面",FontSize=12,TextWrapping=TextWrapping.Wrap});
+            subtitles.Children.Add(new Expander{Header="字幕延迟",HorizontalAlignment=HorizontalAlignment.Stretch,Content=Adjustment("sub-delay","_liveSubtitleDelay",-3600,3600,0.1,0,"字幕延迟（秒；正数晚出现）",new[]{-1d,-.1,.1,1})});
+            if(position!=null)subtitles.Children.Add(position);
+            subtitles.Children.Add(new Expander{Header="字幕大小",HorizontalAlignment=HorizontalAlignment.Stretch,Content=Adjustment("sub-scale","_liveSubtitleScale",.6,2,.1,1,"字幕大小（倍）",new[]{-.1,.1})});
             pages.Add(("画面明暗",Picture()));pages.Add(("音量均衡",Balance()));
             if(NetworkBluray.MenuTitles(session).Count>0)pages.Add(("原盘播放",Disc()));
-            if(subtitles.Children.Count>0)pages.Add(("外挂字幕",subtitles));
-            pages.Add(("定时与窗口",extras));
+            pages.Insert(0,("字幕",subtitles));
+            if(extras.Children.Count>0)pages.Add(("定时停止",extras));
+            if(windows.Children.Count>0)pages.Add(("窗口",windows));
+            pages.Add(("跳到指定时间",TimeJump()));
             back.Click+=(_,_)=>Home();Home();
             if(subtitlesFirst)
             {
-                var entry=pages.FirstOrDefault(p=>p.Label=="外挂字幕");
+                var entry=pages.FirstOrDefault(p=>p.Label=="字幕");
                 if(entry.View is not null){body.Children.Clear();title.Visibility=Visibility.Visible;title.Text=entry.Label;back.Visibility=Visibility.Visible;body.Children.Add(entry.View);}
             }
         }
         static StackPanel Pane()=>new(){Spacing=12};
         static void StyleRow(Button button)
         {
-            button.Background=DesktopVisuals.Brush(0);button.BorderThickness=new(0);button.CornerRadius=new(8);button.Padding=new(10,8,10,8);button.MinHeight=36;
+            button.Background=DesktopVisuals.Brush(0);button.BorderThickness=new(0);button.CornerRadius=new(5);button.Padding=new(10,8,10,8);button.MinHeight=34;button.FontSize=13;
             button.Resources["ButtonBackgroundPointerOver"]=DesktopVisuals.Brush(0xFF40444D);button.Resources["ButtonBackgroundPressed"]=DesktopVisuals.Brush(0xFF4C515D);
         }
         string Read(string key){if(!Current)throw new InvalidOperationException("播放会话已改变，请重新打开菜单。");return PlaybackTransport.Get(client,key);}
@@ -101,22 +135,43 @@ internal static class AndroidPlayerTools
             var button=new Button{Content=label,HorizontalAlignment=HorizontalAlignment.Stretch,HorizontalContentAlignment=HorizontalAlignment.Left};StyleRow(button);
             button.Click+=async(_,_)=>{if(!button.IsEnabled)return;button.IsEnabled=false;long began=Environment.TickCount64;string pane=title.Text switch{"章节选择"=>"chapters","字幕延迟"=>"subtitle-delay","字幕大小"=>"subtitle-size","字幕位置"=>"subtitle-position","原盘播放"=>"disc-list","画面明暗"=>"picture","音量均衡"=>"audio-balance",_=>"menu"};try{if(!Current)throw new InvalidOperationException("播放会话已改变。");PlaybackFeatureLog.Write(session,pane,"started");await action();PlaybackFeatureLog.Write(session,pane,"accepted",Environment.TickCount64-began);}catch(Exception e){status.Text=e is InvalidOperationException?e.Message:"操作未完成，请重新打开菜单。";PlaybackFeatureLog.Write(session,pane,"failed",Environment.TickCount64-began,e.GetType().Name);}finally{button.IsEnabled=Current;}};return button;
         }
-        void Home(){body.Children.Clear();status.Text="";title.Visibility=Visibility.Collapsed;back.Visibility=Visibility.Collapsed;
+        void Home()
+        {
+            body.Children.Clear();status.Text="";title.Visibility=Visibility.Visible;title.Text="播放设置";back.Visibility=Visibility.Collapsed;
             var statistics=Action("影视信息（实时统计）  ›",()=>{PlayerMenus.CloseTools(overlay);PlayerMediaInfo.Toggle(session);return Task.CompletedTask;});
             ToolTipService.SetToolTip(statistics,"点击显示或隐藏实时播放统计");body.Children.Add(statistics);
-            foreach(var page in pages){var entry=page;body.Children.Add(Action(entry.Label+"  ›",()=>{body.Children.Clear();title.Visibility=Visibility.Visible;title.Text=entry.Label;back.Visibility=Visibility.Visible;body.Children.Add(entry.View);return Task.CompletedTask;}));}}
+            var grid=new Grid{ColumnSpacing=8,RowSpacing=8};grid.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});grid.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});
+            int index=0;
+            foreach(var page in pages)
+            {
+                var entry=page;var button=Action(entry.Label,()=>{body.Children.Clear();title.Visibility=Visibility.Visible;title.Text=entry.Label;back.Visibility=Visibility.Visible;body.Children.Add(entry.View);return Task.CompletedTask;});
+                button.MinHeight=52;button.HorizontalContentAlignment=HorizontalAlignment.Center;button.Background=DesktopVisuals.Brush(0x15FFFFFF);
+                int row=index/2;if(row>=grid.RowDefinitions.Count)grid.RowDefinitions.Add(new(){Height=GridLength.Auto});Grid.SetRow(button,row);Grid.SetColumn(button,index++%2);grid.Children.Add(button);
+            }
+            body.Children.Add(grid);
+        }
         UIElement Adjustment(string property,string? field,double min,double max,double step,double reset,string caption,double[] deltas)
         {
             var pane=Pane();var value=new TextBlock{TextWrapping=TextWrapping.Wrap};pane.Children.Add(value);
             NumberBox? editor=null;bool painting=false;
             double Get(){if(!double.TryParse(Read(property),NumberStyles.Float,CultureInfo.InvariantCulture,out var n)||!double.IsFinite(n))throw new InvalidOperationException("等待轨道就绪后再调整。");return n;}
             void Set(double n){n=Math.Clamp(n,min,max);Write(property,n.ToString("0.###",CultureInfo.InvariantCulture),field==null);if(field!=null)Access.Set(session,field,n);value.Text=caption+"："+Get().ToString("0.##",CultureInfo.InvariantCulture);if(editor!=null){painting=true;try{editor.Value=Get();}finally{painting=false;}}}
-            foreach(double delta in deltas){double d=delta;pane.Children.Add(Action((d>0?"+":"")+d.ToString("0.##",CultureInfo.InvariantCulture),()=>{Set(Get()+d);return Task.CompletedTask;}));}
+            var steps=new Grid{ColumnSpacing=6};int stepColumn=0;
+            foreach(double delta in deltas){double d=delta;steps.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});var change=Action((d>0?"+":"")+d.ToString("0.##",CultureInfo.InvariantCulture),()=>{Set(Get()+d);return Task.CompletedTask;});change.MinWidth=0;change.Padding=new(4,6,4,6);change.HorizontalContentAlignment=HorizontalAlignment.Center;Grid.SetColumn(change,stepColumn++);steps.Children.Add(change);}pane.Children.Add(steps);
             pane.Children.Add(Action("恢复默认",()=>{Set(reset);return Task.CompletedTask;}));
             var number=new NumberBox{Header=caption,Minimum=min,Maximum=max,SmallChange=step,SpinButtonPlacementMode=NumberBoxSpinButtonPlacementMode.Inline};
             editor=number;
             try{number.Value=Get();value.Text=caption+"："+number.Value.ToString("0.##",CultureInfo.InvariantCulture);}catch(InvalidOperationException e){value.Text=e.Message;}
             number.ValueChanged+=(_,e)=>{if(painting||!double.IsFinite(e.NewValue))return;try{Set(e.NewValue);}catch(Exception error){status.Text=error.Message;PlaybackFeatureLog.Write(session,"set-"+property,"failed",null,error.GetType().Name);painting=true;try{if(Current)number.Value=Get();}catch(Exception){}finally{painting=false;}}};pane.Children.Add(number);return pane;
+        }
+        UIElement TimeJump()
+        {
+            var pane=Pane();var input=new TextBox{Header="时间（时:分:秒 或 分:秒）",PlaceholderText="01:23:45"};pane.Children.Add(input);
+            pane.Children.Add(Action("跳转",async()=>{
+                double duration=Access.Get<double>(session,"_duration");
+                if(!DesktopTime.TryParse(input.Text,out var seconds)||!double.IsFinite(duration)||duration<=0||seconds>duration)throw new InvalidOperationException("请输入影片时长内的有效时间。");
+                await (Task)Access.Call(session,"SeekAsync",seconds)!;status.Text="已请求定位到 "+PlayerInfoData.Clock(seconds);
+            }));return pane;
         }
         UIElement Chapters()
         {
@@ -131,30 +186,67 @@ internal static class AndroidPlayerTools
             }
             pane.Children.Add(Action("刷新章节",()=>{Refresh();return Task.CompletedTask;}));pane.Loaded+=(_,_)=>{try{Refresh();}catch(Exception){status.Text="章节未能读取，请刷新或重新打开菜单。";}};return pane;
         }
+        static void PaintChoice(Button button,string label,bool selected)
+        {
+            button.Content=selected?label+"  ·  当前":label;
+            button.FontWeight=selected?Microsoft.UI.Text.FontWeights.SemiBold:Microsoft.UI.Text.FontWeights.Normal;
+            button.Background=DesktopVisuals.Brush(selected?0xFF4B53A4:0x15FFFFFF);
+            button.Resources["ButtonBackgroundPointerOver"]=DesktopVisuals.Brush(selected?0xFF5660BD:0xFF40444D);
+            button.Resources["ButtonBackgroundPressed"]=DesktopVisuals.Brush(selected?0xFF444D99:0xFF4C515D);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button,label);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(button,selected?"当前选项":"");
+        }
         UIElement Picture()
         {
             var pane=Pane();pane.Children.Add(new TextBlock{Text="默认保留原始画面；以下调整仅在手动选择后应用于本次播放。",TextWrapping=TextWrapping.Wrap});
-            var buttons=new List<Button>();bool pending=false;
-            foreach(var option in new[]{(0d,"原始画面"),(5d,"轻度提亮"),(10d,"中度提亮"),(15d,"明显提亮")})
+            var choices=new List<(Button Button,double Value,string Label)>();bool pending=false;
+            void Refresh()
             {
-                var entry=option;var button=new Button{Content=entry.Item2,HorizontalAlignment=HorizontalAlignment.Stretch,HorizontalContentAlignment=HorizontalAlignment.Left,MinHeight=40};buttons.Add(button);pane.Children.Add(button);
+                double value=Pictures.TryGetValue(session,out var state)&&state.Generation==generation?state.Preset:0;
+                foreach(var choice in choices)PaintChoice(choice.Button,choice.Label,choice.Value==value);
+            }
+            foreach(var (value,label) in new[]{(0d,"原始画面"),(5d,"轻度提亮"),(10d,"中度提亮"),(15d,"明显提亮")})
+            {
+                var button=new Button{HorizontalAlignment=HorizontalAlignment.Stretch,HorizontalContentAlignment=HorizontalAlignment.Left};
+                StyleRow(button);button.MinHeight=40;
+                choices.Add((button,value,label));pane.Children.Add(button);
                 button.Click+=(_,_)=>{
-                    if(pending||!Current)return;pending=true;foreach(var choice in buttons)choice.IsEnabled=false;status.Text="正在应用画面明暗…";
+                    if(pending||!Current)return;pending=true;
+                    foreach(var choice in choices)choice.Button.IsEnabled=false;
+                    status.Text="正在应用画面明暗…";
                     PlaybackFeatureLog.Write(session,"picture","started");_ = Complete();
                     async Task Complete()
                     {
                         long began=Environment.TickCount64;Exception? failure=null;
-                        try{await PictureAdjustment.Apply(session,entry.Item1).ConfigureAwait(false);PlaybackFeatureLog.Write(session,"picture",Current?"accepted":"superseded",Environment.TickCount64-began);}
+                        try{await PictureAdjustment.Apply(session,value).ConfigureAwait(false);PlaybackFeatureLog.Write(session,"picture",Current?"accepted":"superseded",Environment.TickCount64-began);}
                         catch(Exception error){failure=error;PlaybackFeatureLog.Write(session,"picture","failed",Environment.TickCount64-began,error.GetType().Name);}
-                        finally{element.DispatcherQueue.TryEnqueue(()=>{pending=false;if(!Current)return;foreach(var choice in buttons)choice.IsEnabled=true;status.Text=failure==null?"画面明暗："+entry.Item2:failure is InvalidOperationException?failure.Message:"画面明暗未能应用，请重新打开菜单。";});}
+                        finally{element.DispatcherQueue.TryEnqueue(()=>{
+                            pending=false;if(!Current)return;
+                            if(failure==null){var confirmed=Pictures.GetOrCreateValue(session);confirmed.Generation=generation;confirmed.Preset=value;}
+                            foreach(var choice in choices)choice.Button.IsEnabled=true;
+                            Refresh();
+                            status.Text=failure==null?"画面明暗："+label:failure is InvalidOperationException?failure.Message:"画面明暗未能应用，请重新打开菜单。";
+                        });}
                     }
                 };
             }
+            Refresh();pane.Loaded+=(_,_)=>Refresh();
             return pane;
         }
         UIElement Balance()
         {
-            var pane=Pane();foreach(var option in new[]{(0,"原始声音"),(1,"轻柔均衡"),(2,"标准均衡"),(3,"夜间模式")}){var entry=option;pane.Children.Add(Action(entry.Item2,()=>{SetBalance(entry.Item1);status.Text="音量均衡："+entry.Item2;return Task.CompletedTask;}));}return pane;
+            var pane=Pane();var choices=new List<(Button Button,int Value,string Label)>();
+            void Refresh()
+            {
+                int mode=Audio.TryGetValue(session,out var state)&&state.Generation==generation?state.Mode:0;
+                foreach(var choice in choices)PaintChoice(choice.Button,choice.Label,choice.Value==mode);
+            }
+            foreach(var (mode,label) in new[]{(0,"原始声音"),(1,"轻柔均衡"),(2,"标准均衡"),(3,"夜间模式")})
+            {
+                var button=Action(label,()=>{SetBalance(mode);Refresh();status.Text="音量均衡："+label;return Task.CompletedTask;});
+                button.MinHeight=40;choices.Add((button,mode,label));pane.Children.Add(button);
+            }
+            Refresh();pane.Loaded+=(_,_)=>Refresh();return pane;
         }
         static List<string> Filters(string text)
         {

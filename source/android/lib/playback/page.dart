@@ -1,6 +1,6 @@
 import 'subtitle_size_menu.dart';
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -23,6 +23,10 @@ import 'episode_neighbors.dart';
 import 'episode_menu.dart';
 import 'info.dart';
 import 'feedback.dart';
+import 'danmaku_sources.dart';
+import 'danmaku_overlay.dart';
+import 'danmaku_settings.dart';
+import 'danmaku_preferences.dart';
 import 'episode_actions.dart';
 import 'intro_editor.dart';
 import 'episode_continuity.dart';
@@ -34,7 +38,6 @@ import 'opening_metadata.dart';
 import 'frame_rate_hint.dart';
 import 'subtitle_import.dart';
 import 'subtitle_search.dart';
-import '../core/interface_preferences.dart';
 import '../core/log.dart';
 
 class PlayerPage extends StatefulWidget {
@@ -46,6 +49,7 @@ class PlayerPage extends StatefulWidget {
     this.browse,
     this.allowNetwork,
     this.networkEvents,
+    this.createDanmakuSource,
   });
   final PlaybackSession Function() createSession;
   final bool fromBeginning;
@@ -55,6 +59,7 @@ class PlayerPage extends StatefulWidget {
 
   /// Injectable platform events for host tests; Android supplies the default.
   final Stream<dynamic>? networkEvents;
+  final DanmakuSources Function()? createDanmakuSource;
   @override
   State<PlayerPage> createState() => _PlayerPageState();
 }
@@ -64,6 +69,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   final menuAnchors = {
     for (final name in [
       'root',
+      'danmaku',
       'quality',
       'fit',
       'rate',
@@ -342,6 +348,101 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   String? overlay, operationError;
+  Timer? _transportFeedbackTimer;
+  IconData? _transportFeedback;
+  MediaItem? _danmakuEpisode;
+  bool _danmakuContinuous = false;
+  PlaybackSession? _danmakuMetadataOwner;
+  final _danmakuStatus = ValueNotifier<String>('等待播放就绪');
+
+  late DanmakuPreferences _danmakuPrefs = DanmakuPreferences.read(
+    session.store.prefs,
+  );
+  final _danmakuController = DanmakuOverlayController();
+  Timer? _danmakuSaveTimer;
+
+  void _changeDanmaku(DanmakuPreferences value) {
+    setState(() => _danmakuPrefs = value);
+    _danmakuSaveTimer?.cancel();
+    _danmakuSaveTimer = Timer(const Duration(milliseconds: 250), _saveDanmaku);
+  }
+
+  void _saveDanmaku() {
+    _danmakuSaveTimer?.cancel();
+    _danmakuSaveTimer = null;
+    unawaited(_danmakuPrefs.save(session.store.prefs));
+  }
+
+  Future<void> _importDanmaku(PlaybackSession owner) async {
+    try {
+      final document = await SubtitleImport.pick(danmaku: true);
+      if (document == null) return;
+      try {
+        final track = await DanmakuSources.localXml(
+          await File(document.path).readAsBytes(),
+        );
+        if (!mounted || session != owner || owner.closed || exiting) return;
+        if (track == null) throw const AppFailure('XML 文件没有可显示的弹幕');
+        _danmakuController.selectLocal(owner, track);
+        _danmakuStatus.value = '已加载本地 XML 弹幕';
+      } finally {
+        await document.close();
+      }
+    } catch (error) {
+      if (mounted && session == owner) _danmakuStatus.value = safeError(error);
+    }
+  }
+
+  Future<void> _showDanmakuSettings() async {
+    if (!mounted || locked || exiting) return;
+    final owner = session;
+    hideTimer?.cancel();
+    await showSurface<void>(
+      context,
+      playerMenu: true,
+      anchor: menuAnchor('danmaku'),
+      anchorProvider: () => mounted ? menuAnchor('danmaku') : null,
+      toggleAnchor: true,
+      (context) => Theme(
+        data: playerTheme(context),
+        child: DanmakuSettings(
+          initial: _danmakuPrefs,
+          status: _danmakuStatus,
+          controller: _danmakuController,
+          onChanged: (value) {
+            if (mounted &&
+                session == owner &&
+                !owner.closed &&
+                !exiting &&
+                owner.api.session == owner.account) {
+              _changeDanmaku(value);
+            }
+          },
+          onImport: () => _importDanmaku(owner),
+        ),
+      ),
+    );
+    if (mounted && session == owner && !exiting) {
+      if (_danmakuSaveTimer != null) _saveDanmaku();
+      scheduleHide();
+    }
+  }
+
+  Future<void> _doubleTapPlayback() async {
+    final owner = session;
+    await toggle();
+    if (!mounted || session != owner || locked || !_playbackInteractive) return;
+    _transportFeedbackTimer?.cancel();
+    setState(
+      () => _transportFeedback = owner.backend.snapshot.playing
+          ? Icons.pause_rounded
+          : Icons.play_arrow_rounded,
+    );
+    _transportFeedbackTimer = Timer(const Duration(milliseconds: 650), () {
+      if (mounted) setState(() => _transportFeedback = null);
+    });
+  }
+
   BoxFit fit = BoxFit.contain;
   MediaItem? selectedEpisode;
   EpisodeNeighbors neighbors = const EpisodeNeighbors();
@@ -356,48 +457,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String? neighborWarning, previousSyncWarning;
   EpisodeContinuity? continuity;
   OpeningMetadata? _openingMetadata;
-  OpeningMetadata? _nextPrepared;
-  String? _nextPreparedOwner;
-  bool _nextAttempted = false;
-  void prepareNext() {
-    final next = neighbors.next;
-    final enabled = InterfacePreferences(session.store.prefs).prepareNext;
-    final state = session.backend.snapshot;
-    final left = state.duration - session.position;
-    final valid =
-        enabled &&
-        !exiting &&
-        session.ready &&
-        !session.closed &&
-        !session.background &&
-        !session.seeking &&
-        session.error == null &&
-        session.api.session == session.account;
-    if (!valid ||
-        next == null ||
-        (_nextPrepared != null && _nextPrepared!.id != next.id) ||
-        _nextPreparedOwner != session.item.id && _nextPrepared != null) {
-      _nextPrepared?.cancel();
-      _nextPrepared = null;
-    }
-    if (_nextPreparedOwner != session.item.id) {
-      _nextAttempted = false;
-      _nextPreparedOwner = session.item.id;
-    }
-    if (valid &&
-        !switching &&
-        state.playing &&
-        !state.buffering &&
-        !_nextAttempted &&
-        next != null &&
-        left > Duration.zero &&
-        left <= const Duration(seconds: 5) &&
-        next.data['SeriesId'] == session.item.data['SeriesId']) {
-      _nextAttempted = true;
-      _nextPrepared = OpeningMetadata.prepare(session.api, next.id);
-    }
-  }
-
   late final episodeData = EpisodeMenuData(session.api, browse: widget.browse);
 
   Future<void> showEpisodes() async {
@@ -422,11 +481,30 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (widget.createSessionForItem == null) return;
     neighborsLoading = owner.item.type == 'Episode';
     try {
-      final value = await EpisodeNeighbors.load(owner.api, owner.item);
+      final value = await EpisodeNeighbors.load(
+        owner.api,
+        owner.currentMetadata,
+        browse: widget.browse,
+        allowed: () => mounted && session == owner && !owner.closed && !exiting,
+        onCurrent: (episode, continuous) {
+          if (!mounted ||
+              session != owner ||
+              owner.closed ||
+              exiting ||
+              owner.api.session != owner.account) {
+            return;
+          }
+          setState(() {
+            _danmakuMetadataOwner = owner;
+            _danmakuEpisode = episode;
+            _danmakuContinuous = continuous;
+          });
+        },
+      );
       if (mounted && session == owner && !owner.closed) {
         setState(() {
           neighbors = value;
-          neighborWarning = null;
+          neighborWarning = value.warning;
           neighborsLoading = false;
         });
       }
@@ -473,16 +551,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
     hideTimer?.cancel();
     _openingMetadata?.cancel();
-    final prepared = _nextPrepared;
-    _nextPrepared = null;
-    final usePrepared =
-        InterfacePreferences(session.store.prefs).prepareNext &&
-        prepared?.id == target.id &&
-        prepared?.account == session.account;
-    if (!usePrepared) prepared?.cancel();
-    final metadata = usePrepared
-        ? prepared!
-        : OpeningMetadata.begin(session.api, target.id);
+    final metadata = OpeningMetadata.begin(session.api, target.id);
     metadata.acceptIntent();
     _openingMetadata = metadata;
     try {
@@ -797,7 +866,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         readFps: backend.displaySourceFps,
       );
     }
-    prepareNext();
     if (_builtState != _pageState) {
       setState(() {});
     } else if (!locked && !boosted && controls) {
@@ -1067,11 +1135,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _transportFeedbackTimer?.cancel();
+    if (_danmakuSaveTimer != null) _saveDanmaku();
+    _danmakuStatus.dispose();
+    _danmakuController.dispose();
     _networkRecovery?.close();
     unawaited(_networkSubscription?.cancel());
     overlayHideTimer?.cancel();
     unawaited(_frameRateHints.close());
-    _nextPrepared?.cancel();
     _openingMetadata?.cancel();
     hideTimer?.cancel();
     _positionRefresh.dispose();
@@ -1123,6 +1194,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     setState(() => controls = true);
     if (chosen != null) {
       switch (chosen.pane) {
+        case 'danmaku':
+          await _showDanmakuSettings();
         case 'subtitleSize':
           await showSurface<void>(
             context,
@@ -1196,6 +1269,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final state = session.backend.snapshot;
     final backend = session.backend;
     final duration = state.duration;
+    final danmaku = _danmakuPrefs;
+    final createDanmakuSource = widget.createDanmakuSource;
+    final currentMetadata = session.currentMetadata;
+    final lateEpisode = identical(_danmakuMetadataOwner, session)
+        ? _danmakuEpisode
+        : null;
+    final danmakuItem = lateEpisode == null || lateEpisode.id != session.item.id
+        ? currentMetadata
+        : MediaItem({
+            ...currentMetadata.data,
+            for (final field in [
+              'SeriesName',
+              'ParentIndexNumber',
+              'IndexNumber',
+              'AbsoluteEpisodeNumber',
+              'RunTimeTicks',
+            ])
+              if (lateEpisode.data[field] != null)
+                field: lateEpisode.data[field],
+          });
     final speedFeedback = boosted && session.ready && session.error == null;
     final feedback =
         overlay ??
@@ -1276,6 +1369,33 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         key: Key('player-opening-cover'),
                         color: Colors.black,
                       ),
+                    if (createDanmakuSource != null &&
+                        danmaku.enabled &&
+                        foreground &&
+                        session.ready &&
+                        !session.loading &&
+                        !session.closed &&
+                        session.error == null &&
+                        !exiting &&
+                        !switching &&
+                        !retrying &&
+                        session.api.session == session.account)
+                      DanmakuOverlay(
+                        key: ValueKey((session, "danmaku")),
+                        createSource: createDanmakuSource,
+                        preferences: danmaku,
+                        controller: _danmakuController,
+                        session: session,
+                        identity: danmakuIdentity(
+                          danmakuItem,
+                          duration,
+                          continuous: lateEpisode != null && _danmakuContinuous,
+                        ),
+                        compatible: DanmakuSources.compatibleAddress(
+                          danmaku.compatible,
+                        ),
+                        status: _danmakuStatus,
+                      ),
                     GestureDetector(
                       key: const Key('player-touch-surface'),
                       behavior: locked
@@ -1294,7 +1414,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       },
                       onDoubleTap: locked || !_playbackInteractive
                           ? null
-                          : () => act(toggle),
+                          : () => act(_doubleTapPlayback),
                       onLongPressStart: (details) {
                         if (!locked &&
                             _playbackInteractive &&
@@ -1473,6 +1593,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                             : () {
                                 if (!locked) switchEpisode(neighbors.next!);
                               },
+                        onDanmakuSettings:
+                            createDanmakuSource != null &&
+                                {'Movie', 'Episode'}.contains(danmakuItem.type)
+                            ? _showDanmakuSettings
+                            : null,
+                        danmakuFeatured: danmaku.appearance.featured,
+                        onDanmakuFeatured: danmaku.enabled
+                            ? () {
+                                final look = _danmakuPrefs.appearance;
+                                _changeDanmaku(
+                                  _danmakuPrefs.copyWith(
+                                    appearance: look.update(
+                                      featured: !look.featured,
+                                    ),
+                                  ),
+                                );
+                                scheduleHide();
+                              }
+                            : null,
                         onInfo: showInfo,
                         onFit: toggleFit,
                         filled: fit == BoxFit.cover,
@@ -1619,6 +1758,22 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
+                    if (_transportFeedback != null &&
+                        !locked &&
+                        _playbackInteractive)
+                      IgnorePointer(
+                        child: Center(
+                          child: Icon(
+                            _transportFeedback,
+                            key: const Key('player-transport-feedback'),
+                            color: Colors.white,
+                            size: 56,
+                            shadows: const [
+                              Shadow(color: Colors.black87, blurRadius: 9),
+                            ],
+                          ),
+                        ),
+                      ),
                     if (feedback != null && !showingLevel)
                       IgnorePointer(
                         child: PlaybackFeedback(

@@ -209,6 +209,17 @@ class _PlayerMenuState extends State<PlayerMenu> {
                 )
               : null,
         ),
+        if (session.item.type == 'Movie' || session.item.type == 'Episode')
+          SettingsRow(
+            '弹幕',
+            icon: CupertinoIcons.bubble_left,
+            onTap: session.ready
+                ? () => Navigator.pop(
+                    context,
+                    const PlayerMenuChoice('danmaku', true),
+                  )
+                : null,
+          ),
         if (session.hasChapters) tile('chapters', CupertinoIcons.list_bullet),
         if (session.hasSubtitleDelay)
           tile('subtitleDelay', CupertinoIcons.time),

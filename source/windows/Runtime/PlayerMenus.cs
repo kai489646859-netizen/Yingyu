@@ -15,6 +15,11 @@ public static class PlayerMenus
     public static void Configure(object overlay) => States.GetValue(overlay, x => new State(x));
     internal static void BindEpisodes(object overlay, Flyout flyout)
     { Configure(overlay); States.GetValue(overlay, _ => throw new InvalidOperationException()).BindEpisodes(flyout); }
+    internal static void KeepEpisodePanelAtPointer(object overlay)
+    {
+        if (States.TryGetValue(overlay, out var state)) state.KeepEpisodePanelAtPointer();
+    }
+
     internal static void CloseTools(object overlay){if(States.TryGetValue(overlay,out var state))state.CloseTools();}
     public static async Task<ContentDialogResult> ShowTools(ContentDialog dialog, object session)
     {
@@ -54,11 +59,11 @@ public static class PlayerMenus
                 {
                     if (!flyout.IsOpen) flyout.ShowAt(button, new FlyoutShowOptions { ShowMode = FlyoutShowMode.Transient });
                 }, flyout.Hide);
-                if(name=="SubtitleTrack")flyout.Opened+=(_,_)=>
+                if(name=="SubtitleTrack")flyout.Opening+=(_,_)=>
                 {
                     var options=Access.Get<StackPanel>(_overlay,"SubtitleTrackOptionsPanel");
                     if(options.Children.OfType<Button>().Any(b=>b.Name=="SubtitleImportEntry"))return;
-                    var load=new Button{Name="SubtitleImportEntry",Content="加载／重试外挂字幕…",HorizontalAlignment=HorizontalAlignment.Stretch};
+                    var load=new Button{Name="SubtitleImportEntry",Content="字幕设置与外挂字幕…",HorizontalAlignment=HorizontalAlignment.Stretch};
                     load.Click+=(_,_)=>
                     {
                         flyout.Hide();_subtitleTools=true;
@@ -87,6 +92,26 @@ public static class PlayerMenus
             }
             else PlaybackTransport.Write("Warning", "Playback.Menu", "更多按钮暂未找到，保留原点击入口。 ");
             // Existing volume hover remains responsible for its own popup.
+            var next=Access.Get<Button>(_overlay,"NextButton");
+            if((VisualTreeHelper.GetParent(next)??next.Parent) is StackPanel transport)
+            {
+                var featured=new ToggleButton{Name="FeaturedDanmakuButton"};
+                DanmakuToolbarIcon.Configure(featured);
+                ToolTipService.SetToolTip(featured,"精品弹幕：过滤重复及低信息量弹幕，关闭后显示普通弹幕");
+                PlayerDanmaku.AttachFeatured(_overlay,featured);
+                var button=new Button{Name="DanmakuButton"};
+                DanmakuToolbarIcon.Configure(button);
+                ToolTipService.SetToolTip(button,"弹幕设置");Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button,"弹幕设置");
+                var panel=new StackPanel{Spacing=8,Width=360};
+                var scroll=new ScrollViewer{Content=panel,MaxHeight=480,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
+                var flyout=new Flyout{Content=scroll,Placement=FlyoutPlacementMode.TopEdgeAlignedLeft};
+                flyout.Opening+=(_,_)=>{panel.Width=Math.Max(180,Math.Min(360,_element.ActualWidth-72));panel.Children.Clear();panel.Children.Add(PlayerDanmaku.OverlayMenu(_overlay));scroll.Height=Math.Max(100,Math.Min(410,_element.ActualHeight-150));};
+                NativeDolby.Popup(_overlay,flyout);PlayerDesktopStyle.StyleTools(flyout);
+                void Open(){if(!flyout.IsOpen)flyout.ShowAt(button,new FlyoutShowOptions{ShowMode=FlyoutShowMode.Transient});}
+                button.Click+=(_,_)=>Open();
+                var menu=new Menu(this,button,Open,flyout.Hide);menu.Bind(flyout);_menus.Add(menu);
+                int after=transport.Children.IndexOf(next)+1;transport.Children.Insert(after,featured);transport.Children.Insert(after+1,button);
+            }
             Access.Get<Flyout>(_overlay, "VolumeFlyout").Opened += (_, _) => CloseOthers(null);
         }
         void CloseOthers(Menu? active)
@@ -94,6 +119,9 @@ public static class PlayerMenus
             foreach (var menu in _menus) if (menu != active) menu.Close();
             if (active != null) Access.Get<Flyout>(_overlay, "VolumeFlyout").Hide();
         }
+        internal void KeepEpisodePanelAtPointer()
+            => _menus.Single(m => m.Button.Name == "EpisodeDrawerButton").KeepAtPointer();
+
         internal void BindEpisodes(Flyout flyout)
         {
             Attach();
@@ -150,6 +178,7 @@ public static class PlayerMenus
             Action _close;
             readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _timer;
             bool _buttonHover, _panelHover;
+            Windows.Foundation.Point? _heldPointer;
             FrameworkElement? _panel;
             Flyout? _flyout;
             internal Button Button { get; }
@@ -163,9 +192,18 @@ public static class PlayerMenus
                 {
                     // ComboBox has a separate popup; allow its choices to be
                     // selected without closing the containing tools panel.
-                    if (_panel != null && Descendants(_panel).OfType<ComboBox>().Any(b => b.IsDropDownOpen))
+                    if (_panel != null && (Descendants(_panel).OfType<ComboBox>().Any(b => b.IsDropDownOpen)
+                        || Button.Name=="DanmakuButton" && Descendants(_panel).OfType<UIElement>().Any(e=>e.PointerCaptures is {Count:>0})))
                     { _timer.Start(); return; }
-                    if (!_buttonHover && !_panelHover) Close();
+                    if (_flyout?.IsOpen == true)
+                    {
+                        _buttonHover=PlayerMenuPointer.Contains(Button);
+                        _panelHover=PlayerMenuPointer.Contains(_panel);
+                    }
+                    if (_heldPointer is { } held && PlayerMenuPointer.ScreenPosition() != held)
+                        _heldPointer = null;
+                    if (!_buttonHover && !_panelHover && _heldPointer is null) Close();
+                    else _timer.Start();
                 };
                 button.PointerEntered += (_, e) =>
                 {
@@ -173,10 +211,19 @@ public static class PlayerMenus
                     _buttonHover = true; _timer.Stop();
                     _state.CloseOthers(this);
                     Access.Call(_state._overlay, "ShowControlsTemporarily");
-                    _open();
+                    if (_flyout?.IsOpen != true) _open();
+                    if (_flyout?.IsOpen == true) _timer.Start();
                 };
                 button.PointerExited += (_, _) => { _buttonHover = false; CloseSoon(); };
             }
+            // A layout change can move the panel away from a stationary cursor.
+            // Keep it open until the pointer actually moves again.
+            internal void KeepAtPointer()
+            {
+                if (PlayerMenuPointer.Contains(_panel))
+                    _heldPointer = PlayerMenuPointer.ScreenPosition();
+            }
+
             internal void Bind(Flyout flyout)
             {
                 Unbind();
@@ -202,7 +249,7 @@ public static class PlayerMenus
             }
             void Closed(object? sender, object args)
             {
-                _timer.Stop(); _panelHover = false; Untrack();
+                _timer.Stop(); _panelHover = false; _heldPointer = null; Untrack();
             }
             internal void Track(FrameworkElement panel)
             {
@@ -215,7 +262,7 @@ public static class PlayerMenus
                 if (_panel == null) return;
                 _panel.PointerEntered -= Enter; _panel.PointerExited -= Exit; _panel = null;
             }
-            void Enter(object sender, PointerRoutedEventArgs e) { _panelHover = true; _timer.Stop(); }
+            void Enter(object sender, PointerRoutedEventArgs e) { _panelHover = true; _timer.Start(); }
             void Exit(object sender, PointerRoutedEventArgs e)
             {
                 if (_panel != null)
@@ -225,8 +272,8 @@ public static class PlayerMenus
                 }
                 _panelHover = false; CloseSoon();
             }
-            internal void CloseSoon() { _timer.Stop(); if (!_buttonHover && !_panelHover) _timer.Start(); }
-            internal void Close() { _timer.Stop(); _panelHover = false; _close(); }
+            internal void CloseSoon() { _timer.Stop(); if (_flyout?.IsOpen == true || !_buttonHover && !_panelHover) _timer.Start(); }
+            internal void Close() { _timer.Stop(); _panelHover = false; _heldPointer = null; _close(); }
         }
     }
 }

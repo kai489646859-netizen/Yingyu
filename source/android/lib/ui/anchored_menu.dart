@@ -52,6 +52,7 @@ class AnchoredMenuButton<T> extends StatefulWidget {
     required this.id,
     required this.label,
     required this.items,
+    this.contentBuilder,
     required this.onSelected,
     this.enabled = true,
     this.icon = CupertinoIcons.chevron_forward,
@@ -72,6 +73,7 @@ class AnchoredMenuButton<T> extends StatefulWidget {
   });
   final String id, label;
   final List<PopupMenuEntry<T>> Function(BuildContext) items;
+  final WidgetBuilder? contentBuilder;
   final ValueChanged<T> onSelected;
   final bool enabled;
   final bool interactive;
@@ -169,6 +171,7 @@ class _AnchoredMenuButtonState<T> extends State<AnchoredMenuButton<T>>
           to: Navigator.of(context).context,
         ),
         entries: entries,
+        contentBuilder: widget.contentBuilder,
         initialValue: widget.initialValue,
         onDirection: (up) {
           if (!mounted || !opening || menu?.isActive != true) return;
@@ -276,6 +279,7 @@ class _AnchoredMenuRoute<T> extends PopupRoute<T> {
     required this.dismissLabel,
     required this.themes,
     required this.entries,
+    this.contentBuilder,
     this.initialValue,
     required this.onDirection,
   });
@@ -285,6 +289,7 @@ class _AnchoredMenuRoute<T> extends PopupRoute<T> {
   final String label, dismissLabel;
   final CapturedThemes themes;
   final List<PopupMenuEntry<T>> entries;
+  final WidgetBuilder? contentBuilder;
   final T? initialValue;
   final ValueChanged<bool> onDirection;
   final selectedKey = GlobalKey();
@@ -353,19 +358,21 @@ class _AnchoredMenuRoute<T> extends PopupRoute<T> {
                 surfaceTintColor: Colors.transparent,
                 borderRadius: BorderRadius.circular(12),
                 clipBehavior: Clip.antiAlias,
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: ListBody(
-                    children: [
-                      for (final entry in entries)
-                        if (initialValue != null &&
-                            entry.represents(initialValue))
-                          KeyedSubtree(key: selectedKey, child: entry)
-                        else
-                          entry,
-                    ],
-                  ),
-                ),
+                child: contentBuilder != null
+                    ? Builder(builder: contentBuilder!)
+                    : SingleChildScrollView(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: ListBody(
+                          children: [
+                            for (final entry in entries)
+                              if (initialValue != null &&
+                                  entry.represents(initialValue))
+                                KeyedSubtree(key: selectedKey, child: entry)
+                              else
+                                entry,
+                          ],
+                        ),
+                      ),
               ),
             ),
           ),

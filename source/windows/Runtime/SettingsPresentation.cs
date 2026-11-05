@@ -15,6 +15,11 @@ internal static class SettingsPresentation
     internal static void Apply(FrameworkElement page)
     {
         var p=ReferenceSurfaces.Palette(page);
+        // The retained XBF settings close button is unnamed and uses E711.
+        // Color that existing control without changing its handler or geometry.
+        if(Access.Get<object?>(page,"SettingsView") is Grid settings)
+            foreach(var close in UiElements.Descendants(settings).OfType<Button>().Where(b=>b.Content is FontIcon{Glyph:"\uE711"}))
+                close.Background=DesktopVisuals.Brush(DesktopCloseButton.Fill(p));
         if(Access.Get<object?>(page,"AlphabeticalLibraryNavigationToggle") is ToggleSwitch alphabetical){
             alphabetical.Visibility=Visibility.Collapsed;
             for(var parent=VisualTreeHelper.GetParent(alphabetical);parent!=null;parent=VisualTreeHelper.GetParent(parent))

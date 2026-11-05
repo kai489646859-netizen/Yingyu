@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -16,14 +16,15 @@ public static class PosterTap
         if(args.ClickedItem is not {} card||card.GetType().GetProperty("Item")==null||sender is not ItemsControl items||items.ContainerFromItem(card) is not FrameworkElement container)return false;
         return Queue(page,container,card,()=>Access.Call(page,"MediaGrid_ItemClick",sender,args));
     }
-    internal static bool Queue(object page,FrameworkElement container,object card,Action navigate)
+    internal static bool Queue(object page,FrameworkElement container,object card,Action navigate,FrameworkElement? positionAnchor=null)
     {
         var state=States.GetOrCreateValue(page);state.Pending?.Cancel();var pending=state.Pending=new CancellationTokenSource();
         string? scope=Access.Get<string?>(page,"_activeSnapshotKey"),profile=Access.Get<string?>(page,"_activeProfileId");
         bool library=Access.Get<Grid>(page,"LibraryView").Visibility==Visibility.Visible,detail=Access.Get<Grid>(page,"DetailView").Visibility==Visibility.Visible,settings=Access.Get<Grid>(page,"SettingsView").Visibility==Visibility.Visible;
         var existingPopups=page is FrameworkElement source&&source.XamlRoot!=null?VisualTreeHelper.GetOpenPopupsForXamlRoot(source.XamlRoot).Where(p=>p.IsOpen).ToHashSet():new HashSet<Popup>();
         // Reject a delayed tap if scrolling or layout moved its target meanwhile.
-        var origin=container.TransformToVisual((UIElement)page).TransformPoint(new(0,0));
+        var anchor=positionAnchor??container;
+        var origin=anchor.TransformToVisual((UIElement)page).TransformPoint(new(0,0));
         var scrolls=new List<(ScrollViewer Viewer,double X,double Y)>();
         EventHandler<ScrollViewerViewChangingEventArgs> onScroll=(_,_)=>pending.Cancel();
         for(DependencyObject? node=container;node!=null;node=VisualTreeHelper.GetParent(node))
@@ -32,15 +33,16 @@ public static class PosterTap
         async Task Run()
         {
             try{
-                await Task.Delay(PosterMotion.FeedbackMilliseconds+20,pending.Token);
-                if(pending.IsCancellationRequested||!ReferenceEquals(state.Pending,pending)||page is not FrameworkElement element||!element.IsLoaded||!container.IsLoaded
+                // Dispatch after the click event, while the press animation runs.
+                await Task.Yield();
+                if(pending.IsCancellationRequested||!ReferenceEquals(state.Pending,pending)||page is not FrameworkElement element||!element.IsLoaded||!container.IsLoaded||!anchor.IsLoaded
                     ||!ReferenceEquals(container.DataContext,card)&&!(container is ContentControl content&&ReferenceEquals(content.Content,card))
                     ||scope!=Access.Get<string?>(page,"_activeSnapshotKey")||profile!=Access.Get<string?>(page,"_activeProfileId")||DesktopScroll.IsAnimating(page)
                     ||(Access.Get<Grid>(page,"LibraryView").Visibility==Visibility.Visible)!=library||(Access.Get<Grid>(page,"SettingsView").Visibility==Visibility.Visible)!=settings
                     ||(Access.Get<Grid>(page,"DetailView").Visibility==Visibility.Visible)!=detail||VisualTreeHelper.GetOpenPopupsForXamlRoot(element.XamlRoot).Any(p=>p.IsOpen&&!existingPopups.Contains(p)))return;
                 // Composited transforms can lag behind scrolling or be offset by a layout change.
                 if(scrolls.Any(s=>Math.Abs(s.Viewer.HorizontalOffset-s.X)>4||Math.Abs(s.Viewer.VerticalOffset-s.Y)>4))return;
-                var position=container.TransformToVisual(element).TransformPoint(new(0,0));
+                var position=anchor.TransformToVisual(element).TransformPoint(new(0,0));
                 if(Math.Abs(position.X-origin.X)>4||Math.Abs(position.Y-origin.Y)>4)return;
                 state.Dispatching=true;try{navigate();}finally{state.Dispatching=false;}
             }catch(OperationCanceledException){}

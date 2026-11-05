@@ -132,13 +132,13 @@ void main() {
         expect(ids(), ['a', 'c', 'b', 'd']);
         await tester.enterText(find.byType(CupertinoSearchTextField), '电影');
         await settleOffline(tester);
-        expect(ids(), ['a', 'c', 'b', 'd']);
+        expect(ids(), ['a', 'b']);
         await pick('order:descending');
-        expect(ids(), ['b', 'c', 'a', 'd']);
+        expect(ids(), ['b', 'a']);
         await pick('sort:PremiereDate');
-        expect(ids(), ['c', 'a', 'b', 'd']);
+        expect(ids(), ['a', 'b']);
         await pick('order:ascending');
-        expect(ids(), ['b', 'a', 'c', 'd']);
+        expect(ids(), ['b', 'a']);
         expect(reads, 1);
         expect(
           repo

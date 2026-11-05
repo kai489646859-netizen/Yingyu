@@ -72,7 +72,7 @@ internal static class LogExport
                 }
                 if (files == 0) throw new FileNotFoundException("没有可导出的本地日志");
                 await using var info = new StreamWriter(zip.CreateEntry("诊断说明.txt", CompressionLevel.Fastest).Open(), new UTF8Encoding(false));
-                await info.WriteLineAsync($"映屿原始日志：测试版 0.8.5\n导出时间：{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}\n内容：{files}份本机原始格式日志，共{rows}行。\n完整读取最多十六份现有轮转文件，保留机器字段及调用栈，沿用软件原有敏感信息过滤；未转换为可视化摘要。\n每份文件按打开时长度导出，随后追加的记录可能在下次导出中出现。\n未读取账户配置或缓存，未请求服务器。\n操作请求与实际状态分别记录，未知值保留；日志线索不代表已完成实际功能验证。".AsMemory(), token).ConfigureAwait(false);
+                await info.WriteLineAsync($"映屿原始日志：测试版 1.2.2\n导出时间：{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}\n内容：{files}份本机原始格式日志，共{rows}行。\n完整读取最多十六份现有轮转文件，保留机器字段及调用栈，沿用软件原有敏感信息过滤；未转换为可视化摘要。\n每份文件按打开时长度导出，随后追加的记录可能在下次导出中出现。\n未读取账户配置或缓存，未请求服务器。\n操作请求与实际状态分别记录，未知值保留；日志线索不代表已完成实际功能验证。".AsMemory(), token).ConfigureAwait(false);
             }
             token.ThrowIfCancellationRequested();
             File.Move(temporary, destination, true);

@@ -227,7 +227,7 @@ void main() {
         }),
         MediaItem({'Id': 'd', 'Name': '斗破苍穹', 'Type': 'Series'}),
       ]);
-      expect(selectCatalog((data, '流地', null)).items.map((i) => i.id).toSet(), {
+      expect(selectCatalog((data, '流', null)).items.map((i) => i.id).toSet(), {
         'm',
         's',
       });
@@ -235,7 +235,7 @@ void main() {
       expect(
         selectFilteredCatalog((
           data,
-          '流地',
+          '流',
           null,
           const CatalogFilters(kind: CatalogKind.movie),
         )).items.single.id,
@@ -244,7 +244,7 @@ void main() {
     },
   );
   test(
-    'federated character queries retain user identity and later source results',
+    'federated complete keyword queries retain user identity and later source results',
     () async {
       final first = syntheticSession();
       final second = Session(
@@ -261,12 +261,12 @@ void main() {
           final q = r.url.queryParameters['SearchTerm'];
           return response(
             jsonEncode({
-              'Items': q == '地'
+              'Items': q == '流浪地球'
                   ? [
                       {'Id': 'same', 'Name': '流浪地球', 'Type': 'Movie'},
                     ]
                   : [],
-              'TotalRecordCount': q == '地' ? 1 : 0,
+              'TotalRecordCount': q == '流浪地球' ? 1 : 0,
             }),
             200,
           );
@@ -276,7 +276,7 @@ void main() {
         SavedAccount(first),
         SavedAccount(second),
       ]);
-      await c.search('流地');
+      await c.search('流浪地球');
       expect(c.sources.map((s) => s.items.single.id), ['same', 'same']);
       expect(users, {first.token, 'SECOND'});
       expect(api.session, isNull);

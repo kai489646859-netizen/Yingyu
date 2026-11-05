@@ -43,7 +43,10 @@ public static class PlayerDesktopStyle
         bool placingEpisodes,placingSubtitle;
         Flyout? episodeFlyout;
         bool pending;long lastDrag;UIElement? pointerRoot;
+        int clickRevision;
+        Windows.Foundation.Point tapPosition;
         [DllImport("user32.dll")]static extern uint GetDoubleClickTime();
+        [DllImport("user32.dll")]static extern int GetSystemMetrics(int index);
         public State(object overlay)
         {
             this.overlay=overlay;element=(FrameworkElement)overlay;
@@ -53,8 +56,13 @@ public static class PlayerDesktopStyle
             foreach(string name in new[]{"PositionSlider","VolumeSlider"}){var slider=Access.Get<Slider>(overlay,name);slider.Foreground=accentBrush;foreach(string key in new[]{"SliderTrackValueFill","SliderTrackValueFillPointerOver","SliderTrackValueFillPressed","SliderThumbBackground","SliderThumbBackgroundPointerOver","SliderThumbBackgroundPressed"})slider.Resources[key]=accentBrush;}
             var chrome=Access.Get<Grid>(overlay,"ChromeLayer");
             // Keep the original video-overlay gradients; no second opaque panel.
-            click=element.DispatcherQueue.CreateTimer();click.IsRepeating=false;click.Interval=TimeSpan.FromMilliseconds(Math.Clamp(GetDoubleClickTime(),200u,1000u));
-            click.Tick+=(_,_)=>CommitClick();
+            click=element.DispatcherQueue.CreateTimer();click.IsRepeating=false;click.Interval=TimeSpan.FromMilliseconds(GetDoubleClickTime()+32);
+            click.Tick+=(_,_)=>{
+                click.Stop();
+                int revision=clickRevision;
+                element.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                    ()=>{if(revision==clickRevision)CommitClick();});
+            };
             element.Loaded+=(_,_)=>{AttachInput();Apply();};element.SizeChanged+=(_,_)=>Apply();element.Unloaded+=(_,_)=>{Cancel();DetachInput();episodeFlyout?.Hide();};
             var episodes=Access.Get<Border>(overlay,"EpisodeDrawer");
             episodes.RegisterPropertyChangedCallback(UIElement.VisibilityProperty,(_,_)=>PlaceEpisodes());
@@ -71,12 +79,22 @@ public static class PlayerDesktopStyle
             }
             if(element.IsLoaded){AttachInput();Apply();}
         }
-        public void Cancel(){pending=false;click.Stop();}
+        public void Cancel(){pending=false;clickRevision++;click.Stop();}
         void CommitClick(){click.Stop();if(!pending)return;pending=false;try{if(element.IsLoaded&&element.XamlRoot!=null&&DesktopTheme.Options.VideoClickPause&&!VisualTreeHelper.GetOpenPopupsForXamlRoot(element.XamlRoot).Any(p=>p.IsOpen)&&!Access.Get<bool>(overlay,"_desktopDialogOpen")&&Access.Get<Border>(overlay,"EpisodeDrawer").Visibility!=Visibility.Visible)Access.Call(overlay,"PlayPauseButton_Click",Access.Get<Button>(overlay,"PlayPauseButton"),new RoutedEventArgs());}catch(Exception e){Warn(e);}}
-        void Double(object sender,DoubleTappedRoutedEventArgs e)=>Cancel();
+        void Press(object sender,PointerRoutedEventArgs e)
+        {
+            if(!pending||element.XamlRoot is not {} root)return;
+            var point=e.GetCurrentPoint(element);
+            if(e.Pointer.PointerDeviceType==Microsoft.UI.Input.PointerDeviceType.Mouse&&!point.Properties.IsLeftButtonPressed)return;
+            // The second press can arrive while the release is still pending.
+            // Clear the queued single tap before the double tap toggles fullscreen.
+            double radiusX=Math.Max(4,GetSystemMetrics(36)/root.RasterizationScale);
+            double radiusY=Math.Max(4,GetSystemMetrics(37)/root.RasterizationScale);
+            if(Math.Abs(point.Position.X-tapPosition.X)<=radiusX&&Math.Abs(point.Position.Y-tapPosition.Y)<=radiusY)Cancel();
+        }
         void Key(object sender,KeyRoutedEventArgs e)=>Cancel();
-        void AttachInput(){DetachInput();DependencyObject root=element;while(VisualTreeHelper.GetParent(root) is {} parent)root=parent;pointerRoot=root as UIElement??element;pointerRoot.AddHandler(UIElement.TappedEvent,new TappedEventHandler(Tap),true);pointerRoot.AddHandler(UIElement.DoubleTappedEvent,new DoubleTappedEventHandler(Double),true);pointerRoot.PreviewKeyDown+=Key;}
-        void DetachInput(){if(pointerRoot==null)return;pointerRoot.RemoveHandler(UIElement.TappedEvent,new TappedEventHandler(Tap));pointerRoot.RemoveHandler(UIElement.DoubleTappedEvent,new DoubleTappedEventHandler(Double));pointerRoot.PreviewKeyDown-=Key;pointerRoot=null;}
+        void AttachInput(){DetachInput();DependencyObject root=element;while(VisualTreeHelper.GetParent(root) is {} parent)root=parent;pointerRoot=root as UIElement??element;pointerRoot.AddHandler(UIElement.TappedEvent,new TappedEventHandler(Tap),true);pointerRoot.AddHandler(UIElement.PointerPressedEvent,new PointerEventHandler(Press),true);pointerRoot.PreviewKeyDown+=Key;}
+        void DetachInput(){if(pointerRoot==null)return;pointerRoot.RemoveHandler(UIElement.TappedEvent,new TappedEventHandler(Tap));pointerRoot.RemoveHandler(UIElement.PointerPressedEvent,new PointerEventHandler(Press));pointerRoot.PreviewKeyDown-=Key;pointerRoot=null;}
         void Tap(object sender,TappedRoutedEventArgs e)
         {
             if(e.Handled||!DesktopTheme.Options.VideoClickPause||Environment.TickCount64-lastDrag<350)return;
@@ -85,7 +103,7 @@ public static class PlayerDesktopStyle
             for(DependencyObject? node=e.OriginalSource as DependencyObject;node!=null&&!ReferenceEquals(node,element);node=VisualTreeHelper.GetParent(node))
                 if(node is ButtonBase or Slider or TextBox or PasswordBox or ComboBox or NumberBox||node is FrameworkElement{Name:"TitleText"})return;
             if(VisualTreeHelper.GetOpenPopupsForXamlRoot(element.XamlRoot).Any(p=>p.IsOpen)||Access.Get<Border>(overlay,"EpisodeDrawer").Visibility==Visibility.Visible)return;
-            pending=true;click.Stop();click.Start();e.Handled=true;
+            tapPosition=point;pending=true;clickRevision++;click.Stop();click.Start();e.Handled=true;
         }
         public void Apply()
         {
@@ -96,6 +114,7 @@ public static class PlayerDesktopStyle
                 var position=Access.Get<Slider>(overlay,"PositionSlider");position.Foreground=accentBrush;
                 foreach(var slider in new[]{position,Access.Get<Slider>(overlay,"VolumeSlider")})foreach(string key in new[]{"SliderTrackValueFill","SliderTrackValueFillPointerOver","SliderTrackValueFillPressed","SliderThumbBackground","SliderThumbBackgroundPointerOver","SliderThumbBackgroundPressed"})slider.Resources[key]=accentBrush;
                 foreach(var button in UiElements.Descendants(Access.Get<Grid>(overlay,"ChromeLayer")).OfType<Button>()){
+                    if(button.Name=="DanmakuButton")continue;
                     bool transport=button.Name is "PlayPauseButton" or "PreviousButton" or "NextButton";
                     button.Background=DesktopVisuals.Brush(transport?0xFF34373E:0x00000000);button.Foreground=DesktopVisuals.Brush(p.Text);button.MinHeight=transport?42:36;button.Height=transport?42:36;button.CornerRadius=new(transport?21:9);button.Padding=new(transport?8:10,6,transport?8:10,6);
                     if(button.Name=="PlayerMediaInfoButton"){button.Padding=new(6);button.HorizontalContentAlignment=HorizontalAlignment.Center;button.VerticalContentAlignment=VerticalAlignment.Center;}
@@ -106,10 +125,10 @@ public static class PlayerDesktopStyle
                         button.Template=HoverButtonTemplate;
                 }
                 var drawer=Access.Get<Border>(overlay,"EpisodeDrawer");drawer.Background=episodeFlyout==null?DesktopMaterial.Surface(options,p,true):DesktopVisuals.Brush(0);drawer.CornerRadius=new(16);
-                if(episodeFlyout!=null)episodeFlyout.FlyoutPresenterStyle=Presenter(options,p);
+                if(episodeFlyout!=null)episodeFlyout.FlyoutPresenterStyle=PanelPresenter(options,p);
                 PlaceSubtitle();PlaceEpisodes();
                 foreach(string name in new[]{"AudioTrack","SubtitleTrack","Speed","Volume"}){
-                    var flyout=Access.Get<Flyout>(overlay,name+"Flyout");flyout.FlyoutPresenterStyle=Presenter(options,p);
+                    var flyout=Access.Get<Flyout>(overlay,name+"Flyout");flyout.FlyoutPresenterStyle=PanelPresenter(options,p);
                     if(flyout.Content is Panel list){flyout.Content=null;flyout.Content=new ScrollViewer{Content=list,MaxHeight=Math.Max(160,Math.Min(520,element.ActualHeight-100)),VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};}
                 }
                 // Statistics remain available in More; remove the duplicate toolbar entry.
@@ -153,7 +172,8 @@ public static class PlayerDesktopStyle
                     if(VisualTreeHelper.GetParent(drawer) is not Panel old)return;
                     old.Children.Remove(drawer);
                     var reference=Access.Get<Flyout>(overlay,"AudioTrackFlyout");
-                    episodeFlyout=new Flyout{Content=drawer,Placement=reference.Placement,ShouldConstrainToRootBounds=reference.ShouldConstrainToRootBounds,ShowMode=reference.ShowMode,FlyoutPresenterStyle=Presenter(DesktopTheme.Options,DesktopThemePalette.Resolve(DesktopTheme.Options,true))};
+                    episodeFlyout=new Flyout{Content=drawer,Placement=reference.Placement,ShouldConstrainToRootBounds=reference.ShouldConstrainToRootBounds,ShowMode=reference.ShowMode,FlyoutPresenterStyle=PanelPresenter(DesktopTheme.Options,DesktopThemePalette.Resolve(DesktopTheme.Options,true))};
+                    PlayerSeasonPanel.Attach(overlay,drawer,episodeFlyout);
                     PlayerMenus.BindEpisodes(overlay,episodeFlyout);
                     episodeFlyout.Closed+=(_,_)=>{
                         try{if(drawer.Visibility==Visibility.Visible)Access.Call(overlay,"CloseEpisodeDrawer");}
@@ -161,16 +181,18 @@ public static class PlayerDesktopStyle
                     };
                 }
                 double width=Math.Min(292,Math.Max(1,element.ActualWidth-32));
-                drawer.MinWidth=0;drawer.MaxWidth=width;drawer.Width=width;drawer.Height=double.NaN;
+                drawer.MinWidth=0;drawer.MaxWidth=width;drawer.Width=width;
                 drawer.HorizontalAlignment=HorizontalAlignment.Stretch;drawer.VerticalAlignment=VerticalAlignment.Stretch;
-                drawer.MaxHeight=Math.Max(120,Math.Min(620,element.ActualHeight-100));drawer.Margin=new(0);drawer.BorderThickness=new(0);drawer.Background=DesktopVisuals.Brush(0);
-                var episodes=Access.Get<GridView>(overlay,"EpisodeGrid");episodes.MaxHeight=Math.Max(44,drawer.MaxHeight-96);
+                PlayerSeasonPanel.SizeDrawer(overlay);
+                drawer.Margin=new(0);drawer.BorderThickness=new(0);drawer.Background=DesktopVisuals.Brush(0);
+                var episodes=Access.Get<GridView>(overlay,"EpisodeGrid");episodes.MaxHeight=Math.Min(PlayerSeasonPanel.OriginalViewportHeight,Math.Max(44,drawer.MaxHeight-116));
                 ScrollViewer.SetHorizontalScrollBarVisibility(episodes,ScrollBarVisibility.Disabled);
                 if(!episodeFlyout.IsOpen)episodeFlyout.ShowAt(button,new FlyoutShowOptions{ShowMode=FlyoutShowMode.Transient});
             }
             finally{placingEpisodes=false;}
         }
-        internal static Style Presenter(DesktopThemeOptions options,DesktopThemePalette p){var style=new Style(typeof(FlyoutPresenter));style.Setters.Add(new Setter(Control.BackgroundProperty,DesktopMaterial.Surface(options,p,true)));style.Setters.Add(new Setter(Control.ForegroundProperty,DesktopVisuals.Brush(p.Text)));style.Setters.Add(new Setter(Control.BorderBrushProperty,DesktopVisuals.Brush(0)));style.Setters.Add(new Setter(Control.BorderThicknessProperty,new Thickness(0)));style.Setters.Add(new Setter(Control.PaddingProperty,new Thickness(4)));style.Setters.Add(new Setter(Control.CornerRadiusProperty,new CornerRadius(14)));return style;}
+        internal static Style Presenter(DesktopThemeOptions options,DesktopThemePalette p){var style=new Style(typeof(FlyoutPresenter));style.Setters.Add(new Setter(Control.BackgroundProperty,DesktopVisuals.Brush(0xF024252A)));style.Setters.Add(new Setter(Control.ForegroundProperty,DesktopVisuals.Brush(p.Text)));style.Setters.Add(new Setter(Control.BorderBrushProperty,DesktopVisuals.Brush(0x334F5158)));style.Setters.Add(new Setter(Control.BorderThicknessProperty,new Thickness(1)));style.Setters.Add(new Setter(Control.PaddingProperty,new Thickness(12)));style.Setters.Add(new Setter(Control.CornerRadiusProperty,new CornerRadius(8)));return style;}
+        static Style PanelPresenter(DesktopThemeOptions options,DesktopThemePalette p){var style=new Style(typeof(FlyoutPresenter));style.Setters.Add(new Setter(Control.BackgroundProperty,DesktopMaterial.Surface(options,p,true)));style.Setters.Add(new Setter(Control.ForegroundProperty,DesktopVisuals.Brush(p.Text)));style.Setters.Add(new Setter(Control.BorderBrushProperty,DesktopVisuals.Brush(0)));style.Setters.Add(new Setter(Control.BorderThicknessProperty,new Thickness(0)));style.Setters.Add(new Setter(Control.PaddingProperty,new Thickness(4)));style.Setters.Add(new Setter(Control.CornerRadiusProperty,new CornerRadius(14)));return style;}
         static readonly ControlTemplate HoverButtonTemplate=(ControlTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load("""
             <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
               <Grid Background="Transparent"><ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" Foreground="{TemplateBinding Foreground}" Padding="{TemplateBinding Padding}" HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" /></Grid>

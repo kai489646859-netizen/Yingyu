@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../core/models.dart';
+import '../core/video_labels.dart';
 import '../core/accounts.dart';
 import '../ui/style.dart';
 import '../ui/surface.dart';
@@ -148,6 +149,12 @@ class _PlaybackInfoPageState extends State<PlaybackInfoPage> {
                   '视频编码（服务器标注）',
                   subtitle: safeError('${video!['Codec']}'),
                 ),
+              SettingsRow(
+                '视频格式（服务器标注）',
+                subtitle: videoRangeLabel(video ?? {}).isEmpty
+                    ? '未提供'
+                    : videoRangeLabel(video ?? {}),
+              ),
               if (integer(video?['BitRate']) > 0)
                 SettingsRow(
                   '视频码率（服务器标注）',
@@ -243,6 +250,20 @@ class _PlaybackInfoPageState extends State<PlaybackInfoPage> {
                     SettingsRow(
                       '视频码率（当前估算）',
                       subtitle: bitrate(current['video-bitrate']),
+                    ),
+                    SettingsRow(
+                      '视频格式（内核识别）',
+                      subtitle: switch (detectVideoRange(
+                        current.values,
+                        current['current-tracks/video/dolby-vision-profile'] ??
+                            '',
+                      )) {
+                        DetectedVideoRange.dolby => '杜比视界',
+                        DetectedVideoRange.hdr10 => 'HDR10',
+                        DetectedVideoRange.hlg => 'HLG',
+                        DetectedVideoRange.sdr => 'SDR',
+                        DetectedVideoRange.unknown => '未确认',
+                      },
                     ),
                     SettingsRow(
                       '当前视频尺寸',

@@ -316,28 +316,13 @@ class _SettingsPageState extends State<SettingsPage> {
               onTap: () => change(
                 () => widget.store.setAutoNext(!widget.store.autoNext),
               ),
-              subtitle: '本集最后 5 秒提示，可取消；播完后衔接下一集，不预取媒体',
+              subtitle: '先用本地目录，缺失时查询服务器；支持跨季，不提前读取下一集影片',
               icon: CupertinoIcons.forward_end,
               trailing: CupertinoSwitch(
                 value: widget.store.autoNext,
                 activeTrackColor: accentColor(context),
                 onChanged: (value) =>
                     change(() => widget.store.setAutoNext(value)),
-              ),
-            ),
-            SettingsRow(
-              '下一集准备',
-              key: const Key('prepare-next'),
-              icon: CupertinoIcons.forward_end,
-              subtitle: '提前准备下一集资料；关闭后沿用原换集方式',
-              onTap: () => change(
-                () => preferences.setPrepareNext(!preferences.prepareNext),
-              ),
-              trailing: CupertinoSwitch(
-                activeTrackColor: accentColor(context),
-                value: preferences.prepareNext,
-                onChanged: (value) =>
-                    change(() => preferences.setPrepareNext(value)),
               ),
             ),
             SettingsRow(

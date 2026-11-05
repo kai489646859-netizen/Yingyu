@@ -128,7 +128,13 @@ void main() {
           final rail = find.byType(MediaVersions);
           await tester.ensureVisible(rail);
           await tester.pumpAndSettle();
-          expect(find.text('影片版本'), findsOneWidget);
+          expect(find.text('资源版本'), findsOneWidget);
+          expect(
+            tester
+                .widget<Text>(find.byKey(const Key('selected-version-summary')))
+                .data,
+            allOf(contains('4K'), contains('杜比')),
+          );
           expect(
             tester.getTopLeft(rail).dy,
             greaterThan(
@@ -141,6 +147,12 @@ void main() {
           await tester.tap(card);
           await tester.pumpAndSettle();
           expect(tester.widget<MediaVersions>(rail).selected, 'sdr');
+          expect(
+            tester
+                .widget<Text>(find.byKey(const Key('selected-version-summary')))
+                .data,
+            allOf(contains('1080p'), isNot(contains('杜比'))),
+          );
           await captureOffline(
             tester,
             boundary,

@@ -6,6 +6,16 @@ namespace Yingyu.Update;
 
 public static class EpisodeLabels
 {
+    public static string Number(EmbyItem item, int ordinal)
+        => (item.IndexNumber is >= 0 ? item.IndexNumber.Value : ordinal).ToString();
+
+    public static string Range(string first, string last, int start, int count)
+    {
+        if (int.TryParse(first, out int from) && int.TryParse(last, out int to) && (long)to - from == count - 1)
+            return count == 1 ? first : $"{first}–{last}";
+        return count == 1 ? (start + 1).ToString() : $"{start + 1}–{start + count}";
+    }
+
     public static string Display(EmbyItem item)
     {
         ArgumentNullException.ThrowIfNull(item);

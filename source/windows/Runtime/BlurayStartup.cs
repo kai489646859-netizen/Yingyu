@@ -55,6 +55,7 @@ public static class BlurayStartup
     // MPV owns DataPtr and may invalidate it on the next wait_event call.
     public static bool IgnoreControlEnd(MpvClient client, MpvEvent value)
     {
+        KeepOpenCompletion.NativeEvent(client, value);
         PictureAdjustment.Notify(client,value);
         if(ColorPropertyReader.Notify(client,value))return true;
         if (value.EventId != MpvEventId.EndFile || value.Error != MpvError.Success

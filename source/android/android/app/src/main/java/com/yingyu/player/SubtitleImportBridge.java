@@ -26,6 +26,7 @@ final class SubtitleImportBridge {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Set<File> owned = new HashSet<>();
     private MethodChannel.Result pending;
+    private boolean pickingDanmaku;
     private volatile boolean destroyed;
     private volatile Closeable input;
 
@@ -36,7 +37,9 @@ final class SubtitleImportBridge {
             try {
                 switch (call.method) {
                     case "pick":
+                    case "pickDanmaku":
                         if (pending != null) { result.error("busy", "已有字幕正在导入", null); return; }
+                        pickingDanmaku = call.method.equals("pickDanmaku");
                         pending = result;
                         activity.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
                             .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), REQUEST);
@@ -60,6 +63,8 @@ final class SubtitleImportBridge {
         if (resultCode != Activity.RESULT_OK || uri == null) {
             MethodChannel.Result reply = pending; pending = null; reply.success(null); return;
         }
+        final boolean danmaku = pickingDanmaku;
+        final long maxBytes = danmaku ? 4L * 1024 * 1024 : SubtitleCopy.MAX;
         worker.execute(() -> {
             File file = null;
             HashMap<String, Object> value = null;
@@ -74,17 +79,17 @@ final class SubtitleImportBridge {
                         if (s >= 0 && !cursor.isNull(s)) size = cursor.getLong(s);
                     }
                 }
-                if (destroyed || name == null || size > SubtitleCopy.MAX) throw new java.io.IOException("Invalid size");
+                if (destroyed || name == null || size > maxBytes) throw new java.io.IOException("Invalid size");
                 int dot = name.lastIndexOf('.');
                 String extension = dot < 0 ? "" : name.substring(dot + 1).toLowerCase(Locale.ROOT);
-                if (!(extension.equals("srt") || extension.equals("ass") || extension.equals("ssa") || extension.equals("vtt") || extension.equals("sup"))) throw new java.io.IOException("Unsupported subtitle");
+                if (danmaku ? !extension.equals("xml") : !(extension.equals("srt") || extension.equals("ass") || extension.equals("ssa") || extension.equals("vtt") || extension.equals("sup"))) throw new java.io.IOException("Unsupported subtitle");
                 file = File.createTempFile("yingyu-import-subtitle-", "." + extension, activity.getCacheDir()).getCanonicalFile();
                 try (InputStream in = activity.getContentResolver().openInputStream(uri);
                      FileOutputStream out = new FileOutputStream(file)) {
                     if (in == null) throw new java.io.IOException("No readable document");
                     input = in;
                     if (destroyed) throw new java.io.IOException("Cancelled");
-                    SubtitleCopy.copy(in, out, SubtitleCopy.MAX);
+                    SubtitleCopy.copy(in, out, maxBytes);
                 } finally { input = null; }
                 if (destroyed) throw new java.io.IOException("Cancelled");
                 value = new HashMap<>();
@@ -99,7 +104,7 @@ final class SubtitleImportBridge {
             activity.runOnUiThread(() -> {
                 MethodChannel.Result reply = pending; pending = null;
                 if (destroyed || reply == null) { if (selected != null) selected.delete(); return; }
-                if (result == null) reply.error("read", "未能导入字幕，请选择不超过 64 MiB 的 SRT、ASS、SSA、VTT 或 SUP 文件", null);
+                if (result == null) reply.error("read", danmaku ? "请选择不超过 4 MiB 的 XML 弹幕文件" : "未能导入字幕，请选择不超过 64 MiB 的 SRT、ASS、SSA、VTT 或 SUP 文件", null);
                 else { owned.add(selected); reply.success(result); }
             });
         });

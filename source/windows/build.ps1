@@ -2,7 +2,7 @@ $ErrorActionPreference='Stop'
 $taskRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $taskDotnet=if($env:YINGYU_DOTNET){$env:YINGYU_DOTNET}else{Join-Path $taskRoot '.tools/dotnet/dotnet.exe'}
 $taskPython=if($env:YINGYU_PYTHON){$env:YINGYU_PYTHON}else{'python'}
-$taskAudit=if($env:YINGYU_AUDIT_DIR){$env:YINGYU_AUDIT_DIR}else{Join-Path $taskRoot '.tools/inspection/0.8.5-desktop'}
+$taskAudit=if($env:YINGYU_AUDIT_DIR){$env:YINGYU_AUDIT_DIR}else{Join-Path $taskRoot '.tools/inspection/1.2.2-desktop'}
 $taskInno=if($env:YINGYU_INNO_ISCC){$env:YINGYU_INNO_ISCC}else{Join-Path $taskRoot '.tools/inno/ISCC.exe'}
 $taskOutput=if($env:YINGYU_OUTPUT_DIR){[IO.Path]::GetFullPath($env:YINGYU_OUTPUT_DIR)}else{Join-Path $PSScriptRoot 'out'}
 $env:DOTNET_CLI_TELEMETRY_OPTOUT='1'
@@ -36,6 +36,6 @@ New-Item -ItemType Directory -Force $taskOutput | Out-Null
 Assert-Exit 'Installer compilation failed.'
 & $taskPython (Join-Path $taskAudit 'static-package-audit.py') --final
 Assert-Exit 'Final package audit failed.'
-Get-FileHash -LiteralPath (Join-Path $taskOutput 'Yingyu-Setup-x64-0.8.5.exe') -Algorithm SHA256
+Get-FileHash -LiteralPath (Join-Path $taskOutput 'Yingyu-Setup-x64-1.2.2.exe') -Algorithm SHA256
 # This entry compiles and packages only. Device/use results and isolated UI
 # validation are recorded separately in the release evidence.

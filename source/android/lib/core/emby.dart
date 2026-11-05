@@ -1351,7 +1351,7 @@ class EmbyClient {
             'SeasonId': seasonId,
             'StartIndex': '$start',
             'EnableUserData': 'true',
-            'Fields': 'SeriesPrimaryImage',
+            'Fields': 'SeriesPrimaryImage,MediaSources,MediaStreams',
           },
         ),
       );
