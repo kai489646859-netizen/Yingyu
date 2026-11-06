@@ -260,16 +260,19 @@ internal static class DesktopCardSurface
             if(!animating)ReferenceSurfaces.Ancestors(root);
             title.Text=card.GetType().GetProperty(landscape?"ResumeTitle":"Title")?.GetValue(card)?.ToString()??item.Name;
             subtitle.Text=card.GetType().GetProperty(landscape?"ResumeLabel":"Subtitle")?.GetValue(card)?.ToString()??"";
-            if(landscape){subtitle.Text=ResumeServerHistory.Caption(item,subtitle.Text);if(ResumeSync.IsPending(item))subtitle.Text+=" · 待同步";}
+            bool history=Owner is {} owner&&Access.Get<object?>(owner,"HistoryBackButton") is Button{Visibility:Visibility.Visible};
+            if(landscape||history){subtitle.Text=ResumeServerHistory.Caption(item,subtitle.Text);if(ResumeSync.IsPending(item))subtitle.Text+=" · 待同步";}
             title.Foreground=DesktopVisuals.Brush(palette.Text);subtitle.Foreground=DesktopVisuals.Brush(palette.Secondary);
             title.TextAlignment=subtitle.TextAlignment=landscape?TextAlignment.Center:TextAlignment.Left;
             ToolTipService.SetToolTip(title,title.Text);ToolTipService.SetToolTip(subtitle,subtitle.Text);
-            var progressItem=landscape?item:ResumeFor(Owner,item);
+            var progressItem=landscape||history?item:ResumeFor(Owner,item);
             percentage=progressItem is not null?DesktopReadability.Percentage(progressItem,0,true)
                 :item.Type is "Series" or "Season"?0:DesktopReadability.Percentage(item,(double?)card.GetType().GetProperty("Progress")?.GetValue(card)??0,false);
-            track.Visibility=(progressItem?.UserData?.PlaybackPositionTicks>0||progressItem?.RunTimeTicks is >0||percentage>0&&percentage<100)?Visibility.Visible:Visibility.Collapsed;
+            track.Visibility=(!(landscape||history)||!ResumeServerHistory.Waiting(item)&&ResumeServerHistory.Show(item))&&(progressItem?.UserData?.PlaybackPositionTicks>0||progressItem?.RunTimeTicks is >0||percentage>0&&percentage<100)?Visibility.Visible:Visibility.Collapsed;
             track.Background=DesktopVisuals.Brush(0xEE101018);track.BorderBrush=DesktopVisuals.Brush(0);track.BorderThickness=new Thickness(0);fill.Background=DesktopVisuals.Brush(DesktopReadability.Progress(palette));
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(frame,$"{title.Text}，已观看 {percentage:0}%");
+            string progressLabel=(landscape||history)&&ResumeServerHistory.Waiting(item)?"待播放"
+                :(landscape||history)&&!ResumeServerHistory.Show(item)?"已看完":$"已观看 {percentage:0}%";
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(frame,$"{title.Text}，{progressLabel}");
             rating.Visibility=!landscape&&item.CommunityRating is >=0 and <=10?Visibility.Visible:Visibility.Collapsed;
             if(themeChanged)rating.Background=DesktopVisuals.Brush(palette.Selection);
             if(rating.Child is not TextBlock ratingText){ratingText=new TextBlock{Foreground=DesktopVisuals.Brush(0xFFFFFFFF),FontSize=11,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold};rating.Child=ratingText;}

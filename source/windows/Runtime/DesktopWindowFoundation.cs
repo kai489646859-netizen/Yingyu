@@ -4,6 +4,8 @@
 // commit 3f1086f6cfa8c1e0c3a64b930a8577dc5496c616.
 using System.Runtime.CompilerServices;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -21,14 +23,20 @@ internal static class DesktopWindowFoundation
         =>Windows.GetValue(window,w=>new(w,root)).Apply(background,reducedTransparency,highContrast);
     sealed class State
     {
-        readonly Window window;readonly Grid root;readonly Grid title;bool? material;bool highContrast;
+        readonly Window window;readonly Grid root;readonly Grid title;
+        readonly TitleBar original;
+        bool? material;
+        bool highContrast,materialWanted,chromeReady,closed,setupQueued;
+        [DllImport("user32.dll")]
+        static extern bool IsWindow(nint hwnd);
         internal State(Window window,Grid root)
         {
             this.window=window;this.root=root;
-            var original=window.GetType().GetField("AppTitleBar",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)?.GetValue(window) as TitleBar
+            original=window.GetType().GetField("AppTitleBar",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)?.GetValue(window) as TitleBar
                 ??throw new InvalidOperationException("Missing original title bar");
             var parent=original.Parent as Panel??throw new InvalidOperationException("Missing title wrapper");
-            title=new Grid{Name="DesktopNativeTitleRegion",Height=32,Background=new SolidColorBrush(Colors.Transparent)};
+            title=new Grid{Name="DesktopNativeTitleRegion",Height=32,Opacity=0,IsHitTestVisible=false,
+                Background=new SolidColorBrush(Colors.Transparent)};
             title.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});
             title.ColumnDefinitions.Add(new(){Width=new(0)});
             var content=new StackPanel{Orientation=Orientation.Horizontal,Spacing=12,Margin=new(16,0,0,0),VerticalAlignment=VerticalAlignment.Center};
@@ -38,31 +46,65 @@ internal static class DesktopWindowFoundation
             title.Children.Add(content);
             parent.Background=new SolidColorBrush(Colors.Transparent);
             foreach(var rule in parent.Children.OfType<Border>()){rule.BorderThickness=new(0);rule.Background=new SolidColorBrush(Colors.Transparent);}
-            int index=parent.Children.IndexOf(original);parent.Children.Remove(original);parent.Children.Insert(index,title);
-            window.SetTitleBar(title);
             title.SizeChanged+=TitleSize;title.Loaded+=TitleLoaded;
-            window.AppWindow.TitleBar.ExtendsContentIntoTitleBar=true;
-            window.AppWindow.TitleBar.IconShowOptions=IconShowOptions.HideIconAndSystemMenu;
             root.ActualThemeChanged+=ThemeChanged;window.Activated+=Activated;window.Closed+=Closed;
+            int index=parent.Children.IndexOf(original);
+            parent.Children.Insert(index,title);
         }
         internal void Apply(Brush background,bool reducedTransparency,bool highContrast)
         {
             this.highContrast=highContrast;title.Background=background;
-            bool enabled=!reducedTransparency;
-            if(material!=enabled){window.SystemBackdrop=enabled?new MicaBackdrop():null;material=enabled;}
-            UpdateTheme();UpdatePadding();
+            materialWanted=!reducedTransparency;
+            QueueChrome();
         }
-        void TitleLoaded(object sender,RoutedEventArgs args){window.SetTitleBar(title);UpdateTheme();UpdatePadding();}
-        void TitleSize(object sender,SizeChangedEventArgs args)=>UpdatePadding();
+        bool CanApplyChrome()=>!closed&&root.IsLoaded&&title.IsLoaded&&title.XamlRoot is not null
+            &&IsWindow(WinRT.Interop.WindowNative.GetWindowHandle(window));
+        void QueueChrome()
+        {
+            if(closed||setupQueued||!title.IsLoaded)return;
+            setupQueued=window.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low,ApplyChrome);
+        }
+        void ApplyChrome()
+        {
+            setupQueued=false;
+            try
+            {
+                if(!CanApplyChrome())return;
+                if(!chromeReady)
+                {
+                    window.SetTitleBar(title);
+                    title.IsHitTestVisible=true;
+                    title.Opacity=1;
+                    if(original.Parent is Panel parent)parent.Children.Remove(original);
+                    chromeReady=true;
+                }
+                window.AppWindow.TitleBar.IconShowOptions=IconShowOptions.HideIconAndSystemMenu;
+                if(material!=materialWanted)
+                {
+                    window.SystemBackdrop=materialWanted?new MicaBackdrop():null;
+                    material=materialWanted;
+                }
+                UpdateTheme();
+                UpdatePadding();
+            }
+            catch(COMException e)when(e.HResult==unchecked((int)0x80070006))
+            {PlaybackTransport.Write("Warning","Window.Chrome","原生标题栏句柄暂不可用，保留窗口并等待下次激活。");}
+        }
+        void TitleLoaded(object sender,RoutedEventArgs args)=>QueueChrome();
+        void TitleSize(object sender,SizeChangedEventArgs args)=>QueueChrome();
         void UpdatePadding()
         {
             double scale=title.XamlRoot?.RasterizationScale??1;
             title.ColumnDefinitions[1].Width=new(window.AppWindow.TitleBar.RightInset/scale);
         }
-        void ThemeChanged(FrameworkElement sender,object args)=>UpdateTheme();
-        void Activated(object sender,WindowActivatedEventArgs args)=>UpdateTheme();
+        void ThemeChanged(FrameworkElement sender,object args)=>QueueChrome();
+        void Activated(object sender,WindowActivatedEventArgs args)=>QueueChrome();
         void Closed(object sender,WindowEventArgs args)
-        {root.ActualThemeChanged-=ThemeChanged;window.Activated-=Activated;window.Closed-=Closed;title.SizeChanged-=TitleSize;title.Loaded-=TitleLoaded;}
+        {
+            closed=true;
+            root.ActualThemeChanged-=ThemeChanged;window.Activated-=Activated;window.Closed-=Closed;
+            title.SizeChanged-=TitleSize;title.Loaded-=TitleLoaded;
+        }
         void UpdateTheme()
         {
             var titleBar=window.AppWindow.TitleBar;

@@ -15,11 +15,11 @@ REQUIRED = {
         "android-2.2.4.md",
         "android-2.2.4-SHA256SUMS.txt",
     },
-    "windows-v1.2.2": {
-        "Yingyu-Setup-x64-1.2.2.exe",
-        "Yingyu-1.2.2-source-and-symbols.zip",
-        "windows-1.2.2.md",
-        "windows-1.2.2-SHA256SUMS.txt",
+    "windows-v1.3.4": {
+        "Yingyu-Setup-x64-1.3.4.exe",
+        "Yingyu-1.3.4-source-and-symbols.zip",
+        "windows-1.3.4.md",
+        "windows-1.3.4-SHA256SUMS.txt",
     },
 }
 

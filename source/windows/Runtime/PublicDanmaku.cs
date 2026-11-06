@@ -11,14 +11,23 @@ using System.Xml.Linq;
 namespace Yingyu.Update;
 
 // The catalog resolves public episode links. Comment data is then fetched
-// directly from the two platform CDNs, with no accounts or media requests.
+// directly from the platform CDNs, with no accounts or media requests.
 internal static class PublicDanmaku
 {
     internal sealed record Segment(double Start,double End,string Url);
-    internal sealed record Feed(string Name,bool Tencent,Segment[] Segments);
+    internal sealed record Feed(string Site,Segment[] Segments)
+    {
+        internal string? SeedUrl{get;init;}
+    }
+    internal static string SourceName(string site)=>site switch
+        {"qq"=>"tencent","qiyi"=>"iqiyi","imgo"=>"mgtv",_=>"bilibili"};
     static readonly ConcurrentDictionary<string,(DateTimeOffset At,JsonElement[] Rows)> Catalog=new();
     static readonly Regex TencentPath=new(@"^/(?:x/cover/[a-zA-Z0-9]+/|x/page/)([a-zA-Z0-9]{6,24})\.html$",RegexOptions.None,TimeSpan.FromMilliseconds(50));
+    static readonly Regex TencentCoverPath=new(@"^/x/cover/([a-zA-Z0-9]{6,24})(?:/[a-zA-Z0-9]{6,24})?\.html$",
+        RegexOptions.None,TimeSpan.FromMilliseconds(50));
+    static readonly Regex TencentVideo=new(@"^[a-zA-Z0-9]{6,24}$",RegexOptions.None,TimeSpan.FromMilliseconds(50));
     static readonly Regex IqiyiPath=new(@"^/v_([a-zA-Z0-9]{1,32})\.html$",RegexOptions.None,TimeSpan.FromMilliseconds(50));
+    static readonly Regex MangoPath=new(@"^/b/([0-9]{1,12}/[0-9]{1,12})\.html$",RegexOptions.None,TimeSpan.FromMilliseconds(50));
     static readonly Regex BilibiliEpisodePath=new(@"^/bangumi/play/ep([0-9]{1,16})/?$",RegexOptions.None,TimeSpan.FromMilliseconds(50));
     static readonly Regex SegmentPath=new(@"^(?:t/v1/)?\d{1,9}/\d{1,9}$",RegexOptions.None,TimeSpan.FromMilliseconds(50));
 
@@ -28,15 +37,18 @@ internal static class PublicDanmaku
     static double Number(JsonElement e,string key)=>DanmakuProtocol.Numeric(e,key);
     static Task<JsonDocument> Json(string url,CancellationToken token)=>DanmakuSources.Json(url,token,redirects:false);
 
-    internal static bool IsDirectLink(string? url)=>VideoId(url,"qq") is not null||VideoId(url,"qiyi") is not null;
-    static string? VideoId(string? url,string site)
+    internal static string? DirectSite(string? url)
+        =>new[]{"qq","qiyi","imgo"}.FirstOrDefault(site=>VideoId(url,site) is not null);
+    internal static bool IsDirectLink(string? url)=>DirectSite(url) is not null;
+    static string? VideoId(string? url,string site,bool catalog=false)
     {
-        if(!Uri.TryCreate(url,UriKind.Absolute,out var uri)||uri.Scheme!="https"||!uri.IsDefaultPort
+        if(!Uri.TryCreate(url,UriKind.Absolute,out var uri)||uri.Scheme!="https"&&(!catalog||uri.Scheme!="http")||!uri.IsDefaultPort
             ||uri.UserInfo.Length!=0)return null;
         Regex? path=site switch
         {
             "qq" when uri.Host=="v.qq.com"=>TencentPath,
             "qiyi" when uri.Host=="www.iqiyi.com"=>IqiyiPath,
+            "imgo" when uri.Host=="www.mgtv.com"=>MangoPath,
             "bilibili1" when uri.Host is "www.bilibili.com" or "bilibili.com"=>BilibiliEpisodePath,
             _=>null
         };
@@ -52,13 +64,23 @@ internal static class PublicDanmaku
         var rows=Field(Field(Field(json.RootElement,"data"),"longData"),"rows");
         if(rows.ValueKind!=JsonValueKind.Array)return [];
         var result=rows.EnumerateArray().Take(40).Select(row=>row.Clone()).ToArray();
-        if(Catalog.Count>=24)Catalog.Clear();
-        if(result.Length>0)Catalog[title]=(DateTimeOffset.UtcNow,result);
+        if(result.Length>0)
+        {
+            if(Catalog.Count>=24)Catalog.Clear();
+            Catalog[title]=(DateTimeOffset.UtcNow,result);
+        }
         return result;
     }
 
+    internal static Func<string,CancellationToken,Task<JsonElement[]>> ShareCatalog(CancellationToken lifetime)
+    {
+        var requests=new ConcurrentDictionary<string,Lazy<Task<JsonElement[]>>>(StringComparer.Ordinal);
+        return (title,token)=>requests.GetOrAdd(title,key=>new Lazy<Task<JsonElement[]>>(
+            ()=>Search(key,lifetime))).Value.WaitAsync(token);
+    }
+
     internal static async Task<string[]> FindLinks(DanmakuIdentity id,string site,
-        ConcurrentDictionary<string,Lazy<Task<JsonElement[]>>> searches,CancellationToken token,string? continuousTitle=null)
+        Func<string,CancellationToken,Task<JsonElement[]>> search,CancellationToken token,string? continuousTitle=null)
     {
         if(Uri.TryCreate(id.Title,UriKind.Absolute,out var url)&&url.Scheme is "https" or "http")
             return VideoId(id.Title,site) is {} direct?[direct]:[];
@@ -72,8 +94,7 @@ internal static class PublicDanmaku
             JsonElement[] rows;
             try
             {
-                var pending=searches.GetOrAdd(title,key=>new Lazy<Task<JsonElement[]>>(()=>Search(key,token)));
-                rows=await pending.Value.WaitAsync(token).ConfigureAwait(false);
+                rows=await search(title,token).ConfigureAwait(false);
             }
             catch(Exception e)when(DanmakuSources.IsSourceFailure(e)&&!token.IsCancellationRequested)
             {DanmakuSources.Trace("public-catalog","search",e.GetType().Name,http:(int?)((e as HttpRequestException)?.StatusCode)??0);continue;}
@@ -81,13 +102,17 @@ internal static class PublicDanmaku
             {
                 string category=Text(row,"cat_name"),candidate=Text(row,"titleTxt");
                 if(!id.Movie&&id.Animation&&category!="动漫")continue;
+                double year=Number(row,"year");
+                if(continuousTitle is null&&!id.Movie&&id.Season<=1&&id.CatalogYear>0&&year>0&&year!=id.CatalogYear)continue;
+                double tmdb=Number(row,"tmdb_id");
+                if(id.TmdbId>0&&tmdb>0&&tmdb!=id.TmdbId)continue;
                 if(continuousTitle is null?!DanmakuProtocol.TitleMatches(id,candidate):
                     category!="动漫"||!DanmakuProtocol.ContinuousTitleMatches(continuousTitle,candidate))continue;
                 var playlinks=Field(row,"playlinks");
                 if(id.Movie)
                 {
                     if(category!="电影"||id.Year>0&&Number(row,"year")!=id.Year)continue;
-                    if(VideoId(Text(playlinks,site),site) is {} movie)videos.Add(movie);
+                    if(VideoId(Text(playlinks,site),site,catalog:true) is {} movie)videos.Add(movie);
                     continue;
                 }
                 if(playlinks.ValueKind==JsonValueKind.Object&&Field(playlinks,site).ValueKind==JsonValueKind.Undefined
@@ -99,9 +124,39 @@ internal static class PublicDanmaku
             }
             if(continuousTitle is null&&videos.Count>0)break;
         }
-        DanmakuSources.Trace(site switch{"qq"=>"tencent","qiyi"=>"iqiyi",_=>"bilibili"},
+        DanmakuSources.Trace(SourceName(site),
             "catalog",continuousTitle is null?"exact-episode-links":"continuous-episode-links",videos.Count);
         return videos.Take(4).ToArray();
+    }
+
+    // A catalog landing link is only a way into the platform's official
+    // season metadata. Its episode number is never used as the selection.
+    internal static async Task<string[]> BilibiliShowSeeds(DanmakuIdentity id,
+        Func<string,CancellationToken,Task<JsonElement[]>> search,CancellationToken token)
+    {
+        var seeds=new HashSet<string>(StringComparer.Ordinal);
+        foreach(string query in DanmakuProtocol.SearchTitles(id))
+        {
+            try
+            {
+                var rows=await search(query,token).ConfigureAwait(false);
+                foreach(var row in rows)
+                {
+                    string category=Text(row,"cat_name"),title=Text(row,"titleTxt");
+                    double year=Number(row,"year");
+                    if(id.Movie?category!="电影"||id.Year>0&&year>0&&year!=id.Year
+                        :category is not ("动漫" or "电视剧")||id.Animation&&category!="动漫")continue;
+                    if(!DanmakuProtocol.SeriesTitleMatches(id,title)
+                        &&!DanmakuProtocol.SeasonNameMatches(id,title))continue;
+                    if(VideoId(Text(Field(row,"playlinks"),"bilibili1"),"bilibili1",catalog:true) is {} episode)
+                        seeds.Add(episode);
+                    if(seeds.Count>=4)return seeds.ToArray();
+                }
+            }
+            catch(Exception e)when(DanmakuSources.IsSourceFailure(e)&&!token.IsCancellationRequested)
+            {DanmakuSources.Trace("bilibili","catalog-family",e.GetType().Name);}
+        }
+        return seeds.ToArray();
     }
 
     static async Task<string?> Episode(int cat,string entity,int episode,string site,CancellationToken token,string? continuousTitle)
@@ -115,31 +170,265 @@ internal static class PublicDanmaku
                 ||Number(Field(data,"allupinfo"),site)<DanmakuProtocol.ContinuousEpisodeFloor))return null;
             var rows=Field(Field(data,"allepidetail"),site);
             if(rows.ValueKind!=JsonValueKind.Array)return null;
-            foreach(var row in rows.EnumerateArray().Take(12))
-                if(Number(row,"playlink_num")==episode&&VideoId(Text(row,"url"),site) is {} video)return video;
+            foreach(var row in rows.EnumerateArray().Take(2500))
+                if(Number(row,"playlink_num")==episode&&VideoId(Text(row,"url"),site,catalog:true) is {} video)return video;
         }
         catch(Exception e)when(DanmakuSources.IsSourceFailure(e)&&!token.IsCancellationRequested)
         {DanmakuSources.Trace("public-catalog","episode",e.GetType().Name,http:(int?)((e as HttpRequestException)?.StatusCode)??0);}
         return null;
     }
 
-    internal static async Task<DanmakuTrack?> Match(string[] videos,DanmakuIdentity wanted,string identity,bool tencent,CancellationToken token,bool continuous=false)
+    internal sealed record TencentEpisode(string Video,double Duration);
+
+    internal static async Task<TencentEpisode?> FindTencentEpisode(DanmakuIdentity id,
+        Func<string,CancellationToken,Task<JsonElement[]>> search,string? continuousTitle,CancellationToken token)
     {
-        string name=tencent?"tencent":"iqiyi";
+        if(id.Movie||id.Duration<=0)return null;
+        var covers=new HashSet<string>(StringComparer.Ordinal);
+        using(var direct=CancellationTokenSource.CreateLinkedTokenSource(token))
+        {
+            direct.CancelAfter(TimeSpan.FromSeconds(4));
+            try
+            {
+                var queries=continuousTitle is null
+                    ? DanmakuProtocol.SearchTitles(id)
+                    : id.AnnualEdition?new[]{continuousTitle+"年番",continuousTitle}
+                    :new[]{continuousTitle,continuousTitle+"年番"};
+                foreach(string query in queries.Take(2))
+                {
+                    var entries=await SearchTencent(query,direct.Token).ConfigureAwait(false);
+                    DanmakuSources.Trace("tencent","official-search","catalog-rows",entries.Length);
+                    foreach(var entry in entries)
+                    {
+                        string cover=Text(Field(entry,"doc"),"id");
+                        var info=Field(entry,"videoInfo");
+                        string name=DanmakuProtocol.Clean(Text(info,"title"));
+                        int type=(int)Number(info,"videoType");
+                        double year=Number(info,"year");
+                        if(type is not (2 or 3)||id.Animation&&type!=3||year<=0
+                            ||!TencentVideo.IsMatch(cover)
+                            ||id.AnnualEdition&&!name.EndsWith("年番",StringComparison.Ordinal))continue;
+                        bool exact=DanmakuProtocol.TitleMatches(id,name)
+                            &&(id.Season>1||id.CatalogYear<=0||year==id.CatalogYear);
+                        bool continuous=type==3&&continuousTitle is not null
+                            &&DanmakuProtocol.ContinuousTitleMatches(continuousTitle,name);
+                        if((!exact&&!continuous)||!covers.Add(cover))continue;
+                        var found=PickTencentSearchEpisode(info,cover,id,exact)
+                            ??await TencentCoverEpisode(cover,null,id,exact,continuousTitle,direct.Token)
+                                .ConfigureAwait(false);
+                        if(found is not null){DanmakuSources.Trace("tencent","official-search","verified-episode",1);return found;}
+                        if(covers.Count>=2)break;
+                    }
+                    if(covers.Count>=2)break;
+                }
+            }
+            catch(Exception e)when(DanmakuSources.IsSourceFailure(e)&&!token.IsCancellationRequested)
+            {DanmakuSources.Trace("tencent","official-search",e is OperationCanceledException?"timeout":e.GetType().Name,http:(int?)((e as HttpRequestException)?.StatusCode)??0);}
+        }
+        covers.Clear();
+        var titles=DanmakuProtocol.SearchTitles(id);
+        if(continuousTitle is {Length:>=2})
+            titles=titles.Concat(new[]{continuousTitle+" 年番",continuousTitle});
+        foreach(var title in titles.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var rows=await search(title,token).ConfigureAwait(false);
+                foreach(var row in rows)
+                {
+                    string category=Text(row,"cat_name"),name=Text(row,"titleTxt");
+                    if(category is not ("动漫" or "电视剧")||id.Animation&&category!="动漫")continue;
+                    double year=Number(row,"year"),tmdb=Number(row,"tmdb_id");
+                    if(id.TmdbId>0&&tmdb>0&&tmdb!=id.TmdbId)continue;
+                    if(id.AnnualEdition&&!name.TrimEnd().EndsWith("年番",StringComparison.Ordinal))continue;
+                    bool exact=DanmakuProtocol.TitleMatches(id,name)
+                        &&(id.Season>1||id.CatalogYear<=0||year<=0||year==id.CatalogYear);
+                    bool continuous=category=="动漫"&&continuousTitle is {Length:>=2}
+                        &&DanmakuProtocol.ContinuousTitleMatches(continuousTitle,name);
+                    if(!exact&&!continuous)continue;
+                    string address=Text(Field(row,"playlinks"),"qq");
+                    if(!Uri.TryCreate(address,UriKind.Absolute,out var uri)||uri.Host!="v.qq.com"
+                        ||uri.Scheme is not ("http" or "https")||!uri.IsDefaultPort||uri.UserInfo.Length!=0)continue;
+                    var match=TencentCoverPath.Match(uri.AbsolutePath);
+                    if(!match.Success||!covers.Add(match.Groups[1].Value))continue;
+                    var candidate=await TencentCoverEpisode(match.Groups[1].Value,VideoId(address,"qq",catalog:true),
+                        id,exact,continuousTitle,token).ConfigureAwait(false);
+                    if(candidate is not null)return candidate;
+                    if(covers.Count>=3)return null;
+                }
+            }
+            catch(Exception e)when(DanmakuSources.IsSourceFailure(e)&&!token.IsCancellationRequested)
+            {DanmakuSources.Trace("tencent","official-episode",e.GetType().Name,http:(int?)((e as HttpRequestException)?.StatusCode)??0);}
+        }
+        DanmakuSources.Trace("tencent","official-episode","no-exact-episode");
+        return null;
+    }
+
+    static async Task<JsonElement[]> SearchTencent(string title,CancellationToken token)
+    {
+        const string endpoint="https://pbaccess.video.qq.com/trpc.videosearch.mobile_search.MultiTerminalSearch/MbSearch?vplatform=2";
+        var body=JsonSerializer.Serialize(new Dictionary<string,object>
+        {
+            ["version"]="25071701",["clientType"]=1,["query"]=title,["pagenum"]=0,["pagesize"]=20,["isneedQc"]=true,
+            ["extraInfo"]=new Dictionary<string,string>{["multi_terminal_pc"]="1",["themeType"]="1",["sugRelatedIds"]="{}"}
+        });
+        using var json=JsonDocument.Parse(await DanmakuSources.Bytes(new Uri(endpoint),2*1024*1024,token,
+            redirects:false,jsonBody:body,tencentQuery:title).ConfigureAwait(false),new JsonDocumentOptions{MaxDepth=48});
+        if(Number(json.RootElement,"ret")!=0)return [];
+        var data=Field(json.RootElement,"data");
+        var boxes=Field(data,"areaBoxList");
+        IEnumerable<JsonElement> Rows(JsonElement box)
+        {
+            var items=Field(box,"itemList");
+            return items.ValueKind==JsonValueKind.Array?items.EnumerateArray().Take(24):[];
+        }
+        var normal=Rows(Field(data,"normalList"));
+        var other=boxes.ValueKind==JsonValueKind.Array?boxes.EnumerateArray().Take(6).SelectMany(Rows):[];
+        return normal.Concat(other).Select(row=>row.Clone()).ToArray();
+    }
+
+    static TencentEpisode? PickTencentSearchEpisode(JsonElement info,string cover,DanmakuIdentity id,bool exact)
+    {
+        var sites=Field(info,"episodeSites");
+        if(sites.ValueKind!=JsonValueKind.Array)return null;
+        var matches=new Dictionary<string,double>(StringComparer.Ordinal);
+        foreach(var site in sites.EnumerateArray().Take(8))
+        {
+            if(Text(site,"enName")!="qq"||!exact&&Number(site,"totalEpisode")<DanmakuProtocol.ContinuousEpisodeFloor)continue;
+            var list=Field(site,"episodeInfoList");
+            if(list.ValueKind!=JsonValueKind.Array)continue;
+            foreach(var row in list.EnumerateArray().Take(200))
+            {
+                string video=Text(row,"id"),address=Text(row,"url");
+                double duration=Number(row,"duration");
+                if(Number(row,"title")!=id.Episode||duration is <=90 or >86400
+                    ||!DanmakuProtocol.DurationMatches(id.Duration,duration)||!TencentVideo.IsMatch(video)
+                    ||VideoId(address,"qq",catalog:true)!=video||!Uri.TryCreate(address,UriKind.Absolute,out var url)
+                    ||TencentCoverPath.Match(url.AbsolutePath).Groups[1].Value!=cover)continue;
+                matches.TryAdd(video,duration);
+            }
+        }
+        if(matches.Count!=1)return null;
+        var match=matches.Single();
+        DanmakuSources.Trace("tencent","official-episode","verified-search-episode",1);
+        return new(match.Key,match.Value);
+    }
+
+    static async Task<TencentEpisode?> TencentCoverEpisode(string cover,string? video,DanmakuIdentity id,
+        bool exact,string? continuousTitle,CancellationToken token)
+    {
+        async Task<JsonDocument> Page(string? context=null)
+        {
+            var parameters=new Dictionary<string,string>(StringComparer.Ordinal)
+                {["req_from"]="web_vsite",["cid"]=cover,["vid"]=video??""};
+            if(context is not null)
+            {
+                foreach(string field in context.Split('&'))
+                {
+                    int equals=field.IndexOf('=');
+                    if(equals>0&&!parameters.ContainsKey(field[..equals]))
+                        parameters.Add(field[..equals],field[(equals+1)..]);
+                }
+            }
+            const string endpoint="https://pbaccess.video.qq.com/trpc.vector_layout.page_view.PageService/getPage?video_appid=3000010&vversion_platform=2";
+            var bypass=new Dictionary<string,object>
+            {
+                ["scene"]="desk_detail",
+                ["params"]=new Dictionary<string,string>{["caller_id"]="3000010",["platform_id"]="2"}
+            };
+            var body=JsonSerializer.Serialize(new Dictionary<string,object>
+            {
+                ["page_params"]=parameters,
+                ["page_bypass_params"]=bypass,
+                ["page_context"]=new Dictionary<string,string>()
+            });
+            return JsonDocument.Parse(await DanmakuSources.Bytes(new Uri(endpoint),4*1024*1024,token,
+                redirects:false,jsonBody:body).ConfigureAwait(false),new JsonDocumentOptions{MaxDepth=48});
+        }
+
+        using var page=await Page().ConfigureAwait(false);
+        var introduction=TencentCard(page,"pc_introduction");
+        var info=TencentRows(introduction).FirstOrDefault();
+        var title=Text(info,"title");
+        bool exactTitle=exact&&DanmakuProtocol.TitleMatches(id,title);
+        if(!exactTitle&&(continuousTitle is null||Number(info,"type")!=3
+            ||Number(info,"episode_all")<DanmakuProtocol.ContinuousEpisodeFloor
+            ||!DanmakuProtocol.ContinuousTitleMatches(continuousTitle,title)))return null;
+        double year=Number(info,"year");
+        if(exactTitle&&id.Season<=1&&id.CatalogYear>0&&year>0&&year!=id.CatalogYear)return null;
+
+        var card=TencentCard(page,"pc_web_episode_list");
+        TencentEpisode? Pick(JsonElement list)
+        {
+            var candidates=TencentRows(list).Where(row=>Text(row,"cid")==cover&&Number(row,"title")==id.Episode
+                    &&TencentVideo.IsMatch(Text(row,"vid"))&&Number(row,"duration") is >90 and <=86400
+                    &&DanmakuProtocol.DurationMatches(id.Duration,Number(row,"duration")))
+                .Select(row=>new TencentEpisode(Text(row,"vid"),Number(row,"duration")))
+                .DistinctBy(row=>row.Video).Take(2).ToArray();
+            return candidates.Length==1?candidates[0]:null;
+        }
+        if(card.ValueKind!=JsonValueKind.Object)
+        {DanmakuSources.Trace("tencent","official-episode","missing-episode-card");return null;}
+        var episode=Pick(card);
+        string tabs=Text(Field(card,"params"),"tabs");
+        if(episode is null&&tabs.Length is >0 and <=65536)
+        {
+            using var ranges=JsonDocument.Parse(tabs);
+            if(ranges.RootElement.ValueKind!=JsonValueKind.Array)return null;
+            var range=ranges.RootElement.EnumerateArray().Take(200).FirstOrDefault(row=>
+                Number(row,"begin")<=id.Episode&&Number(row,"end")>=id.Episode);
+            string context=Text(range,"page_context");
+            if(context.Length is >0 and <=4096&&context.Split('&').Contains("cid="+cover))
+            {
+                using var next=await Page(context).ConfigureAwait(false);
+                episode=Pick(TencentCard(next,"pc_web_episode_list"));
+            }
+        }
+        if(episode is not null)DanmakuSources.Trace("tencent","official-episode","exact-episode",1);
+        return episode;
+    }
+
+    static JsonElement TencentCard(JsonDocument page,string type)
+    {
+        var cards=Field(Field(page.RootElement,"data"),"CardList");
+        return cards.ValueKind==JsonValueKind.Array
+            ?cards.EnumerateArray().Take(40).FirstOrDefault(card=>Text(card,"type")==type):default;
+    }
+
+    static IEnumerable<JsonElement> TencentRows(JsonElement card)
+    {
+        var children=Field(card,"children_list");
+        if(children.ValueKind!=JsonValueKind.Object)yield break;
+        foreach(var child in children.EnumerateObject().Take(200))
+        {
+            var rows=Field(child.Value,"cards");
+            if(rows.ValueKind==JsonValueKind.Array)
+                foreach(var row in rows.EnumerateArray().Take(12))yield return Field(row,"params");
+        }
+    }
+
+    internal static async Task<DanmakuTrack?> Match(string[] videos,DanmakuIdentity wanted,string identity,string site,CancellationToken token,bool continuous=false,double confirmedDuration=0)
+    {
+        string name=SourceName(site);
         DanmakuTrack? matched=null;
         foreach(var video in videos)
         {
             try
             {
-                var (duration,segments)=tencent
-                    ?await TencentSegments(video,token).ConfigureAwait(false)
-                    :await IqiyiSegments(video,token).ConfigureAwait(false);
+                var (duration,segments)=site switch
+                {
+                    "qq"=>await TencentSegments(video,token).ConfigureAwait(false),
+                    "qiyi"=>await IqiyiSegments(video,token).ConfigureAwait(false),
+                    _=>MangoSegments(video,wanted.Duration)
+                };
+                if(confirmedDuration>0)duration=confirmedDuration;
                 if(segments.Length==0){DanmakuSources.Trace(name,"match","no-segments");continue;}
                 if(continuous&&(wanted.Duration<=0||duration<=0)||!DanmakuProtocol.DurationMatches(wanted.Duration,duration))
                 {DanmakuSources.Trace(name,"match","duration-mismatch");continue;}
                 if(matched is not null){DanmakuSources.Trace(name,"match","ambiguous-edition");return null;}
-                matched=new(tencent?"腾讯视频":"爱奇艺",identity,duration,[],85)
-                    {PublicFeed=new(name,tencent,segments),Partial=true};
+                string label=site switch{"qq"=>"腾讯视频","qiyi"=>"爱奇艺",_=>"芒果 TV"};
+                matched=new(label,identity,duration,[],85)
+                    {PublicFeed=new(site,segments),Partial=true};
             }
             catch(Exception e)when(DanmakuSources.IsSourceFailure(e)&&!token.IsCancellationRequested)
             {DanmakuSources.Trace(name,"detail",e.GetType().Name,http:(int?)((e as HttpRequestException)?.StatusCode)??0);}
@@ -196,10 +485,47 @@ internal static class PublicDanmaku
         return (duration,segments);
     }
 
+    static (double,Segment[]) MangoSegments(string key,double duration)
+    {
+        // The catalog identifies the exact episode. Local duration only bounds reads.
+        if(duration<=0||duration>86400)return (0,[]);
+        string[] ids=key.Split('/');
+        var segments=new Segment[(int)Math.Ceiling(duration/60)];
+        for(int i=0;i<segments.Length;i++)
+        {
+            string url=FormattableString.Invariant($"https://galaxy.bz.mgtv.com/rdbarrage?version=2.0.0&vid={ids[1]}&cid={ids[0]}&time={i*60000}&abroad=0&platform=0");
+            segments[i]=new(i*60,(i+1)*60,url);
+        }
+        return (0,segments);
+    }
+
+    internal static async Task<DanmakuTrack?> Confirm(DanmakuTrack track,double position,
+        Func<DanmakuComment,bool> usable,CancellationToken token)
+    {
+        var feed=track.PublicFeed!;
+        // Introductions can be quiet. Probe a later opening segment as well
+        // before rejecting a feed that returned a valid but empty response.
+        var candidates=feed.Segments.OrderBy(s=>s.Start<=position&&s.End>position?0:1)
+            .ThenBy(s=>Math.Abs(s.Start-position)).Take(2)
+            .Append(feed.Segments[0]).Append(feed.Segments.FirstOrDefault(s=>s.Start>=60)??feed.Segments[0])
+            .DistinctBy(s=>s.Url);
+        foreach(var segment in candidates)
+        {
+            try
+            {
+                var rows=await ReadSegment(feed,segment,token).ConfigureAwait(false);
+                if(rows.Any(usable))return track with{Comments=rows,PublicFeed=feed with{SeedUrl=segment.Url}};
+            }
+            catch(Exception e)when(DanmakuSources.IsSourceFailure(e)&&!token.IsCancellationRequested){}
+        }
+        return null;
+    }
+
     internal static async Task Watch(DanmakuTrack selection,Func<double> position,Action<DanmakuTrack> publish,CancellationToken token)
     {
         var feed=selection.PublicFeed!;
         var loaded=new Dictionary<string,DanmakuComment[]>(StringComparer.Ordinal);
+        if(feed.SeedUrl is {} seed)loaded[seed]=selection.Comments;
         var retry=new Dictionary<string,DateTimeOffset>(StringComparer.Ordinal);
         while(true)
         {
@@ -230,16 +556,16 @@ internal static class PublicDanmaku
                     token.ThrowIfCancellationRequested();
                     if(read.IsCancellationRequested)break;
                     retry.Remove(segment.Url);loaded[segment.Url]=rows;
-                    DanmakuSources.Trace(feed.Name,"segment","ready",rows.Length);
+                    DanmakuSources.Trace(SourceName(feed.Site),"segment","ready",rows.Length);
                     Publish();
                 }
                 catch(HttpRequestException e)when(e.StatusCode==System.Net.HttpStatusCode.NotFound)
-                {loaded[segment.Url]=[];DanmakuSources.Trace(feed.Name,"segment","missing",http:404);}
+                {loaded[segment.Url]=[];DanmakuSources.Trace(SourceName(feed.Site),"segment","missing",http:404);}
                 catch(Exception e)when(DanmakuSources.IsSourceFailure(e)&&!token.IsCancellationRequested)
                 {
                     if(read.IsCancellationRequested)break;
                     retry[segment.Url]=DateTimeOffset.UtcNow.AddSeconds(30);
-                    DanmakuSources.Trace(feed.Name,"segment",e.GetType().Name,http:(int?)((e as HttpRequestException)?.StatusCode)??0);
+                    DanmakuSources.Trace(SourceName(feed.Site),"segment",e.GetType().Name,http:(int?)((e as HttpRequestException)?.StatusCode)??0);
                 }
             }
             await Task.Delay(1000,token).ConfigureAwait(false);
@@ -250,12 +576,21 @@ internal static class PublicDanmaku
     {
         var bytes=await DanmakuSources.Bytes(new Uri(segment.Url),2*1024*1024,token,redirects:false).ConfigureAwait(false);
         IEnumerable<DanmakuComment> rows;
-        if(feed.Tencent)
+        if(feed.Site=="qq")
         {
             using var json=JsonDocument.Parse(bytes);
             var list=Field(json.RootElement,"barrage_list");
             if(list.ValueKind!=JsonValueKind.Array)return [];
             rows=list.EnumerateArray().Take(5000).Select(TencentComment).ToArray();
+        }
+        else if(feed.Site=="imgo")
+        {
+            using var json=JsonDocument.Parse(bytes);
+            var list=Field(Field(json.RootElement,"data"),"items");
+            if(list.ValueKind!=JsonValueKind.Array)return [];
+            rows=list.EnumerateArray().Take(5000)
+                .Where(row=>Text(row,"time").Length>0)
+                .Select(row=>new DanmakuComment(Number(row,"time")/1000,1,0xffffff,Text(row,"content"))).ToArray();
         }
         else
         {
@@ -278,7 +613,7 @@ internal static class PublicDanmaku
             }
             else rows=IqiyiProto(body).Take(5000);
         }
-        return DanmakuProtocol.Normalize(rows.Where(c=>c.Time>=segment.Start&&(c.Time<segment.End||!feed.Tencent&&c.Time==segment.End)));
+        return DanmakuProtocol.Normalize(rows.Where(c=>c.Time>=segment.Start&&(c.Time<segment.End||feed.Site=="qiyi"&&c.Time==segment.End)));
     }
 
     static DanmakuComment TencentComment(JsonElement row)

@@ -432,7 +432,7 @@ public static class NetworkBluray
                     else
                     {
                         long start = index * Chunk;
-                        // 1.2.2 bounded media pipeline; directory preparation
+                        // 1.3.4 bounded media pipeline; directory preparation
                         // and the original validated fallback remain below.
                         if (!_preparing && !_readAheadDisabled)
                         {

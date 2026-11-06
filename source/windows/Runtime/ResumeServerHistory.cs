@@ -16,6 +16,8 @@ internal static class ResumeServerHistory
         internal IReadOnlyList<EmbyItem> NextItems=[];
     }
     static readonly ConditionalWeakTable<object,State> States=new();
+    static readonly ConditionalWeakTable<EmbyItem,object> CompletedCards=new();
+    internal static bool HomeCompleted(EmbyItem item)=>CompletedCards.TryGetValue(item,out _);
     internal static bool Rewatch(EmbyItem item)=>item.UserData is {Played:true,PlaybackPositionTicks:>0} data
         &&(item.RunTimeTicks is not >0||data.PlaybackPositionTicks<item.RunTimeTicks.Value);
     internal static bool Show(EmbyItem item)=>item.UserData?.Played!=true||Rewatch(item);
@@ -41,19 +43,65 @@ internal static class ResumeServerHistory
             return resume;
         }
         if(!ReferenceEquals(session,Access.Get<EmbySession?>(page,"_session"))||!ReferenceEquals(client,Access.Get<EmbyApiClient?>(page,"_client")))throw new OperationCanceledException();
-        // A slow/unsupported NextUp endpoint must not delay the existing row.
-        // Completed results are reused by the next normal foreground refresh.
+        return Merge(resume,recent);
+    }
+
+    internal static bool Waiting(EmbyItem item)=>item.Type=="Episode"
+        &&item.UserData is {Played:false,PlaybackPositionTicks:0};
+
+    internal static void AppendNext(object page,EmbySession session,EmbyApiClient client,
+        List<EmbyItem> displayed,IReadOnlyList<EmbyItem> history,IReadOnlyList<(EmbyItem Item,bool Completed,DateTimeOffset At)> edits)
+    {
+        if(!States.TryGetValue(page,out var state)||!ReferenceEquals(state.Session,session)
+            ||!ReferenceEquals(state.Client,client)||state.Reading is not {IsCompletedSuccessfully:true})return;
+        var recent=state.Reading.Result;
         var next=state.Next?.IsCompletedSuccessfully==true?state.Next.Result:state.NextItems;
-        if(!ReferenceEquals(session,Access.Get<EmbySession?>(page,"_session"))||!ReferenceEquals(client,Access.Get<EmbyApiClient?>(page,"_client")))throw new OperationCanceledException();
-        var result=Merge(resume,recent).ToList();
+        var cutoff=DateTimeOffset.UtcNow.AddMinutes(-15);
+        var local=history.Where(i=>i.Type=="Episode"&&i.UserData?.LastPlayedDate>=cutoff)
+            .GroupBy(Key,StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g=>g.Key,g=>g.OrderByDescending(i=>i.UserData?.LastPlayedDate).First(),StringComparer.OrdinalIgnoreCase);
+        bool Same(EmbyItem row,string key)=>string.Equals(Key(row),key,StringComparison.OrdinalIgnoreCase);
+        DateTimeOffset At(EmbyItem? row)=>row?.UserData?.LastPlayedDate??DateTimeOffset.MinValue;
+        void Offer(EmbyItem candidate)
+        {
+            string key=Key(candidate);
+            int existing=displayed.FindIndex(row=>Same(row,key));
+            if(existing>=0)
+            {
+                var current=displayed[existing];
+                if(!Waiting(current)&&(At(current)==DateTimeOffset.MinValue||At(current)>=At(candidate)))return;
+                displayed.RemoveAt(existing);
+            }
+            if(!Show(candidate))CompletedCards.GetValue(candidate,_=>new object());
+            int at=displayed.FindIndex(row=>At(row)<At(candidate));
+            if(at<0)displayed.Add(candidate);else displayed.Insert(at,candidate);
+        }
         foreach(var item in next)
         {
-            if(item.Type!="Episode"||string.IsNullOrWhiteSpace(item.SeriesId)||item.UserData is not {Played:false,PlaybackPositionTicks:0})continue;
-            if(!recent.Any(i=>Key(i)==Key(item))&&item.IndexNumber is not >1&&item.ParentIndexNumber is not >1)continue;
-            if(result.Any(i=>Key(i)==Key(item)))continue;
-            result.Add(item);
+            if(!Waiting(item)||string.IsNullOrWhiteSpace(item.SeriesId))continue;
+            string key=Key(item);
+            var latestRemote=recent.Where(row=>Same(row,key)).MaxBy(At);
+            var completion=edits.Where(e=>e.Completed&&Same(e.Item,key)).OrderByDescending(e=>e.At).FirstOrDefault();
+            local.TryGetValue(key,out var saved);
+            if(saved?.UserData is {PlaybackPositionTicks:>0,LastPlayedDate:{ } savedAt} progress&&Show(saved)
+                &&(saved.RunTimeTicks is not >0||progress.PlaybackPositionTicks<saved.RunTimeTicks)
+                &&savedAt>At(latestRemote)&&savedAt>At(item)&&savedAt>completion.At)
+            {Offer(saved);continue;}
+
+            var lastPlayed=new[]{latestRemote,saved,completion.Item}
+                .OfType<EmbyItem>().Where(row=>At(row)>=At(item)).MaxBy(At);
+            if(lastPlayed is not null&&!Show(lastPlayed)){Offer(lastPlayed);continue;}
+            if(latestRemote is null&&item.IndexNumber is not >1&&item.ParentIndexNumber is not >1)continue;
+            if(!displayed.Any(row=>Same(row,key)))displayed.Add(item);
         }
-        return ResumeSeriesMergePolicy.Collapse(result,18);
+        // A finale need not have a NextUp row. Preserve a recent actual finish.
+        var recentCompleted=local.Values.Concat(recent).Concat(edits.Where(e=>e.Completed).Select(e=>e.Item))
+            .Where(row=>row.Type=="Episode"&&At(row)>=cutoff).GroupBy(Key,StringComparer.OrdinalIgnoreCase);
+        foreach(var group in recentCompleted)
+        {
+            var latest=group.MaxBy(At)!;
+            if(!Show(latest))Offer(latest);
+        }
     }
     static async Task<IReadOnlyList<EmbyItem>> FetchNext(EmbySession session,EmbyApiClient client)
     {
@@ -101,10 +149,13 @@ internal static class ResumeServerHistory
     }
     internal static string Caption(EmbyItem item,string fallback)
     {
-        if(item.Type=="Episode"&&item.IndexNumber is {} next&&item.UserData is {Played:false,PlaybackPositionTicks:0})return (item.ParentIndexNumber is {} s?$"第 {s} 季 · ":"")+$"第 {next} 集 · 待播放";
-        if(!Rewatch(item))return item.Type is "Series" or "Season"?fallback.Replace("已看完","已看至当前进度"):fallback;
-        string Stamp(long ticks){var time=TimeSpan.FromTicks(Math.Max(0,ticks));return time.TotalHours>=1?$"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}":$"{(int)time.TotalMinutes}:{time.Seconds:00}";}
+        if(Waiting(item)&&item.IndexNumber is {} next)return (item.ParentIndexNumber is {} s?$"第 {s} 季 · ":"")+$"第 {next} 集 · 待播放";
+        if(item.Type is "Series" or "Season")return fallback.Replace("已看完","已看至当前进度");
+        if(item.UserData is null)return fallback;
         string episode=item.Type=="Episode"&&item.IndexNumber is {} number?(item.ParentIndexNumber is {} season?$"第 {season} 季 · 第 {number} 集 · ":$"第 {number} 集 · "):"";
+        if(item.UserData.Played&&item.UserData.PlaybackPositionTicks==0)return episode+"已看完";
+        if(item.UserData.PlaybackPositionTicks<=0||!Show(item))return fallback;
+        string Stamp(long ticks){var time=TimeSpan.FromTicks(Math.Max(0,ticks));return time.TotalHours>=1?$"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}":$"{(int)time.TotalMinutes}:{time.Seconds:00}";}
         return episode+"继续 "+Stamp(item.UserData!.PlaybackPositionTicks)+(item.RunTimeTicks is >0?" / "+Stamp(item.RunTimeTicks.Value):"");
     }
 }

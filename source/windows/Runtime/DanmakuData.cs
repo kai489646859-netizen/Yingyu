@@ -15,33 +15,55 @@ internal sealed record DanmakuIdentity(string Title,int Season,int Episode,int Y
     public string[] Aliases{get;init;}=[];
     internal bool ContinuousNumbering{get;init;}
     internal bool Animation{get;init;}
-    internal string Key => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new object[]{Title,Season,Episode,Year,Movie,Math.Round(Duration)}))));
+    internal bool AnnualEdition{get;init;}
+    internal string? EpisodeName{get;init;}
+    internal string? SeasonName{get;init;}
+    internal int SeasonYear{get;init;}
+    internal int TmdbId{get;init;}
+    internal int CatalogYear{get;init;}
+    internal static int Tmdb(EmbyItem item)
+    {
+        string? value=item.ProviderIds?.FirstOrDefault(p=>p.Key.Equals("Tmdb",StringComparison.OrdinalIgnoreCase)).Value;
+        return int.TryParse(value,NumberStyles.None,CultureInfo.InvariantCulture,out var id)&&id>0?id:0;
+    }
+    internal string Key => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(TmdbId>0
+        ?new object[]{Title,Season,Episode,Year,Movie,Math.Round(Duration),TmdbId}
+        :new object[]{Title,Season,Episode,Year,Movie,Math.Round(Duration)}))));
     internal static DanmakuIdentity? From(EmbyItem item,double duration)
     {
         bool movie=item.Type.Equals("Movie",StringComparison.OrdinalIgnoreCase);
         if(!movie&&!item.Type.Equals("Episode",StringComparison.OrdinalIgnoreCase))return null;
         string title=(movie?item.Name:item.SeriesName)?.Trim()??"";
-        if(title.Length is <2 or >160||!movie&&(item.IndexNumber is not >0||item.ParentIndexNumber==0))return null;
+        var explicitNumber=movie?null:EpisodeLabels.ExplicitNumber(item);
+        int episode=movie?1:explicitNumber?.Episode??item.IndexNumber??0;
+        if(title.Length is <2 or >160||episode<=0)return null;
         // Episode production year can differ from the series premiere year.
-        return new(title,item.ParentIndexNumber??1,movie?1:item.IndexNumber!.Value,movie?item.ProductionYear??0:0,movie,duration)
+        return new(title,explicitNumber?.Season??item.ParentIndexNumber??1,episode,movie?item.ProductionYear??0:0,movie,duration)
         {
+            AnnualEdition=explicitNumber?.Annual==true,
+            EpisodeName=movie||explicitNumber is not null?null:DanmakuProtocol.EpisodeSubtitle(item.Name),
+            TmdbId=movie?Tmdb(item):0,
             Aliases=movie&&!string.IsNullOrWhiteSpace(item.OriginalTitle)?[item.OriginalTitle]:[],
-            Animation=item.Genres?.Any(g=>g is "动画" or "動畫" or "动漫" or "動漫" or "国漫" or "國漫"
-                ||string.Equals(g,"Animation",StringComparison.OrdinalIgnoreCase))==true
+            Animation=IsAnimation(item)
         };
     }
+    internal static bool IsAnimation(EmbyItem item)
+        =>item.Genres?.Any(g=>g is "动画" or "動畫" or "动漫" or "動漫" or "国漫" or "國漫"
+            ||string.Equals(g,"Animation",StringComparison.OrdinalIgnoreCase))==true;
 }
 internal sealed record DanmakuComment(double Time,int Mode,uint Color,string Text);
 internal sealed record DanmakuTrack(string Source,string Identity,double Duration,DanmakuComment[] Comments,int Confidence)
 {
     public string? StreamCid{get;init;}
     public bool Partial{get;init;}
+    internal int SeedIndex{get;init;}
     [System.Text.Json.Serialization.JsonIgnore]
     internal PublicDanmaku.Feed? PublicFeed{get;init;}
 }
 internal sealed record DanmakuCandidate(string Label,string Cid,double Duration,int Confidence);
 internal sealed class DanmakuOptions
 {
+    internal const string BuiltInSourcesText="同时查找哔哩哔哩、腾讯视频、爱奇艺和芒果 TV，使用最先返回可用弹幕的来源。无需配置地址。";
     public bool Enabled{get;set;}=true;
     public bool Automatic{get;set;}=true;
     public double Opacity{get;set;}=.8;
@@ -61,11 +83,25 @@ internal sealed class DanmakuOptions
         double Bound(double x,double min,double max,double fallback)=>double.IsFinite(x)?Math.Clamp(x,min,max):fallback;
         Opacity=Bound(Opacity,.15,1,.8);FontSize=Bound(FontSize,14,40,24);Area=Bound(Area,.2,1,.5);
         TravelSeconds=Bound(TravelSeconds,4,20,9);Delay=Bound(Delay,-3600,3600,0);
-        CompatibleApi=CompatibleApi?.Trim()??"";
-        // This was the unverified built-in default, not a user-supplied source.
-        if(CompatibleApi.TrimEnd('/').Equals("https://api.danmu.icu/api/v2",StringComparison.OrdinalIgnoreCase))CompatibleApi="";
-        if(CompatibleApi.Length>512||!Uri.TryCreate(CompatibleApi,UriKind.Absolute,out var uri)||uri.Scheme!="https"||uri.UserInfo.Length>0||uri.Query.Length>0||uri.Fragment.Length>0)CompatibleApi="";
-        else CompatibleApi=CompatibleApi.TrimEnd('/')+(uri.AbsolutePath.TrimEnd('/').EndsWith("/api/v2",StringComparison.OrdinalIgnoreCase)?"/":"/api/v2/");
+        CompatibleApi=string.Join("\n",CompatibleEndpoints());
+    }
+    internal string[] CompatibleEndpoints()
+    {
+        var result=new List<string>();
+        foreach(string value in (CompatibleApi??"").Split(['\r','\n'],StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries).Take(12))
+        {
+            if(value.Length>512||!Uri.TryCreate(value,UriKind.Absolute,out var uri)
+                ||uri.Scheme!="https"&&(uri.Scheme!="http"||!uri.IsLoopback)
+                ||uri.UserInfo.Length>0||uri.Query.Length>0||uri.Fragment.Length>0)continue;
+            string host=uri.IdnHost.TrimEnd('.').ToLowerInvariant();
+            if(host is "dandanplay.net" or "dandanplay.com" or "api.danmu.icu"
+                ||host.EndsWith(".dandanplay.net")||host.EndsWith(".dandanplay.com"))continue;
+            string url=uri.AbsoluteUri.TrimEnd('/');
+            url+=uri.AbsolutePath.TrimEnd('/').EndsWith("/api/v2",StringComparison.OrdinalIgnoreCase)?"/":"/api/v2/";
+            if(!result.Contains(url,StringComparer.Ordinal))result.Add(url);
+            if(result.Count==5)break;
+        }
+        return result.ToArray();
     }
 }
 internal static class DanmakuStorage
@@ -84,6 +120,17 @@ internal static class DanmakuStorage
     {
         string data=JsonSerializer.Serialize(options,Json);await Gate.WaitAsync().ConfigureAwait(false);
         try{await Atomic(Settings,data,CancellationToken.None).ConfigureAwait(false);}finally{Gate.Release();}
+    }
+    internal static async Task UpdateOptions(Action<DanmakuOptions> edit)
+    {
+        await Gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var options=await ReadOptions(CancellationToken.None).ConfigureAwait(false);
+            edit(options);options.Normalize();
+            await Atomic(Settings,JsonSerializer.Serialize(options,Json),CancellationToken.None).ConfigureAwait(false);
+        }
+        finally{Gate.Release();}
     }
     static async Task Atomic(string path,string data,CancellationToken token)
     {
@@ -172,7 +219,7 @@ internal static class DanmakuProtocol
         if(id.Movie||(Uri.TryCreate(id.Title,UriKind.Absolute,out var uri)&&uri.Scheme is "https" or "http")||id.Season<=0)return null;
         string title=SeasonPattern.Replace(Clean(id.Title),"").Trim();
         bool annual=title.EndsWith("年番",StringComparison.Ordinal);
-        if(!annual&&!id.ContinuousNumbering&&id.Episode<ContinuousEpisodeFloor)return null;
+        if(!annual&&!id.AnnualEdition&&!id.ContinuousNumbering&&id.Episode<ContinuousEpisodeFloor)return null;
         return annual?title[..^2].TrimEnd():title;
     }
 
@@ -194,6 +241,33 @@ internal static class DanmakuProtocol
         // Never strip sequels, years or subtitles to force a fuzzy match.
         return new[]{id.Title}.Concat(id.Aliases).Any(title=>Compact(SeasonPattern.Replace(candidate,""))==Compact(SeasonPattern.Replace(Clean(title),"")));
     }
+    internal static bool SeriesTitleMatches(DanmakuIdentity id,string candidate)
+    {
+        string key=Compact(SeasonPattern.Replace(Clean(candidate),""));
+        return key.Length>=2&&new[]{id.Title}.Concat(id.Aliases).Any(title=>
+            Compact(SeasonPattern.Replace(Clean(title),""))==key);
+    }
+
+    internal static bool SeasonNameMatches(DanmakuIdentity id,string candidate)
+    {
+        if(id.SeasonName is not {Length:>=2} name||SeasonPattern.IsMatch(name))return false;
+        string key=Compact(name),other=Compact(Clean(candidate));
+        return key.Length>=2&&(other==key||other==Compact(id.Title)+key);
+    }
+
+    internal static string? EpisodeSubtitle(string? name)
+    {
+        if(name is not {Length:>=2 and <=160})return null;
+        string value=Regex.Replace(Clean(name),
+            @"^(?:第\s*\d+\s*[集话話]|(?:Episode|Ep\.?|E)\s*\d+)(?=$|[\s·:：-])[\s·:：-]*",
+            "",RegexOptions.IgnoreCase,TimeSpan.FromMilliseconds(50)).Trim();
+        return value.Length>=2&&!int.TryParse(value,out _)?value:null;
+    }
+
+    internal static bool EpisodeNameMatches(DanmakuIdentity id,string title)
+        =>id.EpisodeName is {} name&&EpisodeSubtitle(title) is {} candidate
+            &&Compact(name).Length>=2&&Compact(name)==Compact(candidate);
+
     internal static bool EpisodeMatches(string title,int number)
     {
         title=Clean(title);
@@ -220,7 +294,7 @@ internal static class DanmakuProtocol
         {
             if(xml.NodeType!=XmlNodeType.Element||xml.Name!="d"){xml.Read();continue;}
             string[] p=(xml.GetAttribute("p")??"").Split(',');string text=xml.ReadElementContentAsString();
-            if(p.Length>=4&&double.TryParse(p[0],NumberStyles.Float,CultureInfo.InvariantCulture,out var time)&&int.TryParse(p[1],out int mode)&&uint.TryParse(p[3],out uint color))comments.Add(new(time,mode,color,text));
+            if(p.Length>=4&&double.TryParse(p[0],NumberStyles.Float,CultureInfo.InvariantCulture,out var time)&&int.TryParse(p[1],out int mode)&&uint.TryParse(p[3],out uint color))comments.Add(new(time,mode is 2 or 3?1:mode,color,text));
         }
         return Normalize(comments);
     }

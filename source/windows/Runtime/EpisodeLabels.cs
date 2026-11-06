@@ -6,8 +6,27 @@ namespace Yingyu.Update;
 
 public static class EpisodeLabels
 {
+    static readonly Regex NumberedTitle=new(
+        @"^(?<series>.+?)[\s._·-]*(?:第\s*(?<season>\d{1,3})\s*季\s*(?<annual>年番)?\s*第\s*(?<episode>\d{1,5})\s*[集话話]|S(?<season>\d{1,3})[\s._-]*E(?<episode>\d{1,5})(?!\d))",
+        RegexOptions.IgnoreCase,TimeSpan.FromMilliseconds(50));
+
+    internal static (int Season,int Episode,bool Annual)? ExplicitNumber(EmbyItem item)
+    {
+        if(!string.Equals(item.Type,"Episode",StringComparison.OrdinalIgnoreCase)
+            ||item.Name is not {Length:>0 and <=240} name||string.IsNullOrWhiteSpace(item.SeriesName))return null;
+        var match=NumberedTitle.Match(name.Trim());
+        if(!match.Success||!int.TryParse(match.Groups["season"].Value,out int season)
+            ||!int.TryParse(match.Groups["episode"].Value,out int episode)||episode<=0
+            ||item.ParentIndexNumber is {} indexedSeason&&indexedSeason!=season)return null;
+        string TitleKey(string value)=>Regex.Replace(value,@"[\s\p{P}\p{S}]","",RegexOptions.None,TimeSpan.FromMilliseconds(50));
+        if(!string.Equals(TitleKey(match.Groups["series"].Value),TitleKey(item.SeriesName),StringComparison.OrdinalIgnoreCase))return null;
+        return (season,episode,match.Groups["annual"].Success);
+    }
+
+    internal static int? Index(EmbyItem item)=>ExplicitNumber(item)?.Episode??item.IndexNumber;
+
     public static string Number(EmbyItem item, int ordinal)
-        => (item.IndexNumber is >= 0 ? item.IndexNumber.Value : ordinal).ToString();
+        => (Index(item) is >=0 and int number?number:ordinal).ToString();
 
     public static string Range(string first, string last, int start, int count)
     {
@@ -20,6 +39,7 @@ public static class EpisodeLabels
     {
         ArgumentNullException.ThrowIfNull(item);
         if (!string.Equals(item.Type, "Episode", StringComparison.OrdinalIgnoreCase)) return item.Name;
+        if(ExplicitNumber(item) is {} numbered)return $"第 {numbered.Episode} 集 · {item.SeriesName!.Trim()}";
         string name = item.Name?.Trim() ?? "";
         if (item.IndexNumber is > 0)
             name = Regex.Replace(name, $@"^(?:第\s*{item.IndexNumber}\s*[集话話]|(?:Episode|Ep\.?|E)\s*{item.IndexNumber}(?!\d))\s*[·:：\-—]*\s*", "", RegexOptions.IgnoreCase);

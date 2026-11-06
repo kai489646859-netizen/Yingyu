@@ -22,10 +22,6 @@ public static class PlaybackUi
             if (work.Width <= 0 || work.Height <= 0) return false;
             var bounds = display.OuterBounds;
             if (bounds.Width <= 0 || bounds.Height <= 0) return false;
-            // The original ConfigureTitleBar runs just after this centering
-            // call. Apply its existing content-extension flag before measuring
-            // the frame so the later call cannot change the fitted client size.
-            if (AppWindowTitleBar.IsCustomizationSupported()) window.TitleBar.ExtendsContentIntoTitleBar = true;
             // Match the fullscreen display's viewport shape, using client pixels
             // rather than the former fixed 1280:760 outer-frame shape. mpv keeps
             // the original source aspect and therefore the same relative fit.
@@ -34,9 +30,10 @@ public static class PlaybackUi
             int frameWidth = Math.Max(0, window.Size.Width - (client.Right - client.Left));
             int frameHeight = Math.Max(0, window.Size.Height - (client.Bottom - client.Top));
             double aspect = (double)bounds.Width / bounds.Height;
-            int clientWidth = Math.Max(Math.Min(1280, work.Width), (int)Math.Round(work.Width * .75)) - frameWidth;
+            int clientWidth = Math.Max(Math.Min(1280, work.Width), (int)Math.Round(work.Width * .84)) - frameWidth;
             int clientHeight = (int)Math.Round(clientWidth / aspect);
             int heightLimit = Math.Max(Math.Min(760, work.Height), (int)Math.Round(work.Height * .90)) - frameHeight;
+            if(clientWidth<=0||heightLimit<=0)return false;
             if (clientHeight > heightLimit) { clientHeight = heightLimit; clientWidth = (int)Math.Round(clientHeight * aspect); }
             int width = Math.Clamp(clientWidth + frameWidth, 1, work.Width);
             int height = Math.Clamp(clientHeight + frameHeight, 1, work.Height);

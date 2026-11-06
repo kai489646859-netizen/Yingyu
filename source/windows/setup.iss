@@ -1,4 +1,4 @@
-#define AppVersion "1.2.2"
+#define AppVersion "1.3.4"
 #ifndef PayloadRoot
   #define PayloadRoot "payload"
 #endif
@@ -26,7 +26,7 @@ OutputBaseFilename=Yingyu-Setup-x64-{#AppVersion}
 SetupIconFile={#PayloadRoot}\Assets\YingyuAppIcon.ico
 UninstallDisplayIcon={app}\Yingyu.exe
 UninstallDisplayName=映屿 测试版 {#AppVersion}
-VersionInfoVersion=1.2.2.0
+VersionInfoVersion=1.3.4.0
 VersionInfoProductVersion={#AppVersion}
 VersionInfoDescription=映屿 测试版 {#AppVersion} 安装程序
 Compression=lzma2/normal

@@ -1,15 +1,15 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using EmbyDesktop.Core.Models;
+using EmbyDesktop.Core.Services;
 using Microsoft.UI.Dispatching;
-using Microsoft.UI.Composition;
-using System.Runtime.InteropServices;
 using Richasy.MpvKernel.Core.Enums;
 using Richasy.MpvKernel.Core.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Windows.Foundation;
 
 namespace Yingyu.Update;
@@ -64,6 +64,10 @@ internal static class PlayerDanmaku
         }
         catch(Exception e){Log(e);}
     }
+    internal static void ApplySettings(Action<DanmakuOptions> edit)
+    {
+        foreach(var pair in States)pair.Value.ApplySettings(edit);
+    }
     internal static UIElement Menu(object session)=>BuildMenu(States.TryGetValue(session,out var state)?state:null);
     internal static UIElement OverlayMenu(object overlay)=>BuildMenu(Overlays.TryGetValue(overlay,out var state)?state:null);
     static readonly ConditionalWeakTable<object,ToggleButton> FeaturedButtons=new();
@@ -86,14 +90,11 @@ internal static class PlayerDanmaku
     sealed class Moving
     {
         internal required Border View;
-        internal CompositionPropertySet? Position;
-        internal ExpressionAnimation? Translation;
-        internal ScalarKeyFrameAnimation? Travel;
-        internal bool Fallback;
-        internal bool Exiting;
-        internal double ExitX;
-        internal AnimationController? Motion;
-        internal DanmakuComment Comment=null!;internal double End,Width,Velocity,X;internal int Row;internal bool Fits=true;internal TextBlock[] Glyphs=[];
+        internal bool FirstFrame,TravelDone;
+        internal Storyboard? Travel;
+        internal double OriginX,ExitX;
+        internal float DrawnX=float.NaN;
+        internal DanmakuComment Comment=null!;internal double End,Width,Height,Velocity,X;internal int Row;internal bool Fits=true;internal TextBlock[] Glyphs=[];
     }
     // Aggregate on the dispatcher and enqueue one local log entry per window.
     // Timings describe callbacks and CPU work, not frames presented by DWM.
@@ -101,10 +102,16 @@ internal static class PlayerDanmaku
     {
         long first, lastFrame;
         int timerUpdates, gaps, stale, held, epochs, maxRows;
-        double maxGap, maxWork, maxSampleAge, maxDrift;
+        double maxGap, maxWork, maxSampleAge, maxDrift, maxRenderGap, maxRenderStep;
+
+        internal void RecordRender(double gap,double step)
+        {
+            maxRenderGap=Math.Max(maxRenderGap,gap*1000);
+            maxRenderStep=Math.Max(maxRenderStep,step*1000);
+        }
 
         internal void Record(object session,long now,bool moving,bool playing,
-            bool epochChanged,double age,double drift,double speed,int rows,bool featured)
+            bool epochChanged,double age,double drift,double speed,int rows,bool featured,bool independent)
         {
             if(first==0)first=now;
             if(moving)
@@ -132,7 +139,7 @@ internal static class PlayerDanmaku
             double seconds=Stopwatch.GetElapsedTime(first,now).TotalSeconds;
             if(seconds<8)return;
             PlaybackTelemetry.DanmakuTiming(session,FormattableString.Invariant(
-                $"windowSeconds={seconds:0.0}; speedLast={speed:0.##}; featured={featured}; motion=compositor-or-fallback; timerUpdates={timerUpdates}; timerGaps50ms={gaps}; maxTimerGapMs={maxGap:0.0}; maxWorkMs={maxWork:0.0}; staleUpdates={stale}; heldUpdates={held}; epochChanges={epochs}; maxSampleAgeMs={maxSampleAge:0.0}; maxClockDriftMs={maxDrift:0.0}; peakRows={maxRows}"));
+                $"windowSeconds={seconds:0.0}; speedLast={speed:0.##}; featured={featured}; motion={(independent?"independent-row":"frame-fallback")}; maxRenderGapMs={maxRenderGap:0.0}; maxRenderStepMs={maxRenderStep:0.0}; timerUpdates={timerUpdates}; timerGaps50ms={gaps}; maxTimerGapMs={maxGap:0.0}; maxWorkMs={maxWork:0.0}; staleUpdates={stale}; heldUpdates={held}; epochChanges={epochs}; maxSampleAgeMs={maxSampleAge:0.0}; maxClockDriftMs={maxDrift:0.0}; peakRows={maxRows}"));
             this=default;
         }
     }
@@ -141,7 +148,14 @@ internal static class PlayerDanmaku
     {
         internal FrameworkElement Element=>overlay;
         readonly object session;readonly FrameworkElement overlay;readonly Canvas canvas=new(){IsHitTestVisible=false};
-        readonly DispatcherQueueTimer timer;readonly List<Moving> active=new();
+        readonly DispatcherQueueTimer timer,resizeTimer;readonly List<Moving> active=new();
+        readonly Queue<(DanmakuComment Comment,double Until)> pendingRows=new();
+        const int PendingLimit=144;
+        double layoutWidth,layoutFont,metricsFont=double.NaN;
+        readonly Dictionary<string,double> commentWidths=new(StringComparer.Ordinal);
+        readonly Queue<DanmakuComment> recentCommentsOrder=new();
+        readonly HashSet<DanmakuComment> recentComments=new();
+        bool rollingReported,entryReported;
         readonly Stack<Moving> availableRows=new();
         readonly TextBlock measurer=new()
         {
@@ -151,17 +165,19 @@ internal static class PlayerDanmaku
         readonly SolidColorBrush darkOutline=DesktopVisuals.Brush(0xFF101010);
         readonly SolidColorBrush textBackground=DesktopVisuals.Brush(0x80000000);
         CancellationTokenSource? lifetime;
-        readonly Dictionary<string,CancellationTokenSource> feeds=new(StringComparer.Ordinal);
-        readonly Dictionary<string,DanmakuTrack> sourceTracks=new(StringComparer.Ordinal);
-        bool combining;
-        int trackRevision;DanmakuOptions options=new();DanmakuIdentity? identity,lastSearchIdentity;DanmakuTrack? track;
+        CancellationTokenSource? feed;
+        DanmakuOptions options=new();DanmakuIdentity? identity,lastSearchIdentity;DanmakuTrack? track;
         readonly DispatcherQueueTimer saveTimer;readonly DispatcherQueueTimer retryTimer;double feedPosition;int attempts;string? lastQuery;bool searching;
         DanmakuCandidate[] candidates=[];ComboBox? candidateBox;
-        int generation=int.MinValue,request,index,appliedSearch=-1;bool stopped=true,attached,optionsReady,waiting;
+        int generation=int.MinValue,request,index;bool stopped=true,attached,optionsReady,waiting;
         internal readonly DanmakuClock MediaClock = new();
-        double clock,last=double.NaN,measuredFont=double.NaN;
+        double clock,last=double.NaN;
         long renderedAt, admittedAt;
-        bool fallbackRendering;
+        bool motionRendering;
+        Windows.UI.ViewManagement.UISettings? systemSettings;
+        bool independentUnavailable;
+        long lastMotionFrame;
+        double frameCadence=1d/60;
         FrameProbe frameProbe;
         int mediaEpoch=-1;
         double motionRate,lastSpeed;
@@ -177,7 +193,14 @@ internal static class PlayerDanmaku
             retryTimer=overlay.DispatcherQueue.CreateTimer();retryTimer.IsRepeating=false;retryTimer.Tick+=(_,_)=>Guard(()=>{if(Current&&options.Enabled&&options.Automatic&&attempts<3){attempts++;Search(false,lastQuery);}});
             overlay.Loaded+=(_,_)=>Guard(()=>{Bind();Ready();});
             overlay.Unloaded+=(_,_)=>Guard(()=>{Stop();attached=false;});
-            overlay.SizeChanged+=(_,_)=>Guard(()=>{if(Current){Clip();Reflow();}});
+            resizeTimer=overlay.DispatcherQueue.CreateTimer();
+            resizeTimer.IsRepeating=false;resizeTimer.Interval=TimeSpan.FromMilliseconds(75);
+            resizeTimer.Tick+=(_,_)=>Guard(()=>{if(Current)Reflow();});
+            overlay.SizeChanged+=(_,_)=>Guard(()=>
+            {
+                if(!Current)return;
+                Clip();resizeTimer.Stop();resizeTimer.Start();
+            });
         }
         internal bool Current=>!stopped&&overlay.IsLoaded&&!NativeDolby.IsClosing(session)
             &&generation==Access.Get<int>(session,"_mediaGeneration")&&ReferenceEquals(overlay,Access.Get<object?>(session,"_overlay"));
@@ -189,7 +212,7 @@ internal static class PlayerDanmaku
             Stop();
             MediaClock.Reset(Access.Get<double>(session,"_position"),Access.Get<double>(session,"_currentSpeed"));
             stopped=false;generation=Access.Get<int>(session,"_mediaGeneration");request++;
-            identity=null;lastSearchIdentity=null;optionsReady=false;
+            identity=null;lastSearchIdentity=null;optionsReady=false;rollingReported=false;entryReported=false;
             if(overlay.IsLoaded)Attach();
             var cts=lifetime=new CancellationTokenSource();int version=request;
             _=Initialize(version,cts.Token);
@@ -221,7 +244,7 @@ internal static class PlayerDanmaku
         internal void Stop()
         {
             if(saveTimer.IsRunning){saveTimer.Stop();_=Save();}
-            stopped=true;waiting=false;request++;Cancel();ResetSources();retryTimer.Stop();attempts=0;candidates=[];candidateBox=null;status=null;timer.Stop();Clear();foreach(var row in availableRows){row.Translation?.Dispose();row.Position?.Dispose();}availableRows.Clear();measurer.Text="";track=null;last=double.NaN;mediaEpoch=-1;motionRate=0;rateAt=0;renderedAt=0;frameProbe=default;
+            stopped=true;waiting=false;request++;Cancel();ResetSources();retryTimer.Stop();resizeTimer.Stop();attempts=0;candidates=[];candidateBox=null;status=null;timer.Stop();Clear();availableRows.Clear();measurer.Text="";track=null;last=double.NaN;mediaEpoch=-1;motionRate=0;rateAt=0;renderedAt=0;frameProbe=default;
         }
         internal void BeginStop()
         {
@@ -231,12 +254,11 @@ internal static class PlayerDanmaku
         void Cancel(){searching=false;var previous=lifetime;lifetime=null;previous?.Cancel();previous?.Dispose();}
         void StopFeed()
         {
-            foreach(var owner in feeds.Values){owner.Cancel();owner.Dispose();}
-            feeds.Clear();
+            var previous=feed;feed=null;previous?.Cancel();previous?.Dispose();
         }
         void ResetSources()
         {
-            StopFeed();sourceTracks.Clear();track=null;trackRevision++;
+            StopFeed();track=null;
         }
         internal void Ready()
         {
@@ -252,16 +274,24 @@ internal static class PlayerDanmaku
             double duration=Access.Get<double>(session,"_duration");
             if(!double.IsFinite(duration)||duration<=0)duration=item.RunTimeTicks.GetValueOrDefault()/10000000d;
             var match=DanmakuIdentity.From(item,duration);
-            if(match is null&&item.Type=="Episode"&&!string.IsNullOrWhiteSpace(item.Id))
+            if(item.Type=="Episode"&&!string.IsNullOrWhiteSpace(item.Id))
             {
-                // Only the queue row for the same item can fill missing episode metadata.
+                // The playback record may have a number but lack the edition
+                // name present on the same episode's catalogue record.
                 var row=playlist.FirstOrDefault(ep=>string.Equals(ep.Id,item.Id,StringComparison.OrdinalIgnoreCase)
                     &&(string.IsNullOrWhiteSpace(item.SeriesId)||string.Equals(item.SeriesId,ep.SeriesId,StringComparison.OrdinalIgnoreCase)));
-                if(row is not null)match=DanmakuIdentity.From(row,duration);
+                if(row is not null&&DanmakuIdentity.From(row,duration) is {} listed)
+                {
+                    match=match is null?listed:match with
+                    {
+                        AnnualEdition=match.AnnualEdition||listed.AnnualEdition&&match.Episode==listed.Episode&&match.Season==listed.Season,
+                        EpisodeName=match.EpisodeName??listed.EpisodeName
+                    };
+                }
             }
             if(match is not {Movie:false}||playlist.Count<DanmakuProtocol.ContinuousEpisodeFloor)return match;
             if(!playlist.Any(ep=>string.Equals(ep.Id,item.Id,StringComparison.OrdinalIgnoreCase)))return match;
-            bool continuous=playlist.Any(ep=>ep.IndexNumber>=DanmakuProtocol.ContinuousEpisodeFloor
+            bool continuous=playlist.Any(ep=>EpisodeLabels.Index(ep)>=DanmakuProtocol.ContinuousEpisodeFloor
                 &&(!string.IsNullOrWhiteSpace(item.SeasonId)
                     ?string.Equals(ep.SeasonId,item.SeasonId,StringComparison.OrdinalIgnoreCase)
                     :!string.IsNullOrWhiteSpace(item.SeriesId)&&string.Equals(ep.SeriesId,item.SeriesId,StringComparison.OrdinalIgnoreCase)
@@ -272,14 +302,50 @@ internal static class PlayerDanmaku
         internal void PlaylistReady()=>Guard(()=>
         {
             if(!Current||!optionsReady||!options.Enabled||!options.Automatic
-                ||!string.IsNullOrWhiteSpace(lastQuery)||sourceTracks.Count>0)return;
+                ||!string.IsNullOrWhiteSpace(lastQuery)||track is not null)return;
             if(waiting){Ready();return;}
             var updated=CurrentIdentity();
-            if(updated is null||lastSearchIdentity is {} old&&old.Key==updated.Key
-                &&old.ContinuousNumbering==updated.ContinuousNumbering)return;
+            if(updated is null||lastSearchIdentity is {} old&&old.Key==updated.Key&&old.AnnualEdition==updated.AnnualEdition
+                &&(old.ContinuousNumbering==updated.ContinuousNumbering||old.AnnualEdition))return;
             DanmakuSources.Trace("player","lookup","playlist-recheck");
             Search();
         });
+
+        static async Task<DanmakuIdentity> EnrichIdentity(DanmakuIdentity id,EmbyApiClient? client,
+            string? seriesId,string? seasonId,CancellationToken token)
+        {
+            if(id.Movie||client is null||string.IsNullOrWhiteSpace(seriesId))return id;
+            using var budget=CancellationTokenSource.CreateLinkedTokenSource(token);
+            budget.CancelAfter(TimeSpan.FromMilliseconds(1400));
+            async Task<EmbyItem?> Read(string? itemId,string type)
+            {
+                if(string.IsNullOrWhiteSpace(itemId))return null;
+                try
+                {
+                    var item=await LocalMetadata.CachedDisplayItem(client,itemId,budget.Token).ConfigureAwait(false);
+                    return item?.Type==type&&string.Equals(item.Id,itemId,StringComparison.OrdinalIgnoreCase)?item:null;
+                }
+                catch(Exception e)when(e is not OutOfMemoryException)
+                {token.ThrowIfCancellationRequested();return null;}
+            }
+
+            var parent=Read(seriesId,"Series");
+            var seasonTask=Read(seasonId,"Season");
+            var series=await parent.ConfigureAwait(false);
+            var season=await seasonTask.ConfigureAwait(false);
+            if(series is not null)
+            {
+                var aliases=id.Aliases.Concat(new[]{series.OriginalTitle,series.Name})
+                    .Where(t=>!string.IsNullOrWhiteSpace(t)&&t.Length<=160)
+                    .Select(t=>t!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                id=id with{TmdbId=DanmakuIdentity.Tmdb(series),CatalogYear=series.ProductionYear??0,Aliases=aliases,
+                    Animation=id.Animation||DanmakuIdentity.IsAnimation(series)};
+            }
+            if(season is not null&&(string.IsNullOrEmpty(season.SeriesId)
+                ||string.Equals(season.SeriesId,seriesId,StringComparison.OrdinalIgnoreCase)))
+                id=id with{SeasonName=season.Name,SeasonYear=season.ProductionYear??0};
+            return id;
+        }
 
         void Search(bool refresh=false,string? query=null)
         {
@@ -288,35 +354,43 @@ internal static class PlayerDanmaku
             Cancel();var cts=lifetime=new CancellationTokenSource();var token=cts.Token;int version=++request;
             var id=identity=CurrentIdentity();
             lastSearchIdentity=id;
-            var prefs=new DanmakuOptions{CompatibleApi=options.CompatibleApi};
+            var prefs=new DanmakuOptions{
+                CompatibleApi=options.CompatibleApi,Scroll=options.Scroll,Top=options.Top,Bottom=options.Bottom
+            };
+            double position=Math.Max(0,Access.Get<double>(session,"_position")-options.Delay);
+            if(!double.IsFinite(position))position=0;
             if(id is null)
             {
                 Describe("缺少准确片名或集数，未自动加载");
                 DanmakuSources.Trace("player","lookup","missing-identity");return;
             }
             if(DanmakuSources.IsPlatformLink(query)&&!PublicDanmaku.IsDirectLink(query)&&string.IsNullOrEmpty(prefs.CompatibleApi))
-            {Describe("请粘贴腾讯视频或爱奇艺的单集链接，其他链接可通过兼容服务读取");return;}
+            {Describe("可粘贴腾讯视频、爱奇艺或芒果 TV 单集链接，其他链接可通过自建服务读取");return;}
+            var client=Access.Get<EmbyApiClient?>(session,"_embyClient");
+            var item=Access.Get<EmbyItem>(session,"_item");
+            var seriesId=item.SeriesId;
+            var seasonId=item.SeasonId;
             searching=true;
-            Describe("正在后台查找公开弹幕…");
+            Describe("正在同时查找公开弹幕…");
             _=Task.Run(async()=>{
                 int found=0;bool offered=false;
                 try{
-                    DanmakuSources.Trace("player","lookup",id.ContinuousNumbering?"start-continuous":"start");
-                    await DanmakuSources.Find(id,prefs,candidate=>{
+                    DanmakuSources.Trace("player","lookup",id.AnnualEdition?"start-annual":id.ContinuousNumbering?"start-continuous":"start");
+                    var lookup=string.IsNullOrWhiteSpace(query)
+                        ?await EnrichIdentity(id,client,seriesId,seasonId,token).ConfigureAwait(false):id;
+                    await DanmakuSources.Find(lookup,prefs,candidate=>{
                         if(token.IsCancellationRequested)return;Interlocked.Increment(ref found);
                         overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>{
                             if(version!=request||!Current||token.IsCancellationRequested)return;
-                            if(appliedSearch!=version&&!string.IsNullOrWhiteSpace(query))ResetSources();
-                            appliedSearch=version;
                             ApplyTrack(candidate);
                         }));
                     },token,refresh,rows=>{
-                        offered=true;var copy=rows.ToArray();overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>{if(version!=request||!Current||token.IsCancellationRequested)return;candidates=copy;FillCandidates();if(sourceTracks.Count==0)Describe("找到多个哔哩哔哩候选，可在弹幕面板选择版本");}));
-                    },query).ConfigureAwait(false);
+                        offered=true;var copy=rows.ToArray();overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>{if(version!=request||!Current||token.IsCancellationRequested)return;identity=lookup;candidates=copy;FillCandidates();if(track is null)Describe("找到多个哔哩哔哩候选，可在弹幕面板选择版本");}));
+                    },query,position).ConfigureAwait(false);
                     if(found==0&&!offered)overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>{
                         if(version!=request||!Current||token.IsCancellationRequested)return;
-                        if(sourceTracks.Count>0){Describe("新查询暂未匹配，保留已有弹幕来源");return;}
-                        if(options.Automatic&&attempts<3){retryTimer.Interval=TimeSpan.FromSeconds(30*(attempts+1));retryTimer.Start();Describe("暂未匹配，稍后自动重试；也可搜索或粘贴单集播放链接");}
+                        if(track is not null){Describe("新查询暂未匹配，保留已有弹幕来源");return;}
+                        if(options.Automatic&&attempts<3){retryTimer.Interval=TimeSpan.FromSeconds(attempts switch{0=>2,1=>15,_=>45});retryTimer.Start();Describe("暂未匹配，稍后自动重试；也可搜索或粘贴单集播放链接");}
                         else Describe("暂无可用匹配，请搜索或粘贴单集播放链接选择来源");
                     }));
                 }catch(OperationCanceledException){}catch(Exception e){Log(e);}
@@ -325,21 +399,20 @@ internal static class PlayerDanmaku
         }
         void ApplyTrack(DanmakuTrack candidate)
         {
-            string source=candidate.Source;
-            if(sourceTracks.TryGetValue(source,out var existing)&&
-                candidate.StreamCid is not null&&existing.StreamCid==candidate.StreamCid&&feeds.ContainsKey(source))return;
-            if(feeds.Remove(source,out var previous)){previous.Cancel();previous.Dispose();}
-            sourceTracks[source]=candidate;
-            RefreshCombined();
+            StopFeed();
+            Clear();
+            track=candidate;
+            Reindex();
+            DanmakuSources.Trace("player","render","received-rolling",candidate.Comments.Count(row=>row.Mode==1));
+            SetTrack(candidate);
             if(DanmakuSources.ValidCid(candidate.StreamCid)||candidate.PublicFeed is not null)
                 StartFeed(candidate);
         }
 
         void StartFeed(DanmakuTrack candidate)
         {
-            string source=candidate.Source;
-            if(feeds.ContainsKey(source))return;
-            var owner=new CancellationTokenSource();feeds.Add(source,owner);
+            if(feed is not null)return;
+            var owner=feed=new CancellationTokenSource();
             var token=owner.Token;
             Volatile.Write(ref feedPosition,Math.Max(0,Access.Get<double>(session,"_position")-options.Delay));
             _=Task.Run(async()=>
@@ -351,13 +424,11 @@ internal static class PlayerDanmaku
                         if(token.IsCancellationRequested)return;
                         overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>
                         {
-                            if(token.IsCancellationRequested||!Current)return;
-                            sourceTracks[source]=snapshot;RefreshCombined();
+                            if(!token.IsCancellationRequested&&Current)SetTrack(snapshot);
                         }));
                     },message=>overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>
                     {
-                        if(!token.IsCancellationRequested&&Current&&sourceTracks.Values.All(t=>t.Comments.Length==0))
-                            Describe(message);
+                        if(!token.IsCancellationRequested&&Current&&track?.Comments.Length==0)Describe(message);
                     })),token).ConfigureAwait(false);
                 }
                 catch(OperationCanceledException){}
@@ -365,46 +436,15 @@ internal static class PlayerDanmaku
             },token);
         }
 
-        void RefreshCombined()
+        void SetTrack(DanmakuTrack selected)
         {
-            trackRevision++;
-            if(sourceTracks.Count==0)return;
-            if(sourceTracks.Count==1){SetCombined(sourceTracks.Values.First());return;}
-            if(combining)return;
-            var snapshot=sourceTracks.Values.OrderBy(t=>t.Source,StringComparer.Ordinal).ToArray();
-            combining=true;
-            int revision=trackRevision;
-            _=Task.Run(()=>
-            {
-                // Keep a bounded, evenly sampled share per source. Dense
-                // providers must not crowd out the later part of another track.
-                int limit=120000/snapshot.Length;
-                var comments=DanmakuProtocol.Normalize(snapshot.SelectMany(t=>SampleRows(t.Comments,limit)));
-                var labels=snapshot.Where(t=>t.Comments.Length>0).Select(t=>t.Source).ToArray();
-                var combined=new DanmakuTrack(labels.Length>0?string.Join(" + ",labels):"公开弹幕",
-                    snapshot[0].Identity,0,comments,0);
-                overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>
-                {
-                    combining=false;
-                    if(!Current||!options.Enabled)return;
-                    if(revision!=trackRevision){RefreshCombined();return;}
-                    SetCombined(combined);
-                }));
-            });
-        }
-
-        static IEnumerable<DanmakuComment> SampleRows(DanmakuComment[] rows,int limit)
-        {
-            if(rows.Length<=limit)return rows;
-            return Enumerable.Range(0,limit).Select(i=>rows[(int)((long)i*(rows.Length-1)/(limit-1))]);
-        }
-
-        void SetCombined(DanmakuTrack combined)
-        {
-            track=combined;Reindex(false);
+            bool first=track?.Comments.Length is null or 0;
+            track=selected;Reindex(false);
+            if(first&&selected.Comments.Length>0)
+                DanmakuSources.Trace("player","render","received-rolling",selected.Comments.Count(row=>row.Mode==1));
             if(options.Enabled)timer.Start();
-            Describe(combined.Comments.Length>0?combined.Source+" · "+combined.Comments.Length+" 条":
-                "已匹配来源，有可用弹幕时会自动显示");
+            Describe(selected.Comments.Length>0?selected.Source+" · "+selected.Comments.Length+" 条":
+                selected.Source+" · 正在读取弹幕");
         }
         void FillCandidates()
         {
@@ -415,17 +455,24 @@ internal static class PlayerDanmaku
         void Clear()
         {
             featuredRepeats.Clear();
-            foreach(var row in active){StopMotion(row);availableRows.Push(row);}
+            recentComments.Clear();
+            recentCommentsOrder.Clear();
+            pendingRows.Clear();
+            commentWidths.Clear();
+            foreach(var row in active)ReleaseRow(row);
+            canvas.Children.Clear();
             admittedAt=0;
-            active.Clear();canvas.Children.Clear();UpdateFallbackRendering();
+            active.Clear();UpdateMotionRendering();
         }
         void Reindex(bool resetClock=true, double? timelinePosition=null)
         {
             index=0;if(track is null)return;
             double now=timelinePosition??(Access.Get<double>(session,"_position")-options.Delay);
-            if(!resetClock&&!double.IsNaN(last))now=Math.Max(now,last);
+            // A snapshot can arrive just after the media clock crosses a
+            // comment. Admit it within the normal window from the right edge.
+            if(!resetClock)now=(double.IsFinite(last)?last:now)-Freshness(Access.Get<double>(session,"_currentSpeed"));
             int lo=0,hi=track.Comments.Length;
-            while(lo<hi){int mid=lo+(hi-lo)/2;if(track.Comments[mid].Time<now||!resetClock&&track.Comments[mid].Time==now)lo=mid+1;else hi=mid;}index=lo;
+            while(lo<hi){int mid=lo+(hi-lo)/2;if(track.Comments[mid].Time<now)lo=mid+1;else hi=mid;}index=lo;
             if(resetClock){last=double.NaN;renderedAt=0;motionRate=0;rateAt=0;}
         }
         void Tick(DispatcherQueueTimer sender,object args)=>Guard(Render);
@@ -433,7 +480,7 @@ internal static class PlayerDanmaku
         {
             if(!Current||!options.Enabled||track is null){timer.Stop();Clear();return;}
             double width=overlay.ActualWidth,height=overlay.ActualHeight;
-            if(width<100||height<80){SetMotionRate(0);UpdateFallbackRendering();SetTickInterval(66);return;}
+            if(width<100||height<80){SetMotionRate(0);UpdateMotionRendering();SetTickInterval(66);return;}
             var sample=MediaClock.Read();
             if(!double.IsFinite(sample.Position)||sample.Position<0)return;
             Volatile.Write(ref feedPosition,Math.Max(0,sample.Position-options.Delay));
@@ -459,21 +506,26 @@ internal static class PlayerDanmaku
                 for(int i=active.Count-1;i>=0;i--)
                 {
                     var row=active[i];
-                    if(row.Comment.Mode==1)
+                    if(row.Travel is {} travel)
                     {
-                        row.X=Math.Max(row.ExitX,row.X-progress*row.Velocity);
-                        if(clock>=row.End&&!row.Exiting)
-                        {
-                            // Allow the last compositor update to reach the left edge
-                            // before the dispatcher removes the visual.
-                            row.Exiting=true;
-                            if(row.Fallback)SetPosition(row,row.ExitX);
-                            continue;
-                        }
+                        // This snapshot is only for lane admission. The UI
+                        // scheduler never writes an animated row's position.
+                        row.TravelDone=travel.GetCurrentState()==ClockState.Filling;
+                        row.X=row.TravelDone?row.ExitX:Math.Min(row.X,
+                            Math.Max(row.ExitX,row.OriginX-travel.GetCurrentTime().TotalSeconds*row.Velocity));
                     }
-                    if(clock>=row.End)
+                    bool expired=row.Comment.Mode==1
+                        ? !row.Fits||(row.Travel is null?row.X<=row.ExitX:row.TravelDone)
+                        : clock>=row.End;
+                    if(expired)
                     {
-                        StopMotion(row);canvas.Children.Remove(row.View);active.RemoveAt(i);availableRows.Push(row);
+                        canvas.Children.Remove(row.View);active.RemoveAt(i);ReleaseRow(row);
+                    }
+                    else if(!entryReported&&row.Comment.Mode==1&&row.View.Visibility==Visibility.Visible
+                        &&row.X<width&&row.X+row.Width>0)
+                    {
+                        entryReported=true;
+                        DanmakuSources.Trace("player","render","rolling-entered-viewport",1);
                     }
                 }
                 bool speedChanged=sample.Speed!=lastSpeed;
@@ -487,35 +539,65 @@ internal static class PlayerDanmaku
                 if(moving&&(admittedAt==0||Stopwatch.GetElapsedTime(admittedAt,wall)>=TimeSpan.FromMilliseconds(30)))
                 {
                     admittedAt=wall;
-                    AdmitComments(track.Comments,sample.Speed,width,height);
+                    // During a native resize the existing visuals are clipped
+                    // immediately and repacked once the viewport has settled.
+                    if(!resizeTimer.IsRunning)AdmitComments(track.Comments,sample.Speed,width,height);
                 }
-                UpdateFallbackRendering();
+                UpdateMotionRendering();
                 SetTickInterval(moving?33:66);
             }
             finally
             {
                 if(measuredRows>0||active.Count>0)
                     frameProbe.Record(session,wall,moving,sample.Playing,epochChanged,age,
-                        target-clock,sample.Speed,Math.Max(measuredRows,active.Count),options.Featured);
+                        target-clock,sample.Speed,Math.Max(measuredRows,active.Count),options.Featured,active.Any(row=>row.Travel is not null));
                 else frameProbe=default;
             }
         }
 
+        static double Freshness(double speed)=>double.IsFinite(speed)?Math.Max(.6,speed*.35):.6;
+
         void AdmitComments(DanmakuComment[] comments,double speed,double width,double height)
         {
-            int inspected=0,attempted=0;
-            double freshness=Math.Max(.6,speed*.35);
+            int inspected=0;
+            double freshness=Freshness(speed);
+            if(active.Count==0){layoutWidth=width;layoutFont=EffectiveFont;}
             while(index<comments.Length&&comments[index].Time<clock-freshness&&inspected++<300)index++;
-            // Keep the previous admission budget even when the display refreshes faster.
-            // Late batches cannot monopolize the UI during dense sequences.
-            while(index<comments.Length&&comments[index].Time<=clock&&inspected++<300&&attempted<3)
+            while(index<comments.Length&&comments[index].Time<=clock&&inspected++<300)
             {
                 var comment=comments[index++];
-                if(clock-comment.Time>freshness||active.Count>=48||!ModeEnabled(comment.Mode))continue;
+                if(clock-comment.Time>freshness||!ModeEnabled(comment.Mode)||recentComments.Contains(comment))continue;
                 if(options.Featured&&SkipFeaturedRepeat(comment,width))continue;
-                attempted++;
-                Show(comment,width,height);
+                if(!QueueRow(comment)){index--;break;}
+                if(recentCommentsOrder.Count==512)recentComments.Remove(recentCommentsOrder.Dequeue());
+                recentComments.Add(comment);
+                recentCommentsOrder.Enqueue(comment);
             }
+
+            int probes=Math.Min(pendingRows.Count,6),shown=0;
+            while(probes-->0&&shown<3&&active.Count<48)
+            {
+                var queued=pendingRows.Dequeue();
+                if(queued.Until<clock||!ModeEnabled(queued.Comment.Mode))continue;
+                if(!Show(queued.Comment,width,height,out bool blocked))
+                {
+                    if(blocked)pendingRows.Enqueue(queued);
+                    continue;
+                }
+                shown++;
+                if(queued.Comment.Mode==1&&!rollingReported)
+                {
+                    rollingReported=true;
+                    DanmakuSources.Trace("player","render","rolling-admitted",1);
+                }
+            }
+        }
+
+        bool QueueRow(DanmakuComment comment)
+        {
+            if(pendingRows.Count>=PendingLimit)return false;
+            pendingRows.Enqueue((comment,clock+Math.Max(4,lastSpeed*2)));
+            return true;
         }
 
         void SetTickInterval(int milliseconds)
@@ -556,42 +638,34 @@ internal static class PlayerDanmaku
             options.Featured=enabled;featuredRepeats.Clear();PaintFeatured();
             saveTimer.Stop();saveTimer.Start();
         });
-        bool Show(DanmakuComment comment,double width,double height)
+        bool Show(DanmakuComment comment,double width,double height,out bool blocked)
         {
+            blocked=false;
             double rowHeight=RowHeight;
-            int rows=LaneCount(height);
-            if(rows==0)return false;
+            if(LaneCount(height)==0){blocked=true;return false;}
             double size=EffectiveFont;
-            measurer.FontSize=size;measurer.Text=comment.Text;
-            measurer.Measure(new Size(double.PositiveInfinity,rowHeight));
-            double measured=measurer.DesiredSize.Width+8;
+            if(size!=metricsFont){commentWidths.Clear();metricsFont=size;}
+            if(!commentWidths.TryGetValue(comment.Text,out double measured))
+            {
+                measurer.FontSize=size;measurer.Text=comment.Text;
+                measurer.Measure(new Size(double.PositiveInfinity,rowHeight));
+                measured=measurer.DesiredSize.Width+8;
+                if(commentWidths.Count>=256)commentWidths.Clear();
+                commentWidths[comment.Text]=measured;
+            }
             if(!double.IsFinite(measured)||measured>width*1.5)return false;
             double exit=-measured-8;
-            double velocity=(width-exit)/options.TravelSeconds;
-            double x=width-(clock-comment.Time)*velocity;
-            int lane=-1,safeSlots=0;
-            bool spread=options.Featured&&comment.Mode==1;
-            for(int slot=0;slot<rows;slot++)
-            {
-                double y=LaneY(comment.Mode,slot,height);
-                if(!SubtitleClear(y,height))continue;
-                safeSlots++;
-                bool free=true,occupied=false;
-                foreach(var old in active)
-                {
-                    if(old.View.Visibility!=Visibility.Visible||Math.Abs(Canvas.GetTop(old.View)-y)>=rowHeight-.01)continue;
-                    occupied=true;
-                    if(comment.Mode!=1||old.Comment.Mode!=1||!CanFollow(old,x,velocity)){free=false;break;}
-                }
-                if(free)
-                {
-                    if(!spread||!occupied){lane=slot;break;}
-                    if(lane<0)lane=slot;
-                }
-                if(lane>=0&&safeSlots>=3)break;
-            }
-            if(lane<0)return false;
-            var item=availableRows.TryPop(out var reuse)?reuse:CreateRow();
+            bool rolling=comment.Mode==1;
+            double velocity=(width+1-exit)/options.TravelSeconds*Math.Max(.25,lastSpeed);
+            // Both ends are beyond the clip, including room for presentation latency.
+            double entry=width+Math.Max(1,velocity*.12);
+            exit-=Math.Max(1,velocity*.12);
+            int lane=FindLane(comment.Mode,height,rowHeight,entry,velocity,active.Count,
+                preferred:0,spread:options.Featured&&rolling);
+            if(lane<0){blocked=true;return false;}
+            // Give each rolling admission a fresh visual. A row detached in
+            // this dispatch pass cannot flash its previous onscreen position.
+            var item=!rolling&&availableRows.TryPop(out var reuse)?reuse:CreateRow();
             double luminance=((comment.Color>>16)&255)*.2126+((comment.Color>>8)&255)*.7152+(comment.Color&255)*.0722;
             var outline=luminance<75?brightOutline:darkOutline;
             for(int i=0;i<item.Glyphs.Length;i++)
@@ -601,15 +675,59 @@ internal static class PlayerDanmaku
                 glyph.Foreground=i==item.Glyphs.Length-1?DesktopVisuals.Brush(0xFF000000|comment.Color):outline;
             }
             item.View.Background=options.Background?textBackground:null;
-            item.View.Opacity=options.Opacity;item.View.Visibility=Visibility.Visible;
-            item.Comment=comment;item.End=comment.Time+(comment.Mode==1?options.TravelSeconds:4);
-            item.Width=measured;item.Row=lane;item.Fits=true;
-            item.X=comment.Mode==1?x:(width-measured)/2;
-            item.Velocity=velocity;item.ExitX=exit;item.Exiting=false;
+            item.View.Opacity=options.Opacity;
+            item.Comment=comment;item.End=Math.Max(clock,comment.Time)+4;
+            item.Width=measured;item.Height=rowHeight;item.Row=lane;item.Fits=true;
+            item.OriginX=rolling?entry:0;
+            item.X=rolling?entry:(width-measured)/2;
+            item.Velocity=velocity;item.ExitX=exit;item.FirstFrame=rolling;
+            // Layout starts outside the clip, even before the first composition update.
+            Canvas.SetLeft(item.View,item.OriginX);
             Canvas.SetTop(item.View,LaneY(comment.Mode,lane,height));
+            SetPosition(item,item.X);
+            item.View.Visibility=Visibility.Visible;
             canvas.Children.Add(item.View);
-            StartMotion(item);active.Add(item);return true;
+            if(rolling)StartTravel(item);
+            active.Add(item);return true;
         }
+        void StartTravel(Moving row)
+        {
+            if(independentUnavailable||row.OriginX<=row.ExitX)return;
+            Storyboard? travel=null;
+            try
+            {
+                systemSettings??=new Windows.UI.ViewManagement.UISettings();
+                if(!systemSettings.AnimationsEnabled)return;
+                row.View.RenderTransform=new TranslateTransform();
+                var slide=new DoubleAnimation
+                {
+                    From=0,To=row.ExitX-row.OriginX,
+                    Duration=new Duration(TimeSpan.FromSeconds((row.OriginX-row.ExitX)/row.Velocity)),
+                    FillBehavior=FillBehavior.HoldEnd
+                };
+                Storyboard.SetTarget(slide,row.View);
+                Storyboard.SetTargetProperty(slide,"(UIElement.RenderTransform).(TranslateTransform.X)");
+                travel=new Storyboard{FillBehavior=FillBehavior.HoldEnd};
+                travel.Children.Add(slide);
+                travel.Begin();
+                if(motionRate<=0)travel.Pause();
+                row.Travel=travel;
+            }
+            catch(Exception error)when(error is not OutOfMemoryException)
+            {
+                independentUnavailable=true;
+                try{travel?.Stop();}catch(Exception cleanup){Log(cleanup);}
+                row.View.RenderTransform=new TranslateTransform();
+                Log(error);
+            }
+        }
+
+        void ReleaseRow(Moving row)
+        {
+            if(row.Comment.Mode!=1){availableRows.Push(row);return;}
+            try{row.Travel?.Stop();}catch(Exception error){Log(error);}
+        }
+
         static Moving CreateRow()
         {
             var letters=new Grid();
@@ -628,13 +746,8 @@ internal static class PlayerDanmaku
             var view=new Border{Child=letters,Padding=new(4,0,4,0),CornerRadius=new(3)};
             return new Moving{View=view,Glyphs=glyphs};
         }
-        double EffectiveFont=>Math.Round(options.FontSize*(options.AdaptiveSize?Math.Clamp(Math.Min(overlay.ActualWidth/1280,overlay.ActualHeight/800),1,1.5):1)*2)/2;
+        double EffectiveFont=>Math.Round(options.FontSize*(options.AdaptiveSize?Math.Clamp(Math.Min(overlay.ActualWidth/1280,overlay.ActualHeight/800),.72,1.5):1)*2)/2;
         double RowHeight=>Math.Ceiling(EffectiveFont*1.4)+2;
-        void RefreshGlyphMetrics()
-        {
-            double size=EffectiveFont;if(Math.Abs(size-measuredFont)<.01)return;measuredFont=size;
-            foreach(var row in active){foreach(var glyph in row.Glyphs)glyph.FontSize=size;row.View.Measure(new Size(double.PositiveInfinity,RowHeight));row.Width=row.View.DesiredSize.Width;}
-        }
         double RegionEdge(double height)=>Math.Min(height*options.Area,height*.72);
         void UpdateSubtitleBand()
         {
@@ -643,169 +756,202 @@ internal static class PlayerDanmaku
             if(Math.Abs(next-subtitleAnchor)<.01)return;
             subtitleAnchor=next;Reflow();
         }
-        bool SubtitleClear(double y,double height)
+        bool SubtitleClear(double y,double height,double? rowHeight=null)
         {
             // Reserve the ordinary dialogue area, and allow extra clearance
             // around the user's subtitle position when it has been raised.
             double band=height*subtitleAnchor/100;
-            return y+RowHeight<=band-height*.28||y>=band+height*.12;
+            return y+(rowHeight??RowHeight)<=band-height*.28||y>=band+height*.12;
         }
 
+        static double LaneMargin(double height)=>Math.Min(20,height*.025);
         int LaneCount(double height)
-            => Math.Clamp((int)((RegionEdge(height)-20)/RowHeight),0,24);
+            => Math.Clamp((int)((RegionEdge(height)-LaneMargin(height))/RowHeight),0,24);
 
         double LaneY(int mode,int row,double height)
-            => mode==4?RegionEdge(height)-(row+1)*RowHeight:20+row*RowHeight;
+            => mode==4?RegionEdge(height)-(row+1)*RowHeight:LaneMargin(height)+row*RowHeight;
+
+        int FindLane(int mode,double height,double rowHeight,double x,double velocity,int before,int preferred,bool spread)
+        {
+            int rows=LaneCount(height);
+            if(rows==0)return -1;
+            preferred=Math.Clamp(preferred,0,rows-1);
+            int best=-1,score=int.MaxValue;
+            for(int slot=0;slot<rows;slot++)
+            {
+                double y=LaneY(mode,slot,height);
+                if(!SubtitleClear(y,height,rowHeight))continue;
+                bool free=true,occupied=false;
+                for(int i=0;i<before;i++)
+                {
+                    var old=active[i];
+                    if(old.View.Visibility!=Visibility.Visible
+                        ||Math.Abs(Canvas.GetTop(old.View)-y)>=Math.Max(rowHeight,old.Height)-.01)continue;
+                    occupied=true;
+                    if(mode!=1||old.Comment.Mode!=1||!CanFollow(old,x,velocity)){free=false;break;}
+                }
+                if(!free)continue;
+                int priority=Math.Abs(preferred-slot)+(spread&&occupied?rows:0);
+                if(priority>=score)continue;
+                best=slot;score=priority;
+                if(score==0)break;
+            }
+            return best;
+        }
 
         bool CanFollow(Moving earlier,double laterX,double laterSpeed)
         {
             double gap=laterX-(earlier.X+earlier.Width);
-            return gap>=20+Math.Max(laterSpeed,earlier.Velocity)*Math.Max(1,lastSpeed)*.075+Math.Max(0,laterSpeed-earlier.Velocity)*Math.Max(0,earlier.End-clock);
+            double remaining=Math.Max(0,(earlier.X-earlier.ExitX)/earlier.Velocity);
+            return gap>=26+Math.Max(laterSpeed,earlier.Velocity)*.075
+                +Math.Max(0,laterSpeed-earlier.Velocity)*remaining;
         }
 
         void SetMotionRate(double rate)
         {
-            if(Math.Abs(rate-motionRate)<.0001)return;
-            bool paused=motionRate==0;
+            if(rate==motionRate||rate>0&&motionRate>0&&Math.Abs(rate-motionRate)<.02)return;
+            bool wasMoving=motionRate>0;
             motionRate=rate;
+            bool moving=rate>0;
+            if(wasMoving==moving)return;
             foreach(var row in active)
             {
-                ApplyMotionRate(row,paused);
-                if(rate==0&&row.Fallback&&row.Comment.Mode==1)SetPosition(row,row.X);
+                if(row.Travel is not {} travel||row.TravelDone)continue;
+                if(moving)travel.Resume();
+                else travel.Pause();
             }
-        }
-
-        void ApplyMotionRate(Moving row,bool resume)
-        {
-            if(row.Motion is not {} motion)return;
-            try
-            {
-                if(motionRate==0)motion.Pause();
-                else
-                {
-                    motion.PlaybackRate=(float)motionRate;
-                    if(resume)motion.Resume();
-                }
-            }
-            catch(Exception e)when(IsMotionFailure(e)){UseFallback(row);}
-        }
-
-        static bool IsMotionFailure(Exception error)=>error is COMException or InvalidOperationException or ArgumentException or NotSupportedException;
-
-        static void StopMotion(Moving row)
-        {
-            if(row.Travel is null)return;
-            row.Position!.StopAnimation("X");
-            row.Motion?.Dispose();row.Motion=null;
-            row.Travel.Dispose();row.Travel=null;
         }
 
         static void SetPosition(Moving row,double x)
         {
-            if(row.Position is {} position)position.InsertScalar("X",(float)x);
-            else row.View.Translation=new((float)x,0,0);
+            float position=(float)(x-row.OriginX);
+            if(row.DrawnX==position)return;
+            row.View.Translation=new(position,0,0);
+            row.DrawnX=position;
         }
 
-        static void UseFallback(Moving row)
+        void UpdateMotionRendering()
         {
-            StopMotion(row);
-            row.Fallback=true;
-            SetPosition(row,row.X);
-            DanmakuSources.Trace("presentation","motion","fallback");
+            bool needed=motionRate>0&&active.Any(row=>row.Comment.Mode==1&&row.Fits&&row.Travel is null);
+            if(needed==motionRendering)return;
+            motionRendering=needed;
+            lastMotionFrame=0;
+            if(needed)CompositionTarget.Rendering+=PaintMotionFrame;
+            else CompositionTarget.Rendering-=PaintMotionFrame;
         }
 
-        void StartMotion(Moving row)
+        void PaintMotionFrame(object? sender,object args)
         {
             try
             {
-                if(row.Position is null&&!row.Fallback)
+                if(!Current||motionRate<=0)return;
+                long now=Stopwatch.GetTimestamp();
+                double elapsed=lastMotionFrame==0?0:Stopwatch.GetElapsedTime(lastMotionFrame,now).TotalSeconds;
+                lastMotionFrame=now;
+                if(elapsed is >=.004 and <=.040)frameCadence+=.15*(elapsed-frameCadence);
+                // Skip the extra displacement after a missed presentation
+                // instead of jumping forward to match wall-clock time.
+                double step=Math.Min(elapsed,Math.Clamp(frameCadence*1.5,.012,.035));
+                frameProbe.RecordRender(elapsed,step);
+                double advance=step;
+                double right=overlay.ActualWidth;
+                const double partialEdge=9;
+                foreach(var row in active)
                 {
-                    // The XAML facade has one writer: an expression backed by
-                    // a property set we own, outside the XAML backing visual.
-                    var compositor=CompositionTarget.GetCompositorForCurrentThread();
-                    var position=compositor.CreatePropertySet();
-                    var translation=compositor.CreateExpressionAnimation("Vector3(position.X, 0, 0)");
-                    try
+                    if(row.Comment.Mode!=1||!row.Fits||row.Travel is not null)continue;
+                    if(row.FirstFrame)
                     {
-                        position.InsertScalar("X",(float)row.X);
-                        translation.SetReferenceParameter("position",position);
-                        translation.Target="Translation";
-                        row.View.StartAnimation(translation);
+                        row.FirstFrame=false;
+                        row.X=Math.Max(row.OriginX,right+1);
+                        SetPosition(row,row.X);
+                        continue;
                     }
-                    catch
-                    {
-                        translation.Dispose();position.Dispose();throw;
-                    }
-                    row.Position=position;row.Translation=translation;
+
+                    double next=Math.Max(row.ExitX,row.X-advance*row.Velocity);
+                    // Present a clipped portion before showing a whole short
+                    // comment or removing its last visible part on a fast frame.
+                    if(row.X>right-partialEdge)next=Math.Max(right-partialEdge,next);
+                    double left=-row.Width+partialEdge;
+                    if(row.X>left)next=Math.Max(left,next);
+                    row.X=next;
+                    SetPosition(row,row.X);
                 }
-                SetPosition(row,row.X);
-                if(row.Comment.Mode!=1||row.Fallback)return;
-
-                var properties=row.Position!;
-                var animation=properties.Compositor.CreateScalarKeyFrameAnimation();
-                row.Travel=animation;
-                using var linear=properties.Compositor.CreateLinearEasingFunction();
-                animation.Duration=TimeSpan.FromSeconds(Math.Max(.001,row.End-clock));
-                animation.StopBehavior=AnimationStopBehavior.SetToFinalValue;
-                animation.InsertKeyFrame(0,(float)row.X,linear);
-                animation.InsertKeyFrame(1,(float)row.ExitX,linear);
-                properties.StartAnimation("X",animation);
-                row.Motion=properties.TryGetAnimationController("X")
-                    ??throw new InvalidOperationException("Missing danmaku motion controller");
-                ApplyMotionRate(row,resume:false);
             }
-            catch(Exception e)when(IsMotionFailure(e)){UseFallback(row);}
-        }
-
-        void UpdateFallbackRendering()
-        {
-            bool needed=motionRate>0&&active.Any(row=>row.Fallback&&row.Comment.Mode==1);
-            if(needed==fallbackRendering)return;
-            fallbackRendering=needed;
-            if(needed)CompositionTarget.Rendering+=PaintFallbackFrame;
-            else CompositionTarget.Rendering-=PaintFallbackFrame;
-        }
-
-        void PaintFallbackFrame(object? sender,object args)
-        {
-            if(!Current||renderedAt==0||motionRate==0)return;
-            double progress=Stopwatch.GetElapsedTime(renderedAt).TotalSeconds*motionRate;
-            foreach(var row in active)
-                if(row.Fallback&&row.Comment.Mode==1&&row.Fits)
-                    SetPosition(row,Math.Max(row.ExitX,row.X-progress*row.Velocity));
+            catch(Exception e){Guard(Stop);Log(e);}
         }
 
         void Reflow()
         {
             double width=overlay.ActualWidth,height=overlay.ActualHeight;
             if(width<100||height<80)return;
-            RefreshGlyphMetrics();
-            int lanes=LaneCount(height);
-            for(int i=0;i<active.Count;i++)
+            double size=EffectiveFont;
+            bool resize=layoutWidth>0&&(Math.Abs(width-layoutWidth)>.5||Math.Abs(size-layoutFont)>.01);
+            for(int i=0;i<active.Count;)
             {
                 var row=active[i];
-                Canvas.SetTop(row.View,LaneY(row.Comment.Mode,row.Row,height));
-                // Resize and appearance changes do not restart rolling rows.
-                // Keep their trajectories and only recheck the available lanes.
-                if(row.Comment.Mode!=1)SetPosition(row,(width-row.Width)/2);
-                row.Fits=row.Row<lanes&&SubtitleClear(Canvas.GetTop(row.View),height);
-                for(int j=0;row.Fits&&j<i;j++)
+                if(resize)ResizeRow(row,width,size);
+                int lane=ModeEnabled(row.Comment.Mode)
+                    ?FindLane(row.Comment.Mode,height,row.Height,row.X,row.Velocity,i,row.Row,spread:false):-1;
+                if(lane<0)
                 {
-                    var old=active[j];
-                    if(old.View.Visibility!=Visibility.Visible||Math.Abs(Canvas.GetTop(old.View)-Canvas.GetTop(row.View))>=RowHeight-.01)continue;
-                    row.Fits=row.Comment.Mode==1&&old.Comment.Mode==1&&CanFollow(old,row.X,row.Velocity);
+                    if(ModeEnabled(row.Comment.Mode))QueueRow(row.Comment);
+                    canvas.Children.Remove(row.View);
+                    active.RemoveAt(i);ReleaseRow(row);
+                    continue;
                 }
-                row.View.Visibility=row.Fits&&ModeEnabled(row.Comment.Mode)?Visibility.Visible:Visibility.Collapsed;
+                row.Row=lane;
+                Canvas.SetTop(row.View,LaneY(row.Comment.Mode,lane,height));
+                if(resize&&row.Comment.Mode==1)StartTravel(row);
+                i++;
             }
+            layoutWidth=width;layoutFont=size;
+            UpdateMotionRendering();
         }
-        void AppearanceChanged()
+
+        void ResizeRow(Moving row,double width,double size)
         {
-            options.Normalize();
+            bool rolling=row.Comment.Mode==1;
+            if(row.Travel is {} travel)
+            {
+                row.X=Math.Min(row.X,Math.Max(row.ExitX,
+                    row.OriginX-travel.GetCurrentTime().TotalSeconds*row.Velocity));
+                travel.Stop();
+                row.Travel=null;
+            }
+
+            // Project the line's progress into the new viewport before rebasing
+            // the independent animation. Offscreen lines keep an offscreen start.
+            double span=layoutWidth+row.Width;
+            double progress=(layoutWidth-row.X)/span;
+            double oldVelocity=row.Velocity;
+            foreach(var glyph in row.Glyphs)glyph.FontSize=size;
+            row.Height=RowHeight;
+            row.View.Measure(new Size(double.PositiveInfinity,row.Height));
+            row.Width=row.View.DesiredSize.Width;
+            double newSpan=width+row.Width;
+            row.X=rolling?width-progress*newSpan:(width-row.Width)/2;
+            row.Velocity=rolling?oldVelocity*newSpan/span:oldVelocity;
+            row.ExitX=-row.Width-8-Math.Max(1,row.Velocity*.12);
+            row.OriginX=rolling?Math.Max(row.ExitX,row.X):0;
+            row.X=rolling?row.OriginX:row.X;
+            row.TravelDone=false;row.FirstFrame=false;
+            Canvas.SetLeft(row.View,row.OriginX);
+            SetPosition(row,row.X);
+        }
+
+        void RefreshAppearance()
+        {
             foreach(var row in active)
             {
                 row.View.Background=options.Background?textBackground:null;row.View.Opacity=options.Opacity;
             }
-            Reflow();saveTimer.Stop();saveTimer.Start();
+            Reflow();
+        }
+        void AppearanceChanged()
+        {
+            options.Normalize();
+            RefreshAppearance();
+            saveTimer.Stop();saveTimer.Start();
         }
         internal void GuardSeek()=>Guard(()=>{if(!Current||track is null)return;Clear();MediaClock.Seek(Access.Get<double>(session,"_position"));mediaEpoch=-1;Reindex();if(options.Enabled)timer.Start();});
         bool ModeEnabled(int mode)=>mode==1?options.Scroll:mode==4?options.Bottom:options.Top;
@@ -814,16 +960,34 @@ internal static class PlayerDanmaku
             options.Normalize();Reflow();
             saveTimer.Stop();saveTimer.Start();
         }
-        void Changed(bool retry=false)
+        internal void ApplySettings(Action<DanmakuOptions> edit)
         {
-            options.Normalize();PaintFeatured();_=Save();
+            void Apply()=>Guard(()=>
+            {
+                if(!Current||!optionsReady)return;
+                double previousDelay=options.Delay;
+                bool wasAutomatic=options.Automatic;
+                string previousApi=options.CompatibleApi;
+                edit(options);
+                options.Normalize();
+                if(previousDelay!=options.Delay){Clear();Reindex();}
+                if(wasAutomatic&&!options.Automatic){waiting=false;Cancel();retryTimer.Stop();request++;}
+                RefreshAppearance();
+                Changed(retry:options.Automatic&&previousApi!=options.CompatibleApi,save:false);
+            });
+            if(overlay.DispatcherQueue.HasThreadAccess)Apply();
+            else overlay.DispatcherQueue.TryEnqueue(Apply);
+        }
+
+        void Changed(bool retry=false,bool save=true)
+        {
+            options.Normalize();PaintFeatured();if(save)_=Save();
             if(!options.Enabled){frameProbe=default;Clear();motionRate=0;renderedAt=0;last=double.NaN;canvas.Visibility=Visibility.Collapsed;waiting=false;timer.Stop();retryTimer.Stop();Cancel();StopFeed();request++;Describe("弹幕已关闭");}
             else{
                 if(retry)Search(true);
-                else if(sourceTracks.Count==0&&options.Automatic&&!searching){waiting=true;Ready();}
-                foreach(var source in sourceTracks.Values)
-                    if(DanmakuSources.ValidCid(source.StreamCid)||source.PublicFeed is not null)StartFeed(source);
-                if(sourceTracks.Count>0)RefreshCombined();
+                else if(track is null&&options.Automatic&&!searching){waiting=true;Ready();}
+                if(track is {} selected&&(DanmakuSources.ValidCid(selected.StreamCid)||selected.PublicFeed is not null))
+                    StartFeed(selected);
                 if(track is not null){Reindex(false);Render();timer.Start();}
                 canvas.Visibility=Visibility.Visible;
             }
@@ -898,7 +1062,7 @@ internal static class PlayerDanmaku
             void Toggle(string label,bool value,Action<bool> change){var box=new CheckBox{Content=label,IsChecked=value};box.Checked+=(_,_)=>Guard(()=>change(true));box.Unchecked+=(_,_)=>Guard(()=>change(false));sources.Children.Add(box);}
             Toggle("自动在线匹配",options.Automatic,v=>{options.Automatic=v;Changed(v);if(!v){waiting=false;Cancel();retryTimer.Stop();request++;}});
             var retry=new Button{Content="重新匹配公开弹幕",HorizontalAlignment=HorizontalAlignment.Stretch};retry.Click+=(_,_)=>Guard(()=>{if(options.Enabled)Search(true);});sources.Children.Add(retry);
-            var query=new TextBox{Header="搜索片名或粘贴单集链接",PlaceholderText="片名，或哔哩哔哩／腾讯视频／爱奇艺的单集链接",MaxLength=320};sources.Children.Add(query);
+            var query=new TextBox{Header="搜索片名或粘贴单集链接",PlaceholderText="片名，或哔哩哔哩／腾讯视频／爱奇艺／芒果 TV 的单集链接",MaxLength=320};sources.Children.Add(query);
             var search=new Button{Content="查找在线弹幕",HorizontalAlignment=HorizontalAlignment.Stretch};search.Click+=(_,_)=>Guard(()=>{
                 if(!options.Enabled||string.IsNullOrWhiteSpace(query.Text))return;
                 if(query.Text.Contains("://",StringComparison.Ordinal)&&!DanmakuSources.IsPlatformLink(query.Text)&&!(Uri.TryCreate(query.Text.Trim(),UriKind.Absolute,out var uri)&&uri.Scheme=="https"&&uri.Host is "www.bilibili.com" or "bilibili.com")){Describe("请使用片名或支持的平台公开播放链接");return;}
@@ -907,19 +1071,19 @@ internal static class PlayerDanmaku
             candidateBox=new ComboBox{Header="匹配候选",HorizontalAlignment=HorizontalAlignment.Stretch};FillCandidates();sources.Children.Add(candidateBox);
             var select=new Button{Content="使用所选弹幕",HorizontalAlignment=HorizontalAlignment.Stretch};select.Click+=(_,_)=>Guard(()=>{
                 if(!Current||!options.Enabled||identity is null||candidateBox.SelectedItem is not ComboBoxItem{Tag:DanmakuCandidate choice})return;
-                retryTimer.Stop();var selected=DanmakuSources.Select(choice,identity);ApplyTrack(selected);_=SaveSelection(selected);
+                Cancel();request++;retryTimer.Stop();var selected=DanmakuSources.Select(choice,identity);ApplyTrack(selected);_=SaveSelection(selected);
             });sources.Children.Add(select);
             var import=new Button{Content="加载本地 XML 弹幕…",HorizontalAlignment=HorizontalAlignment.Stretch};import.Click+=async(_,_)=>await Import();sources.Children.Add(import);
             var delay=new NumberBox{Header="时间偏移（秒，正数晚出现）",Value=options.Delay,Minimum=-3600,Maximum=3600,SmallChange=.5};
             delay.ValueChanged+=(_,_)=>Guard(()=>{if(double.IsFinite(delay.Value)){options.Delay=delay.Value;Clear();Reindex();Changed();}});sources.Children.Add(delay);
-            var api=new TextBox{Header="兼容弹幕服务（HTTPS，可选，添加额外来源）",Text=options.CompatibleApi,MaxLength=512};sources.Children.Add(api);
+            var api=new TextBox{Header="自建备用服务（选填，每行一个地址）",Text=options.CompatibleApi,MaxLength=2600,AcceptsReturn=true,TextWrapping=TextWrapping.Wrap};sources.Children.Add(api);
             var apply=new Button{Content="保存服务地址",HorizontalAlignment=HorizontalAlignment.Stretch};apply.Click+=(_,_)=>Guard(()=>{options.CompatibleApi=api.Text;options.Normalize();api.Text=options.CompatibleApi;Changed(true);});sources.Children.Add(apply);
             var clear=new Button{Content="清空弹幕缓存",HorizontalAlignment=HorizontalAlignment.Stretch};clear.Click+=async(_,_)=>{
                 clear.IsEnabled=false;
                 try{Cancel();ResetSources();retryTimer.Stop();timer.Stop();Clear();request++;await DanmakuStorage.Clear();if(Current)Describe("弹幕缓存已清空，可重新匹配");}
                 catch(Exception e){Log(e);}finally{if(overlay.IsLoaded)clear.IsEnabled=true;}
             };sources.Children.Add(clear);
-            sources.Children.Add(new TextBlock{Text="自动查找哔哩哔哩、腾讯视频和爱奇艺，匹配同一集后合并去重。腾讯和爱奇艺的分集链接通过 360 影视目录查找。",TextWrapping=TextWrapping.Wrap,FontSize=12});
+            sources.Children.Add(new TextBlock{Text=DanmakuOptions.BuiltInSourcesText,TextWrapping=TextWrapping.Wrap,FontSize=12});
             return body;
         }
         async Task SaveSelection(DanmakuTrack selection){try{await DanmakuStorage.Write(selection,CancellationToken.None).ConfigureAwait(false);}catch(Exception e){Log(e);}}

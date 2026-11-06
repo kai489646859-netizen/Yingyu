@@ -20,9 +20,9 @@ The Git snapshot alone is sufficient for code review but not a byte-identical na
 
 The Windows package is a bounded reconstruction/integration project. It is not the original upstream application project.
 
-1. Download `Yingyu-1.2.2-source-and-symbols.zip` from the matching release.
+1. Download `Yingyu-1.3.4-source-and-symbols.zip` from the matching release.
 2. Verify its SHA-256.
-3. Review the `1.2.2-desktop` material, `build.ps1`, `version-policy.json`, native source records and the delivery manifest.
+3. Review the `1.3.4-desktop` material, `build.ps1`, `version-policy.json`, native source records and the delivery manifest.
 4. Supply the preserved baseline payload and required toolchain described by the archive.
 5. Use your own package-signing environment if signing is required.
 

@@ -19,7 +19,7 @@ public static class ResumeSync
 
     internal static bool IsPending(EmbyItem item)=>Pending.TryGetValue(item,out _);
     public static IReadOnlyList<EmbyItem> DisplayItems(IReadOnlyList<EmbyItem> items,bool landscape)
-        => landscape ? ResumeSeriesMergePolicy.Collapse(items.Where(ResumeServerHistory.Show),18) : items;
+        => landscape ? ResumeSeriesMergePolicy.Collapse(items.Where(i=>ResumeServerHistory.Show(i)||ResumeServerHistory.HomeCompleted(i)),18) : items;
     public static IReadOnlyList<EmbyItem> ServerItems(IEnumerable<EmbyItem> server,
         IEnumerable<EmbyItem> observations, int limit)
         => limit <= 0 ? [] : ResumeSeriesMergePolicy.Collapse(server, limit);
@@ -54,10 +54,13 @@ public static class ResumeSync
 
     static EmbyItem FillMissingPosition(EmbyItem item, IReadOnlyList<EmbyItem> history)
     {
-        if (!NeedsPosition(item)) return item;
+        bool partial=item.Type is not ("Series" or "Season")&&item.UserData is {PlaybackPositionTicks:>0}
+            &&ResumeServerHistory.Show(item);
+        if (!NeedsPosition(item)&&!partial) return item;
         var saved = history.FirstOrDefault(candidate =>
             string.Equals(candidate.Id, item.Id, StringComparison.OrdinalIgnoreCase));
         if (saved?.UserData is not { Played: false, PlaybackPositionTicks: > 0, LastPlayedDate: { } savedAt } progress
+            || partial&&(savedAt<DateTimeOffset.UtcNow.AddMinutes(-15)||item.UserData?.LastPlayedDate is null)
             || item.UserData?.LastPlayedDate >= savedAt
             || (item.RunTimeTicks is > 0 && progress.PlaybackPositionTicks >= item.RunTimeTicks.Value))
             return item;
@@ -162,9 +165,32 @@ public static class ResumeSync
             merged.RemoveAll(i=>ResumeSeriesMergePolicy.RepresentsSameTitle(i,edit.Item)&&(!edit.Completed||i.Id.Equals(edit.Item.Id,StringComparison.OrdinalIgnoreCase)));
             if(!edit.Completed)merged.Insert(0,edit.Item);
         }
+        ResumeServerHistory.AppendNext(page,session,client,merged,history,edits);
         if(Access.Get<DateTimeOffset>(page,"_lastLocalResumeUpdateAt")!=localRevision)throw new OperationCanceledException();
-        return ResumeSeriesMergePolicy.Collapse(merged.Where(ResumeServerHistory.Show),18);
+        return ResumeSeriesMergePolicy.Collapse(merged.Where(i=>ResumeServerHistory.Show(i)||ResumeServerHistory.HomeCompleted(i)),18);
     }
+
+    public static async Task<EmbyItemsResponse> HistoryEpisodes(EmbyApiClient client,int limit,CancellationToken token,object page)
+    {
+        var session=Access.Get<EmbySession?>(page,"_session");
+        bool Current()=>ReferenceEquals(client,Access.Get<EmbyApiClient?>(page,"_client"))
+            &&ReferenceEquals(session,Access.Get<EmbySession?>(page,"_session"));
+        var response=await client.GetResumeAsync(limit,token);
+        if(!Current())throw new OperationCanceledException();
+        var local=await ReadLocalHistory(page);
+        if(!Current())throw new OperationCanceledException();
+        // Keep the dedicated history by episode ID. A series-level resume API
+        // may expose only its latest episode even if older episodes have progress.
+        var items=response.Items.Concat(local.Where(i=>i.Type=="Episode"&&i.UserData?.LastPlayedDate is not null
+            &&(i.UserData.Played||i.UserData.PlaybackPositionTicks>0))).Where(i=>!string.IsNullOrWhiteSpace(i.Id))
+            .GroupBy(i=>i.Id,StringComparer.OrdinalIgnoreCase).Select(NewestEpisode)
+            .OrderByDescending(i=>i.UserData?.LastPlayedDate).Take(100).ToList();
+        return new(){Items=items,TotalRecordCount=items.Count};
+    }
+
+    public static EmbyItem NewestEpisode(IEnumerable<EmbyItem> rows)
+        =>rows.OrderByDescending(row=>row.UserData?.LastPlayedDate)
+            .ThenByDescending(row=>row.UserData is {Played:true,PlaybackPositionTicks:0}).First();
 
     public static void Home(object page)
     {

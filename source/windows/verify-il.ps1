@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $taskRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $taskTool = Join-Path $taskRoot '.tools\ilverify\ilverify.exe'
 $env:DOTNET_ROOT = Join-Path $taskRoot '.tools\dotnet'
-$taskInspection = Join-Path $taskRoot '.tools\inspection\1.2.2-desktop'
+$taskInspection = Join-Path $taskRoot '.tools\inspection\1.3.4-desktop'
 function Invoke-StaticIl([string[]] $taskInputs, [string] $taskReferences, [string] $taskLog) {
     & $taskTool @taskInputs -r $taskReferences -s System.Private.CoreLib --statistics *> $taskLog
     $taskExit = $LASTEXITCODE

@@ -34,7 +34,7 @@ internal static class PlaybackFeatureLog
             if(failure){string key=Token(action);long now=Environment.TickCount64;if(state.Errors.TryGetValue(key,out var prior)){if(now-prior.At<1000){state.Errors[key]=(prior.At,Math.Min(100000,prior.Skipped+1));return;}skipped=prior.Skipped;}if(state.Errors.Count<64||state.Errors.ContainsKey(key))state.Errors[key]=(now,0);}
         }
         string number=value is {} n&&double.IsFinite(n)?n.ToString("0.###",CultureInfo.InvariantCulture):"unknown";
-        PlaybackTransport.Write(failure?"Warning":"Info","Playback.Features",$"功能诊断；版本=1.2.2；会话={state.Id}；媒体代次={state.Generation}；event={Token(action)}; result={Token(result)}; value={number}; type={Token(errorType)}; repeated={skipped}。");
+        PlaybackTransport.Write(failure?"Warning":"Info","Playback.Features",$"功能诊断；版本=1.3.4；会话={state.Id}；媒体代次={state.Generation}；event={Token(action)}; result={Token(result)}; value={number}; type={Token(errorType)}; repeated={skipped}。");
     }
     internal static void Native(object session,NativeDolby.Status status)
     {
@@ -43,7 +43,7 @@ internal static class PlaybackFeatureLog
         if(!status.Available||(!status.Fatal&&status.Reason is not (>=10 and <=17)))return;
         string signature=$"{status.Epoch}/{status.Reason}/{status.Fatal}";
         lock(state){if(state.LastIntegrity==signature)return;state.LastIntegrity=signature;}
-        PlaybackTransport.Write(status.Fatal?"Warning":"Info","Playback.DolbyIntegrity",$"版本=1.2.2; session={state.Id}; generation={state.Generation}; {status.Diagnostic}; physicalSignalAndColorValidated=false");
+        PlaybackTransport.Write(status.Fatal?"Warning":"Info","Playback.DolbyIntegrity",$"版本=1.3.4; session={state.Id}; generation={state.Generation}; {status.Diagnostic}; physicalSignalAndColorValidated=false");
     }
     internal static void Output(object session,string trigger)
     {
@@ -52,11 +52,11 @@ internal static class PlaybackFeatureLog
     internal static void Color(object session,string trigger,string body)
     {
         var state=Current(session);if(state is null)return;
-        PlaybackTransport.Write("Info","Playback.Color",$"版本=1.2.2; session={state.Id}; generation={state.Generation}; event={trigger}; {body}");
+        PlaybackTransport.Write("Info","Playback.Color",$"版本=1.3.4; session={state.Id}; generation={state.Generation}; event={trigger}; {body}");
     }
     internal static void Display(object session,string body)
     {
         var state=Current(session);if(state is null)return;
-        PlaybackTransport.Write("Info","Playback.Display",$"版本=1.2.2; session={state.Id}; generation={state.Generation}; {body}; fullscreenRequiredForHdr=false; wireHdrSignal=unverified");
+        PlaybackTransport.Write("Info","Playback.Display",$"版本=1.3.4; session={state.Id}; generation={state.Generation}; {body}; fullscreenRequiredForHdr=false; wireHdrSignal=unverified");
     }
 }

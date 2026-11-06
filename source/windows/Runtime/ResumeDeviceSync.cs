@@ -75,9 +75,15 @@ public static class ResumeDeviceSync
             ? cached.DefaultIfEmpty(item) : cached;
 
     static bool Same(PendingPlaybackSyncEntry e,Baseline b)=>b.Session==e.Playback.PlaySessionId&&b.Position==e.Playback.PositionTicks&&b.At==e.UpdatedAt.UtcTicks;
+    static Baseline? ItemCheckpoint(PendingPlaybackSyncEntry e,EmbyItem remote,IReadOnlyDictionary<string,Baseline> bases)
+        =>string.Equals(e.Playback.ItemId,remote.Id,StringComparison.OrdinalIgnoreCase)
+            &&bases.TryGetValue(Key(e),out var b)&&b!=null&&Same(e,b)
+            &&!string.IsNullOrEmpty(b.Observed)&&b.Observed==Fingerprint(remote)?b:null;
+
     public static bool CanProject(PendingPlaybackSyncEntry e,EmbyItem remote,IReadOnlyDictionary<string,Baseline> bases,IEnumerable<EmbyItem> server)
     {
-        if(!bases.TryGetValue(Key(e),out var b)||b==null||!Same(e,b)||string.IsNullOrEmpty(b.Observed)||b.Observed!=Fingerprint(remote))return false;
+        var b=ItemCheckpoint(e,remote,bases);
+        if(b is null)return false;
         var title=server.FirstOrDefault(i=>ResumeSeriesMergePolicy.RepresentsSameTitle(i,remote));
         return title==null||title.Id==remote.Id||b.TitleObserved!=null&&b.TitleObserved==TitleFingerprint(title);
     }
@@ -171,15 +177,16 @@ public static class ResumeDeviceSync
             if(!Active())return;
             var entries=await store.LoadAsync(session.ServerId,session.UserId,token);if(!Active())return;
             if(entries.Count==0){await (Task)Access.Call(page,"RefreshResumeItemsAsync",true)!;if(Active())Status(page,"继续观看已按当前服务器账号刷新。");return;}
-            var fresh=await client.GetResumeAsync(cancellationToken:token);if(!Active())return;
-            foreach(var e in entries.OrderByDescending(e=>e.UpdatedAt)){
+            // Retry in viewing order. A change to another episode is not a
+            // conflicting edit of this item's stored playback position.
+            foreach(var e in entries.OrderBy(e=>e.UpdatedAt)){
                 if(!Active())return;
                 string stage="item-read";
                 try {
 
                 var remote=await client.GetItemAsync(e.Playback.ItemId,token);if(!Active())return;if(!await Exists(store,e,token))continue;
                 if(!Confirmed(remote,e)){
-                    if(!CanProject(e,remote,await LoadBaselines(store),fresh.Items)){conflicts++;continue;}
+                    if(ItemCheckpoint(e,remote,await LoadBaselines(store)) is null){conflicts++;continue;}
                     if(!Active())return;
                     stage="stopped-post";await client.ReportPlaybackStoppedInBackgroundAsync(e.Playback,token);if(!Active())return;
                     stage="stopped-readback";

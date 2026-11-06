@@ -368,4 +368,22 @@ public static class LocalMetadata
         if(!CacheLayout.IsWithin(CachePaths.Metadata,path))throw new IOException("文字缓存清理范围无效。");
         CacheLayout.RejectLinks(path);if(System.IO.Directory.Exists(path))await Task.Run(()=>System.IO.Directory.Delete(path,true));
     }
+
+    internal static async Task<EmbyItem?> CachedDisplayItem(EmbyApiClient client,string id,CancellationToken token)
+    {
+        var state=Store(client);
+        await state.Load(token).ConfigureAwait(false);
+        await state.Gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var known=state.Data.Libraries.Values.SelectMany(l=>l.Items)
+                .FirstOrDefault(row=>row.Item.Id.Equals(id,StringComparison.OrdinalIgnoreCase));
+            if(known is not null&&Store(client).Scope==state.Scope)return Stable(known.Item,true);
+        }
+        finally{state.Gate.Release();}
+
+        var saved=await Read<Display>(Path.Combine(state.Directory,"detail-"+Hash(id)+".json"),token).ConfigureAwait(false);
+        return saved is not null&&saved.At>=state.Invalidated&&Store(client).Scope==state.Scope
+            ? saved.Result?.Items.SingleOrDefault() : null;
+    }
 }

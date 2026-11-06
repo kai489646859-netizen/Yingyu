@@ -6,7 +6,7 @@
   <p><a href="README_EN.md">English</a></p>
   <p>
     <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.2.4"><img src="https://img.shields.io/badge/Android-2.2.4-19A974?style=for-the-badge&logo=android" alt="Android 2.2.4"></a>
-    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.2.2"><img src="https://img.shields.io/badge/Windows-1.2.2-0078D4?style=for-the-badge&logo=windows11" alt="Windows 1.2.2"></a>
+    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.3.4"><img src="https://img.shields.io/badge/Windows-1.3.4-0078D4?style=for-the-badge&logo=windows11" alt="Windows 1.3.4"></a>
     <a href="https://github.com/kai489646859-netizen/Yingyu/releases"><img src="https://img.shields.io/github/downloads/kai489646859-netizen/Yingyu/total?style=for-the-badge&logo=github&label=Downloads" alt="GitHub 下载量"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue?style=for-the-badge" alt="GPL-3.0"></a>
   </p>
@@ -22,7 +22,7 @@
 | 平台 | 当前公开版本 | 安装要求 | 下载 |
 | --- | --- | --- | --- |
 | Android | **2.2.4 / code253** | Android 8.0+ | [Android 2.2.4](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.2.4) |
-| Windows | **1.2.2** | Windows 10/11 x64 | [Windows 1.2.2](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.2.2) |
+| Windows | **1.3.4** | Windows 10/11 x64 | [Windows 1.3.4](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.3.4) |
 
 ## 主要功能
 
@@ -49,13 +49,13 @@
 
 完整累计变化见 [Android 更新历史](CHANGELOG-Android.md)。
 
-### Windows 1.2.2
+### Windows 1.3.4
 
-- 完善“今日精选”轮播、首帧首页布局、账号切换后自动轮播、主题切换、海报点击与桌面启动恢复。
-- 播放器增加本地字幕导入、指定时间跳转、服务端缩略图预览、季度/整季连续选集和跨季自动衔接。
-- 控制栏按最终要求 3.5 秒隐藏；暂停/继续使用中央反馈，播放时显示暂停符号、暂停时显示播放符号。
-- 弹幕支持哔哩哔哩、腾讯视频和爱奇艺公开来源，增加精选、区域设置、倍速平滑、连续编号国漫补查及分集列表迟到后的自动重查。
-- 1.2.2 已通过编译、静态包与 12,646 个 IL 方法核对；真实 Emby 自动匹配、界面交互和长期播放仍以用户环境验证为准。
+- 弹幕匹配与加载进一步提速，支持多来源并行查找、分段先显示和后台补齐去重。
+- 优化高密度弹幕排轨；显示区域变化时优先在区域内重排，暂时无空轨道的弹幕短暂排队后再入场。
+- 全屏与窗口切换时重新适配弹幕字号、位置和轨道；默认播放器窗口增大并保持合适比例。
+- 改善连续编号、跨季与缺少集号媒体的分集识别，减少错集、预告和其他作品误匹配。
+- 保留 1.2.2 之前的首页、选集、字幕、继续观看与播放器交互累计改进。
 
 完整累计变化见 [Windows 更新历史](CHANGELOG-Windows.md)。
 
@@ -67,13 +67,13 @@
 
 ### Windows
 
-在 [Windows 1.2.2 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.2.2) 下载 `Yingyu-Setup-x64-1.2.2.exe`。关闭正在运行的映屿后覆盖安装；安装程序沿用既有应用身份和目录，不要求卸载旧版或清空个人数据。
+在 [Windows 1.3.4 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.3.4) 下载 `Yingyu-Setup-x64-1.3.4.exe`。关闭正在运行的映屿后覆盖安装；安装程序沿用既有应用身份和目录，不要求卸载旧版或清空个人数据。
 
-每个发布页同时提供与二进制对应的源码归档、调试符号、SHA-256 校验文件，以及累计更新说明和验证边界。
+每个发布页同时提供与二进制对应的源码归档、调试符号、SHA-256 校验文件，以及累计更新说明和测试结果。
 
 ```powershell
 Get-FileHash .\Yingyu-2.2.4.apk -Algorithm SHA256
-Get-FileHash .\Yingyu-Setup-x64-1.2.2.exe -Algorithm SHA256
+Get-FileHash .\Yingyu-Setup-x64-1.3.4.exe -Algorithm SHA256
 ```
 
 ## 快速开始

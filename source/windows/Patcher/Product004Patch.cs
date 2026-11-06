@@ -43,6 +43,21 @@ static class Product004Patch
         {mark(reader);call.Operand=Hook(app.MainModule,"ResumeSync","ServerItems");replacements++;}
         if(replacements!=2)throw new InvalidOperationException("Expected exactly two home/server reconciliation consumers");
 
+        var historyPage=All(app.MainModule.Types).Single(t=>t.Name.StartsWith("<LoadHistoryAsync>")).Methods.Single(m=>m.Name=="MoveNext");
+        mark(historyPage);
+        var resumeCall=historyPage.Body.Instructions.Single(i=>i.Operand is MethodReference m&&m.Name=="GetResumeAsync");
+        var pageOwner=historyPage.DeclaringType.Fields.Single(f=>f.FieldType.FullName==page.FullName);
+        var hip=historyPage.Body.GetILProcessor();
+        hip.InsertBefore(resumeCall,Instruction.Create(OpCodes.Ldarg_0));
+        hip.InsertBefore(resumeCall,Instruction.Create(OpCodes.Ldfld,pageOwner));
+        resumeCall.OpCode=OpCodes.Call;resumeCall.Operand=Hook(app.MainModule,"ResumeSync","HistoryEpisodes");
+
+        var historyChoice=All(app.MainModule.Types).Single(t=>t.FullName=="EmbyDesktop.MainPage/<>c")
+            .Methods.Single(m=>m.Name=="<LoadHistoryAsync>b__512_1");
+        mark(historyChoice);
+        var firstRow=historyChoice.Body.Instructions.Single(i=>i.Operand is MethodReference m&&m.Name=="First");
+        firstRow.Operand=Hook(app.MainModule,"ResumeSync","NewestEpisode");
+
         var translation=core.MainModule.GetType("EmbyDesktop.Core.Services.OverviewTranslationService");
         var ctor=translation.Methods.Single(m=>m.IsConstructor&&!m.IsStatic);mark(ctor);var cip=ctor.Body.GetILProcessor();
         cip.InsertBefore(ctor.Body.Instructions[0],Instruction.Create(OpCodes.Starg,ctor.Parameters[2]));cip.InsertBefore(ctor.Body.Instructions[0],Instruction.Create(OpCodes.Ldnull));

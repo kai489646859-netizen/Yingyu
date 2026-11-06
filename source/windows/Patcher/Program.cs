@@ -8,8 +8,8 @@ using Mono.Cecil.Rocks;
 Console.OutputEncoding = Encoding.UTF8;
 string root = Path.GetFullPath(args[0]);
 string baseline = Path.Combine(root, "baseline", "0.2.5-redline", "installed");
-string stage = Path.Combine(root, "updates", "1.2.2-desktop", "payload");
-string runtime = Path.Combine(root, "updates", "1.2.2-desktop", "runtime-build", "Yingyu.Update.dll");
+string stage = Path.Combine(root, "updates", "1.3.4-desktop", "payload");
+string runtime = Path.Combine(root, "updates", "1.3.4-desktop", "runtime-build", "Yingyu.Update.dll");
 var expected = new Dictionary<string, string>
 {
     ["Yingyu.dll"] = "e5b9984ac2f0d3f832b9498db1f091f2d434316a4be1985ffe76a0ddf155e313",
@@ -190,7 +190,7 @@ Mark(sourceLabel);sourceLabel.Body.Instructions.Clear();sourceLabel.Body.Variabl
 sourceLabel.Body.Instructions.Add(Instruction.Create(OpCodes.Ldarg_1));
 sourceLabel.Body.Instructions.Add(Instruction.Create(OpCodes.Call,Helper(app.MainModule,"ResourceSourceInfo","VersionLabel")));
 sourceLabel.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
-// 1.2.2: episode-list items become local resume cards after playback. Request
+// 1.3.4: episode-list items become local resume cards after playback. Request
 // the same parent artwork metadata as GetResumeAsync in the existing request.
 var episodeArtwork = Types(core.MainModule.Types).Single(t => t.Name.StartsWith("<GetEpisodesAsync>", StringComparison.Ordinal))
     .Methods.Single(m => m.Name == "MoveNext");
@@ -240,7 +240,7 @@ foreach(string name in new[]{"MediaCard_Loaded","MediaCard_DataContextChanged"})
     foreach(var ret in method.Body.Instructions.Where(i=>i.OpCode==OpCodes.Ret).ToArray())
         Prefix(method,ret,Instruction.Create(OpCodes.Ldarg_0),Instruction.Create(OpCodes.Ldarg_1),Instruction.Create(OpCodes.Call,Helper(app.MainModule,"AndroidCacheCards","Attach")));
 }
-// 1.2.2 background log lifecycle starts with the main page, before settings open.
+// 1.3.4 background log lifecycle starts with the main page, before settings open.
 BeforeReturns(Method(app, "EmbyDesktop.MainPage", ".ctor"), "LogCenterLauncher", "StartBackground", preserveExclusiveEnds: true);
 // Cache recovery receives only containers measured by this viewport pass.
 var browseViewport = Method(app, "EmbyDesktop.MainPage", "RefreshBrowsePosterViewport");
@@ -281,7 +281,7 @@ foreach (var (name, function) in new[] { ("SettingsCategoryButton_Click", "Leave
     Prefix(entry, entry.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
         Instruction.Create(OpCodes.Call, Helper(app.MainModule, "LogCenterLauncher", function)));
 }
-// 1.2.2: retain the user-confirmed 1.2.2 original player window initialization.
+// 1.3.4: retain the user-confirmed 1.3.4 original player window initialization.
 var detailPlay = Method(app, "EmbyDesktop.MainPage", "DetailPlayButton_Click");
 Mark(detailPlay);
 Prefix(detailPlay, detailPlay.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
@@ -337,7 +337,7 @@ var pauseAccelerator=Method(app,"EmbyDesktop.Controls.PlayerOverlay","PlayPauseA
 Mark(pauseAccelerator);
 var showOnPause=pauseAccelerator.Body.Instructions.Single(i=>i.Operand is MethodReference m && m.Name=="ShowControlsTemporarily");
 showOnPause.OpCode=OpCodes.Pop;showOnPause.Operand=null;
-// 1.2.2 loading readiness guard; original state handlers remain intact.
+// 1.3.4 loading readiness guard; original state handlers remain intact.
 var loadingState = Method(app, "EmbyDesktop.Controls.PlayerOverlay", "UpdatePlayerState");
 Mark(loadingState);
 foreach (var ret in loadingState.Body.Instructions.Where(i => i.OpCode == OpCodes.Ret).ToArray())
@@ -348,8 +348,8 @@ foreach(var call in loadingState.Body.Instructions.Where(i=>i.Operand is MethodR
     var original=(MethodReference)call.Operand;call.OpCode=OpCodes.Call;
     call.Operand=Helper(app.MainModule,"PlaybackStateFeedback",original.Name=="SetControlsVisible"?"StateControls":"StateTemporarily");
 }
-// End 1.2.2 loading readiness guard.
-// 1.2.2 first-frame confirmation resolves an earlier preliminary Playing event.
+// End 1.3.4 loading readiness guard.
+// 1.3.4 first-frame confirmation resolves an earlier preliminary Playing event.
 BeforeReturns(Method(app, "EmbyDesktop.Services.MpvPlaybackSession", "MarkPlaybackStarted"), "PlayerFeedback", "Ready", preserveExclusiveEnds: true);
 var episodeQueue = Types(app.MainModule.Types).Single(t=>t.FullName.StartsWith(
     "EmbyDesktop.Services.MpvPlaybackSession/<LoadEpisodePlaylistAfterStartAsync>d__",StringComparison.Ordinal));
@@ -363,11 +363,17 @@ var getPlayer=Instruction.Create(OpCodes.Ldfld,episodeQueue.Fields.Single(f=>f.N
 episodeQueueIl.InsertAfter(queueOwner,getPlayer);
 episodeQueueIl.InsertAfter(getPlayer,Instruction.Create(OpCodes.Call,Helper(app.MainModule,"PlayerFeedback","EpisodePlaylistReady")));
 
-// End 1.2.2 first-frame confirmation.
+// End 1.3.4 first-frame confirmation.
 
 BeforeReturns(Method(app, "EmbyDesktop.Controls.PlayerOverlay", ".ctor"), "PlayerMenus", "Configure");
 BeforeReturns(Method(app, "EmbyDesktop.Controls.PlayerOverlay", ".ctor"), "EpisodeLabels", "ConfigureVolume");
 BeforeReturns(Method(app, "EmbyDesktop.Controls.PlayerOverlay", ".ctor"), "PlaybackUi", "Configure", preserveExclusiveEnds: true);
+var centerPlaybackWindow=Method(app,"EmbyDesktop.Services.MpvPlaybackSession","CenterPlayerWindow");
+Mark(centerPlaybackWindow);
+var originalCenter=centerPlaybackWindow.Body.Instructions[0];
+Prefix(centerPlaybackWindow,originalCenter,Instruction.Create(OpCodes.Ldarg_0),
+    Instruction.Create(OpCodes.Call,Helper(app.MainModule,"PlaybackUi","CenterWindow")),
+    Instruction.Create(OpCodes.Brfalse,originalCenter),Instruction.Create(OpCodes.Ret));
 var episodeDisplay = Method(core, "EmbyDesktop.Core.Services.PlaybackDisplayTitlePolicy", "Create");
 Mark(episodeDisplay);
 Prefix(episodeDisplay, episodeDisplay.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
@@ -427,6 +433,21 @@ if (episodeOrdinal.VariableType.FullName != "System.Int32") throw new InvalidOpe
 Prefix(episodeOptions, numberJoin, Instruction.Create(OpCodes.Pop), Instruction.Create(OpCodes.Ldloc, episodeItem),
     Instruction.Create(OpCodes.Ldloc, episodeOrdinal), Instruction.Create(OpCodes.Ldc_I4_1), Instruction.Create(OpCodes.Add),
     Instruction.Create(OpCodes.Call, Helper(app.MainModule, "EpisodeLabels", "Number")));
+// Keep the original tile template and preview, but use the same accent as the alternate grid.
+var episodeSelected=episodeOptions.Body.Variables.Single(v=>v.VariableType.FullName=="System.Boolean");
+var episodeBrush=episodeOptions.Body.Instructions.Single(i=>i.OpCode==OpCodes.Newobj &&
+    i.Operand is MethodReference ctor && ctor.DeclaringType.FullName=="Microsoft.UI.Xaml.Media.SolidColorBrush");
+Prefix(episodeOptions,episodeBrush,Instruction.Create(OpCodes.Pop),Instruction.Create(OpCodes.Ldloc,episodeSelected),
+    Instruction.Create(OpCodes.Call,Helper(app.MainModule,"PlayerSeasonPanel","EpisodeColor")));
+
+// Ignore the current tile before preview promotion, drawer close or a manual switch request.
+var episodeClick=Method(app,"EmbyDesktop.Controls.PlayerOverlay","EpisodeGrid_ItemClick");
+Mark(episodeClick);
+var episodeClickStart=episodeClick.Body.Instructions[0];
+Prefix(episodeClick,episodeClickStart,Instruction.Create(OpCodes.Ldarg_0),Instruction.Create(OpCodes.Ldarg_2),
+    Instruction.Create(OpCodes.Call,Helper(app.MainModule,"PlayerSeasonPanel","CanPickOriginal")),
+    Instruction.Create(OpCodes.Brtrue,episodeClickStart),Instruction.Create(OpCodes.Ret));
+
 // Assign the season-local ordinal before publishing each row to XAML.
 const string detailRowType = "EmbyDesktop.ViewModels.EpisodeRowViewModel";
 var detailNumber = Method(app, detailRowType, "get_DisplayNumber");
@@ -659,7 +680,7 @@ Prefix(moveInit, overlayLoad.Previous, Instruction.Create(OpCodes.Ldloc, pageLoc
 var endLoad = Instruction.Create(OpCodes.Ldloc, pageLocal);
 initIl.InsertAfter(stores[1], endLoad);
 initIl.InsertAfter(endLoad, Instruction.Create(OpCodes.Call, Helper(app.MainModule, "BackgroundArtwork", "End")));
-// 1.2.2 incremental initialization: reuse the existing async wait and original
+// 1.3.4 incremental initialization: reuse the existing async wait and original
 // download loop. Filter only after existing artwork registration completes.
 var planField = initState.Fields.Single(f => f.Name.StartsWith("<plan>"));
 var totalField = initState.Fields.Single(f => f.Name.StartsWith("<total>"));
@@ -681,7 +702,7 @@ Prefix(moveInit, estimateNew.Previous,
 BeforeReturns(Method(app, "EmbyDesktop.MainPage", "UpdateArtworkInitializationUi"), "ArtworkInitializationReuse", "Annotate", preserveExclusiveEnds: true);
 foreach (var text in moveInit.Body.Instructions.Where(i => i.OpCode == OpCodes.Ldstr && Equals(i.Operand, "正在优先初始化海报墙图片…")))
     text.Operand = "正在补齐缺失的海报墙图片…";
-// End 1.2.2 incremental initialization.
+// End 1.3.4 incremental initialization.
 var playback = Method(app, "EmbyDesktop.MainPage", "StartPlaybackSafelyAsync");
 Mark(playback);
 Prefix(playback, playback.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
@@ -737,7 +758,7 @@ foreach(var name in new[]{"OnSeekRequested","OnEpisodeRequested","OnRetryPlaybac
     var method=Method(app,"EmbyDesktop.Services.MpvPlaybackSession",name);Mark(method);
     Prefix(method,method.Body.Instructions[0],Instruction.Create(OpCodes.Ldarg_0),Instruction.Create(OpCodes.Call,Helper(app.MainModule,"PlayerSkipCountdown",name=="SeekAsync"?"BeforeSeek":"Interrupt")));
 }
-// 1.2.2: keep the original seek and reporting; synchronize presentation after its position commit.
+// 1.3.4: keep the original seek and reporting; synchronize presentation after its position commit.
 var seekState104=Types(app.MainModule.Types).Single(t=>t.FullName.StartsWith("EmbyDesktop.Services.MpvPlaybackSession/<SeekAsync>"));
 var seekMove104=seekState104.Methods.Single(m=>m.Name=="MoveNext");Mark(seekMove104);
 var seekOwner104=seekMove104.Body.Variables.Single(v=>v.VariableType.FullName=="EmbyDesktop.Services.MpvPlaybackSession");
@@ -899,7 +920,7 @@ sessionDispose.Body.GetILProcessor().InsertAfter(dispatchOwner,Instruction.Creat
 var eofCleanup=Types(app.MainModule.Types).Single(t=>t.Name.StartsWith("<HandleFileEndAsync>d__")).Methods.Single(m=>m.Name=="MoveNext");
 var eofClose=eofCleanup.Body.Instructions.Single(i=>i.Operand is MethodReference m&&m.DeclaringType.FullName=="EmbyDesktop.Services.MpvPlaybackSession"&&m.Name=="CloseAsync");
 Mark(eofCleanup);eofClose.OpCode=OpCodes.Call;eofClose.Operand=Helper(app.MainModule,"PlayerShutdown","Close");
-// 1.2.2: keep the entire natural-end state machine; only wrap its Task.
+// 1.3.4: keep the entire natural-end state machine; only wrap its Task.
 var crossEnd = Method(app, "EmbyDesktop.Services.MpvPlaybackSession", "HandleFileEndAsync");
 var crossOriginal = new MethodDefinition("HandleFileEndBeforeCrossSeasonAsync", MethodAttributes.Private | MethodAttributes.HideBySig, crossEnd.ReturnType);
 crossEnd.DeclaringType.Methods.Add(crossOriginal);
@@ -931,7 +952,7 @@ Prefix(nativeProperty, nativeProperty.Body.Instructions[0], Instruction.Create(O
 var prematureReady = notifyMpv.Body.Instructions.Where(i => i.Operand is MethodReference m && m.Name == "MarkPlaybackStarted").ToArray();
 if (prematureReady.Length != 3) throw new InvalidOperationException("Unexpected playback readiness shape");
 prematureReady[0].OpCode = OpCodes.Pop; prematureReady[0].Operand = null;
-// 1.2.2: progress-aware bounded startup and synchronous native end-reason gate.
+// 1.3.4: progress-aware bounded startup and synchronous native end-reason gate.
 var startupWatch = Types(app.MainModule.Types).Single(t => t.Name.StartsWith("<WatchForFirstFrameAsync>d__")).Methods.Single(m => m.Name == "MoveNext");
 Mark(startupWatch);
 var startupDelay = startupWatch.Body.Instructions.Single(i => i.Operand is MethodReference m && m.DeclaringType.FullName == "System.Threading.Tasks.Task" && m.Name == "Delay");
@@ -947,7 +968,7 @@ Prefix(endEventEntry, endEventEntry.Body.Instructions[0], Instruction.Create(OpC
 Prefix(endEventEntry, endEventEntry.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
     Instruction.Create(OpCodes.Ldarg_1), Instruction.Create(OpCodes.Call, Helper(kernelCore.MainModule, "BlurayStartup", "IgnoreControlEnd")),
     Instruction.Create(OpCodes.Brfalse, endEventEntry.Body.Instructions[0]), Instruction.Create(OpCodes.Ret));
-// End 1.2.2 startup hooks.
+// End 1.3.4 startup hooks.
 var retryIso = Method(app, "EmbyDesktop.Services.MpvPlaybackSession", "RefreshPlaybackRouteAsync");
 Mark(retryIso);
 Prefix(retryIso, retryIso.Body.Instructions[0], Instruction.Create(OpCodes.Ldarg_0),
@@ -1063,7 +1084,7 @@ foreach (var routeReturn in constructServerRoute.Body.Instructions.Where(i => i.
     Prefix(constructServerRoute, routeReturn, Instruction.Create(OpCodes.Ldarg_0),
         Instruction.Create(OpCodes.Call, Helper(core.MainModule, "PlaybackRouteIdentity", "WithCurrent")));
 
-// 1.2.2: same-origin media authentication and redirect boundary.
+// 1.3.4: same-origin media authentication and redirect boundary.
 // Insert before final OptimizeMacros/write, after the existing route hooks.
 // This snippet uses Program's Types, Method, Mark, Prefix and Helper locals.
 var mediaPreflightState = Types(core.MainModule.Types).Single(t =>
@@ -1123,7 +1144,7 @@ Mark(mediaErrorMove);
 var mediaForbidden = mediaErrorMove.Body.Instructions.Single(i => i.OpCode == OpCodes.Ldstr && Equals(i.Operand, "媒体路线请求被拒绝（403），可能是直链已失效或上游校验不一致。"));
 mediaForbidden.OpCode = OpCodes.Ldloc; mediaForbidden.Operand = mediaErrorMove.Body.Variables[3];
 mediaErrorMove.Body.GetILProcessor().InsertAfter(mediaForbidden, Instruction.Create(OpCodes.Call, Helper(core.MainModule, "MediaFailureDiagnostics", "Forbidden")));
-// End 1.2.2 media-authentication patch.
+// End 1.3.4 media-authentication patch.
 
 MpvHttpHeadersPatch.Apply(kernelCore, helper, Mark);
 WallPosterPatch.Apply(app, helper, Mark);
@@ -1155,7 +1176,7 @@ foreach (var method in Types(assembly.MainModule.Types).SelectMany(t => t.Method
     {
         if (ins.OpCode != OpCodes.Ldstr || ins.Operand is not string value) continue;
         if (value.StartsWith("空格：播放/暂停") && value.Contains("进度条")) { ins.Operand = shortcuts; touched.Add(method.FullName); }
-        else if (value is "0.2.5" or "0.2.5.0") { ins.Operand = value.Replace("0.2.5", "1.2.2"); touched.Add(method.FullName); }
+        else if (value is "0.2.5" or "0.2.5.0") { ins.Operand = value.Replace("0.2.5", "1.3.4"); touched.Add(method.FullName); }
     }
 }
 AudioControlPatch.Apply(app, helper);
@@ -1249,7 +1270,7 @@ foreach (var assembly in new[] { app, core, helper, windowUi, kernelCore, kernel
         foreach (var attribute in assembly.CustomAttributes)
             if (attribute.AttributeType.Name is "AssemblyFileVersionAttribute" or "AssemblyInformationalVersionAttribute")
                 attribute.ConstructorArguments[0] = new CustomAttributeArgument(assembly.MainModule.TypeSystem.String,
-                    attribute.AttributeType.Name == "AssemblyFileVersionAttribute" ? "1.2.2.0" : "1.2.2");
+                    attribute.AttributeType.Name == "AssemblyFileVersionAttribute" ? "1.3.4.0" : "1.3.4");
     }
     foreach (var method in Types(assembly.MainModule.Types).SelectMany(t => t.Methods).Where(m => m.HasBody && touched.Contains(m.FullName))) method.Body.OptimizeMacros();
     var regionErrors = Types(assembly.MainModule.Types).SelectMany(t => t.Methods).SelectMany(ExceptionRegions.Check).ToArray();
@@ -1266,45 +1287,45 @@ foreach (var target in deps["targets"]!.AsObject())
     foreach (string name in new[] { "Yingyu", "Yingyu.Core" })
     {
         var item = libraries[name + "/0.2.5"];
-        if (item != null) { libraries.Remove(name + "/0.2.5"); libraries[name + "/1.2.2"] = item; }
+        if (item != null) { libraries.Remove(name + "/0.2.5"); libraries[name + "/1.3.4"] = item; }
     }
     foreach (var item in libraries.ToArray())
     {
         var dependencies = item.Value?["dependencies"]?.AsObject();
         if (dependencies == null) continue;
-        if (dependencies.ContainsKey("Yingyu.Core")) dependencies["Yingyu.Core"] = "1.2.2";
-        if (dependencies.ContainsKey("Yingyu.Core.Reference")) dependencies["Yingyu.Core.Reference"] = "1.2.2.0";
-        if (item.Key is "Yingyu/1.2.2" or "Yingyu.Core/1.2.2") dependencies["Yingyu.Update"] = "1.2.2";
+        if (dependencies.ContainsKey("Yingyu.Core")) dependencies["Yingyu.Core"] = "1.3.4";
+        if (dependencies.ContainsKey("Yingyu.Core.Reference")) dependencies["Yingyu.Core.Reference"] = "1.3.4.0";
+        if (item.Key is "Yingyu/1.3.4" or "Yingyu.Core/1.3.4") dependencies["Yingyu.Update"] = "1.3.4";
     }
     var referenceInfo = libraries["Yingyu.Core.Reference/0.2.5.0"];
-    if (referenceInfo != null) { libraries.Remove("Yingyu.Core.Reference/0.2.5.0"); libraries["Yingyu.Core.Reference/1.2.2.0"] = referenceInfo; }
+    if (referenceInfo != null) { libraries.Remove("Yingyu.Core.Reference/0.2.5.0"); libraries["Yingyu.Core.Reference/1.3.4.0"] = referenceInfo; }
     foreach (var item in libraries)
     {
         if (item.Value?["runtime"] is not System.Text.Json.Nodes.JsonObject files) continue;
         foreach (var dll in files)
             if (dll.Key is "Yingyu.dll" or "Yingyu.Core.dll")
             {
-                dll.Value!["assemblyVersion"] = "1.2.2.0";
-                dll.Value["fileVersion"] = "1.2.2.0";
+                dll.Value!["assemblyVersion"] = "1.3.4.0";
+                dll.Value["fileVersion"] = "1.3.4.0";
             }
     }
-    libraries["Yingyu.Update/1.2.2"] = new System.Text.Json.Nodes.JsonObject
+    libraries["Yingyu.Update/1.3.4"] = new System.Text.Json.Nodes.JsonObject
     {
-        ["runtime"] = new System.Text.Json.Nodes.JsonObject { ["Yingyu.Update.dll"] = new System.Text.Json.Nodes.JsonObject { ["assemblyVersion"] = "1.2.2.0", ["fileVersion"] = "1.2.2.0" } }
+        ["runtime"] = new System.Text.Json.Nodes.JsonObject { ["Yingyu.Update.dll"] = new System.Text.Json.Nodes.JsonObject { ["assemblyVersion"] = "1.3.4.0", ["fileVersion"] = "1.3.4.0" } }
     };
 }
 var libraryInfo = deps["libraries"]!.AsObject();
 foreach (string name in new[] { "Yingyu", "Yingyu.Core" })
 {
     var item = libraryInfo[name + "/0.2.5"];
-    if (item != null) { libraryInfo.Remove(name + "/0.2.5"); libraryInfo[name + "/1.2.2"] = item; }
+    if (item != null) { libraryInfo.Remove(name + "/0.2.5"); libraryInfo[name + "/1.3.4"] = item; }
 }
-libraryInfo["Yingyu.Update/1.2.2"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "project", ["serviceable"] = false, ["sha512"] = "" };
+libraryInfo["Yingyu.Update/1.3.4"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "project", ["serviceable"] = false, ["sha512"] = "" };
 var referenceLibraryInfo = libraryInfo["Yingyu.Core.Reference/0.2.5.0"];
-if (referenceLibraryInfo != null) { libraryInfo.Remove("Yingyu.Core.Reference/0.2.5.0"); libraryInfo["Yingyu.Core.Reference/1.2.2.0"] = referenceLibraryInfo; }
+if (referenceLibraryInfo != null) { libraryInfo.Remove("Yingyu.Core.Reference/0.2.5.0"); libraryInfo["Yingyu.Core.Reference/1.3.4.0"] = referenceLibraryInfo; }
 File.WriteAllText(depsFile, deps.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
 
-void UpdateNativeVersion(string hostPath,bool required)=>VersionResourcePatch.Apply(hostPath,new Version(1,2,2,0),required);
+void UpdateNativeVersion(string hostPath,bool required)=>VersionResourcePatch.Apply(hostPath,new Version(1,3,4,0),required);
 UpdateNativeVersion(Path.Combine(stage, "Yingyu.exe"), true);
 UpdateNativeVersion(Path.Combine(stage, "Yingyu.dll"), false);
 UpdateNativeVersion(Path.Combine(stage, "Yingyu.Core.dll"), false);
@@ -1330,9 +1351,9 @@ foreach (var file in Directory.EnumerateFiles(dolbySource, "*", SearchOption.Top
     if (!file.EndsWith(".a", StringComparison.OrdinalIgnoreCase)) File.Copy(file, Path.Combine(dolbyTarget, Path.GetFileName(file)), true);
 // One private native core for all sessions. Keep the prior 90 native files as
 // delivered; the resolver always selects this complete rebuilt dependency set.
-var nativeSource037=Path.Combine(root,"updates","1.2.2-desktop","Native","runtime");
+var nativeSource037=Path.Combine(root,"updates","1.3.4-desktop","Native","runtime");
 var nativeTarget037=Path.Combine(stage,"Components","NativeDolby");
-using(var nativeManifest=JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"updates","1.2.2-desktop","Native","native-runtime-manifest.json"))))
+using(var nativeManifest=JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"updates","1.3.4-desktop","Native","native-runtime-manifest.json"))))
     foreach(var entry in nativeManifest.RootElement.GetProperty("files").EnumerateArray()) {
         var file=Path.Combine(nativeSource037,entry.GetProperty("file").GetString()!);
         if(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(file)))!=entry.GetProperty("sha256").GetString())
@@ -1342,7 +1363,7 @@ foreach(var file in Directory.EnumerateFiles(nativeSource037,"*",SearchOption.Al
     var destination=Path.Combine(nativeTarget037,Path.GetRelativePath(nativeSource037,file));
     Directory.CreateDirectory(Path.GetDirectoryName(destination)!);File.Copy(file,destination,true);
 }
-var manifest = new { version = "1.2.2", baselineVersion = "0.2.5", baselineFingerprints = expected, changedMethods = touched.OrderBy(x => x).ToArray(), functionalTests = "User will test manually; not run by agent" };
-File.WriteAllText(Path.Combine(root, "updates", "1.2.2-desktop", "patch-manifest.json"), JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
+var manifest = new { version = "1.3.4", baselineVersion = "0.2.5", baselineFingerprints = expected, changedMethods = touched.OrderBy(x => x).ToArray(), functionalTests = "User will test manually; not run by agent" };
+File.WriteAllText(Path.Combine(root, "updates", "1.3.4-desktop", "patch-manifest.json"), JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
 Console.WriteLine("Patched methods: " + touched.Count);
 foreach (var name in touched.OrderBy(x => x)) Console.WriteLine(name);

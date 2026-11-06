@@ -4,6 +4,7 @@ using EmbyDesktop.Core.Models;
 using EmbyDesktop.Core.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 
 namespace Yingyu.Update;
 
@@ -85,6 +86,23 @@ public static class PlayerSeasonPanel
         combo.SelectedIndex = -1;
     }
     sealed class Owner { internal object? Session; }
+
+    public static Windows.UI.Color EpisodeColor(bool playing)
+        => DesktopMaterial.Color(playing
+            ? DesktopThemePalette.Resolve(DesktopTheme.Options, false).Accent : 0x34FFFFFF);
+
+    public static bool CanPickOriginal(object overlay, ItemClickEventArgs args)
+        => args.ClickedItem is {} episode
+            && CanPick(overlay, Access.Call(episode, "get_ItemId") as string);
+
+    static bool CanPick(object overlay, string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id) || !Owners.TryGetValue(overlay, out var owner)
+            || owner.Session is not {} session) return false;
+        return !Same(id, Access.Get<EmbyItem>(session, "_item").Id)
+            && !Access.Get<bool>(session, "_switching") && !Access.Get<bool>(session, "_manualSwitchPending")
+            && session.GetType().GetProperty("CanSwitch")?.GetValue(session) is true;
+    }
     internal static void Bind(object session,object overlay)
     {
         Owners.GetValue(overlay,key=>{
@@ -127,18 +145,22 @@ public static class PlayerSeasonPanel
         readonly TextBlock note=new(){FontSize=12,Foreground=DesktopVisuals.Brush(0xFFBEBEC1),TextWrapping=TextWrapping.Wrap,Visibility=Visibility.Collapsed};
         readonly Grid alternatives=new(){RowSpacing=8,Visibility=Visibility.Collapsed};
         readonly ComboBox ranges=new(){MinWidth=0,MaxWidth=128,HorizontalAlignment=HorizontalAlignment.Right};
-        readonly ScrollViewer scrolling;
+        readonly ScrollViewer scrolling,seasonStrip;
         readonly GridView originalGrid;
         readonly ComboBox originalRanges;
         ScrollViewer? originalScrolling;
-        EmbyItem[] shown=[];
+        EmbyItem[] shown=[],gridItems=[];
+        IReadOnlyList<EmbyItem>? currentQueue;
+        int currentQueueCount;
+        Grid? episodeTiles;
+        string? tilesPlayingId;
         bool settingRanges;
         CancellationTokenSource? pending;
         EmbyItem[] seasons=[];
         readonly Dictionary<string,EmbyItem[]> episodes=new(StringComparer.OrdinalIgnoreCase);
         object? session;EmbyApiClient? client;EmbyItem? current;
         string? user,credential,chosen;
-        int generation, rangeJump;
+        int generation, rangeJump, seasonJump;
         bool catalogLoaded;
         internal View(object overlay,Border drawer,FrameworkElement original,Flyout flyout)
         {
@@ -148,8 +170,8 @@ public static class PlayerSeasonPanel
             originalRanges=Access.Get<ComboBox>(overlay,"EpisodeRangeCombo");
             layout.RowDefinitions.Add(new(){Height=GridLength.Auto});layout.RowDefinitions.Add(new(){Height=GridLength.Auto});layout.RowDefinitions.Add(new(){Height=new(1,GridUnitType.Star)});
             // WinUI overlays its expanded horizontal bar on the content edge.
-            var strip=new ScrollViewer{Content=new Border{Child=tabs,Padding=new(0,0,0,18)},HorizontalScrollMode=ScrollMode.Enabled,HorizontalScrollBarVisibility=ScrollBarVisibility.Auto,VerticalScrollMode=ScrollMode.Disabled,VerticalScrollBarVisibility=ScrollBarVisibility.Disabled};
-            layout.Children.Add(strip);Grid.SetRow(note,1);layout.Children.Add(note);
+            seasonStrip=new ScrollViewer{Content=new Border{Child=tabs,Padding=new(0,0,0,18)},HorizontalScrollMode=ScrollMode.Enabled,HorizontalScrollBarVisibility=ScrollBarVisibility.Auto,VerticalScrollMode=ScrollMode.Disabled,VerticalScrollBarVisibility=ScrollBarVisibility.Disabled};
+            layout.Children.Add(seasonStrip);Grid.SetRow(note,1);layout.Children.Add(note);
             alternatives.RowDefinitions.Add(new(){Height=GridLength.Auto});
             alternatives.RowDefinitions.Add(new(){Height=new(1,GridUnitType.Star)});
             var header=new Grid{ColumnSpacing=8};
@@ -181,6 +203,7 @@ public static class PlayerSeasonPanel
         void ObserveOriginal()
         {
             StopObservingOriginal();
+            QueueSelectedSeason();
             originalGrid.ApplyTemplate();
             originalScrolling=UiElements.Descendants(originalGrid).OfType<ScrollViewer>().FirstOrDefault();
             if (originalScrolling != null) originalScrolling.ViewChanged += UpdateOriginalRange;
@@ -209,16 +232,21 @@ public static class PlayerSeasonPanel
             currentJumpQueued=originalGrid.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
                 currentJumpQueued=false;
-                if (!flyout.IsOpen || original.Visibility != Visibility.Visible) return;
-                string? id=Access.Get<string?>(overlay,"_currentPlaylistItemId");
-                if (string.IsNullOrEmpty(id)) return;
-                var playlist=Access.Get<IReadOnlyList<EmbyItem>>(overlay,"_playlist");
-                if (playlist.Count != originalGrid.Items.Count) return;
-                for (int index=0;index<playlist.Count;index++)
+                if(!flyout.IsOpen||!Current()||current is not {} item)return;
+                if(original.Visibility!=Visibility.Visible)
                 {
-                    if (!Same(playlist[index].Id,id)) continue;
+                    var queue=Access.Get<IReadOnlyList<EmbyItem>>(session!,"_playlist");
+                    if(Same(chosen,item.SeasonId)&&(!ReferenceEquals(queue,currentQueue)||queue.Count!=currentQueueCount))
+                        ShowCurrent();
+                    return;
+                }
+                string id=item.Id;
+                for (int index=0;index<originalGrid.Items.Count;index++)
+                {
+                    var option=originalGrid.Items[index];
+                    if(!Same(Access.Call(option,"get_ItemId") as string,id))continue;
                     originalGrid.UpdateLayout();
-                    originalGrid.ScrollIntoView(originalGrid.Items[index],ScrollIntoViewAlignment.Leading);
+                    originalGrid.ScrollIntoView(option,ScrollIntoViewAlignment.Leading);
                     int range=index/RangeSize;
                     if (originalGrid.Items.Count>RangeSize && range<originalRanges.Items.Count)
                     {
@@ -277,7 +305,7 @@ public static class PlayerSeasonPanel
                 int epoch=Access.Get<int>(next,"_mediaGeneration");
                 string? account=Access.Get<string?>(api,"_userId"),auth=Access.Get<string?>(api,"_accessToken");
                 if(!ReferenceEquals(session,next)||!ReferenceEquals(client,api)||generation!=epoch||account!=user||auth!=credential)
-                {episodes.Clear();seasons=[];catalogLoaded=false;}
+                {episodes.Clear();seasons=[];catalogLoaded=false;episodeTiles=null;gridItems=[];}
                 session=next;client=api;current=item;generation=epoch;user=account;credential=auth;chosen=item.SeasonId;
                 Tabs();ShowCurrent();
                 if(catalogLoaded||!Current())return;
@@ -303,7 +331,29 @@ public static class PlayerSeasonPanel
                 Tab(season.Id,label);
             }
             if(!seasons.Any(s=>Same(s.Id,currentId)))Tab(currentId,current.ParentIndexNumber is >0?$"第{current.ParentIndexNumber}季":"当前季");
+            QueueSelectedSeason();
         }
+
+        void QueueSelectedSeason()
+        {
+            int jump=++seasonJump;
+            seasonStrip.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,()=>
+            {
+                if(jump!=seasonJump||!flyout.IsOpen||!Current())return;
+                var tab=tabs.Children.OfType<Button>().FirstOrDefault(button=>Same(button.Tag as string,chosen));
+                if(tab is null)return;
+                seasonStrip.UpdateLayout();
+                double viewport=seasonStrip.ViewportWidth;
+                if(viewport<=0)return;
+                double left=tab.TransformToVisual(tabs).TransformPoint(new Windows.Foundation.Point(0,0)).X;
+                double offset=seasonStrip.HorizontalOffset;
+                if(left<offset)offset=left;
+                else if(left+tab.ActualWidth>offset+viewport)offset=left+tab.ActualWidth-viewport;
+                else return;
+                seasonStrip.ChangeView(Math.Clamp(offset,0,seasonStrip.ScrollableWidth),null,null,true);
+            });
+        }
+
         void PaintTabs()
         {
             foreach (var button in tabs.Children.OfType<Button>())
@@ -326,15 +376,20 @@ public static class PlayerSeasonPanel
             Restore();
             if(session==null||current==null)return;
             var queue=Access.Get<IReadOnlyList<EmbyItem>>(session,"_playlist");
-            // Across an existing season handoff the queue may contain two
-            // seasons. Display just the current season without editing it.
-            if(queue.Any(i=>!Same(i.SeasonId,current.SeasonId)&&i.ParentIndexNumber!=current.ParentIndexNumber))
-            {
-                var visible=queue.Where(i=>Same(i.Id,current.Id)||Same(i.SeasonId,current.SeasonId)
-                    ||string.IsNullOrEmpty(i.SeasonId)&&i.ParentIndexNumber==current.ParentIndexNumber).ToArray();
-                Show(visible);
-            }
-            else if (flyout.IsOpen) QueueCurrentEpisode();
+            currentQueue=queue;
+            currentQueueCount=queue.Count;
+            var visible=queue.Where(i=>Same(i.Id,current.Id)||Same(i.SeasonId,current.SeasonId)
+                ||string.IsNullOrEmpty(i.SeasonId)&&i.ParentIndexNumber==current.ParentIndexNumber)
+                .Select(i=>Same(i.Id,current.Id)?current:i).ToList();
+            if(!visible.Any(i=>Same(i.Id,current.Id)))visible.Add(current);
+            // Use the standard grid when it has the correct item and numbering.
+            // A missing index or explicit season/episode in the metadata title
+            // must never be interpreted as the item's last position in the list.
+            bool corrected=visible.Any(i=>EpisodeLabels.Index(i)!=i.IndexNumber);
+            bool stale=!Same(Access.Get<string?>(overlay,"_currentPlaylistItemId"),current.Id);
+            if(corrected||stale||visible.Count!=queue.Count)
+                Show(visible.OrderBy(i=>EpisodeLabels.Index(i)??int.MaxValue).ToArray());
+            else if(flyout.IsOpen)QueueCurrentEpisode();
         }
         async Task Select(string id)
         {
@@ -355,7 +410,7 @@ public static class PlayerSeasonPanel
                     var rows=result.Items.Where(i=>i.Type=="Episode"&&!string.IsNullOrWhiteSpace(i.Id)
                         &&(string.IsNullOrEmpty(i.SeriesId)||Same(i.SeriesId,item.SeriesId))
                         &&(string.IsNullOrEmpty(i.SeasonId)||Same(i.SeasonId,id)))
-                        .DistinctBy(i=>i.Id,StringComparer.OrdinalIgnoreCase).OrderBy(i=>i.IndexNumber??int.MaxValue).ToArray();
+                        .DistinctBy(i=>i.Id,StringComparer.OrdinalIgnoreCase).OrderBy(i=>EpisodeLabels.Index(i)??int.MaxValue).ToArray();
                     if(episodes.Count>=6)episodes.Clear();episodes[id]=rows;
                     PlayerMenus.KeepEpisodePanelAtPointer(overlay);
                     Show(rows);
@@ -420,6 +475,11 @@ public static class PlayerSeasonPanel
 
         void BuildEpisodeGrid()
         {
+            if(episodeTiles is {} cached&&Same(tilesPlayingId,current?.Id)&&shown.SequenceEqual(gridItems))
+            {
+                scrolling.Content=cached;
+                return;
+            }
             var grid=new Grid{ColumnSpacing=TileSpacing,RowSpacing=TileSpacing};
             for(int column=0;column<Columns;column++)grid.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});
             for(int i=0;i<shown.Length;i++)
@@ -428,12 +488,21 @@ public static class PlayerSeasonPanel
                 bool playing=Same(item.Id,current?.Id);
                 var tile=new Button
                 {
-                    Content=EpisodeLabels.Number(item,i+1),IsEnabled=!playing,MinWidth=0,Height=TileHeight,Padding=new(3),
+                    Content=EpisodeLabels.Number(item,i+1),IsTabStop=!playing,MinWidth=0,Height=TileHeight,Padding=new(3),
                     CornerRadius=new(12),BorderThickness=new(0),HorizontalAlignment=HorizontalAlignment.Stretch,
                     HorizontalContentAlignment=HorizontalAlignment.Center,
-                    Background=DesktopVisuals.Brush(playing?0xFF5D63DC:0xFF45464A),Foreground=DesktopVisuals.Brush(0xFFF4F4F4)
+                    Background=new SolidColorBrush(EpisodeColor(playing)),Foreground=DesktopVisuals.Brush(0xFFF4F4F4)
                 };
-                ToolTipService.SetToolTip(tile,EpisodeLabels.Display(item));tile.Click+=(_,_)=>Play(item.Id);
+                if (playing)
+                {
+                    tile.Resources["ButtonBackgroundPointerOver"]=tile.Background;
+                    tile.Resources["ButtonBackgroundPressed"]=tile.Background;
+                    tile.Resources["ButtonForegroundPointerOver"]=tile.Foreground;
+                    tile.Resources["ButtonForegroundPressed"]=tile.Foreground;
+                    Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(tile,"正在播放");
+                }
+                else tile.Click+=(_,_)=>Play(item.Id);
+                ToolTipService.SetToolTip(tile,EpisodeLabels.Display(item));
                 int row=i/Columns;
                 if(row>=grid.RowDefinitions.Count)grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
                 Grid.SetRow(tile,row);Grid.SetColumn(tile,i%Columns);grid.Children.Add(tile);
@@ -443,8 +512,7 @@ public static class PlayerSeasonPanel
         void Play(string id)
         {
             try{
-                if(!Current()||session is null||Access.Get<bool>(session,"_switching")||Access.Get<bool>(session,"_manualSwitchPending")
-                    ||session.GetType().GetProperty("CanSwitch")?.GetValue(session) is not true)return;
+                if(!Current()||session is null||!CanPick(overlay,id))return;
                 Access.Call(overlay,"CloseEpisodeDrawer");Access.Call(session,"OnEpisodeRequested",overlay,id);
             }catch(Exception e){PlaybackTransport.Write("Warning","Playback.Menu","换集请求未完成；"+e.GetType().Name);}
         }
