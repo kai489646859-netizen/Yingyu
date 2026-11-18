@@ -226,9 +226,9 @@ void main() {
       await tester.tap(find.text('选择版本'));
       await settleOffline(tester);
       expect(find.textContaining('4K'), findsOneWidget);
-      expect(find.textContaining('1080p'), findsOneWidget);
+      expect(find.textContaining('1080P'), findsOneWidget);
       expect(find.text('2. 远山之旅'), findsNothing);
-      await tester.tap(find.text('2. 1080p'));
+      await tester.tap(find.textContaining('1080P'));
       await settleOffline(tester);
       expect(chosen!.id, 'b');
       expect(chosen!.resume, Duration.zero);

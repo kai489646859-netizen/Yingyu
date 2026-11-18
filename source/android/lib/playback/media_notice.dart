@@ -101,6 +101,7 @@ String mediaNotice({
   required List<Json> streams,
   Map<String, String> decoded = const {},
   bool nativeHdr = false,
+  String? outputTransfer,
   bool? dolbyMapped,
   String? currentGamma,
   String? currentMatrix,
@@ -133,7 +134,8 @@ String mediaNotice({
   if (nativeHdr && dolbyMapped == true) {
     output = '杜比映射 HDR10';
   } else if (nativeHdr) {
-    final transfer = _actual(current, 'video-params/gamma')?.toLowerCase();
+    final transfer =
+        outputTransfer ?? _actual(current, 'video-params/gamma')?.toLowerCase();
     output =
         '${const {'hlg', 'arib-std-b67'}.contains(transfer) ? 'HLG' : 'HDR10'} · 高动态范围';
   } else if ((dolbyMapped ?? videoFormat.startsWith('杜比视界')) ||

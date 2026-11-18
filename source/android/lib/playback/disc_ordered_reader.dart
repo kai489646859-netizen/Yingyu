@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:io' show FileSystemException;
 import 'dart:typed_data';
 import '../core/models.dart';
 import 'disc_cache.dart';
 import 'disc_stream.dart';
 import 'disc_speed_reader.dart';
+import 'disc_forward_spool.dart';
 
 /// A bounded producer independent of native block requests. Continuous input
 /// is retained until a qualified speed/starvation hint can safely use two lanes.
@@ -16,7 +18,8 @@ class DiscOrderedReader {
     void Function()? onResume,
     DiscPartOpen? openPart,
     void Function(String)? onDiagnostic,
-  }) : assert(maxBytes >= chunkBytes && maxBytes % chunkBytes == 0),
+  }) : _onDiagnostic = onDiagnostic,
+       assert(maxBytes >= chunkBytes && maxBytes % chunkBytes == 0),
        _parallel =
            openPart != null && maxBytes >= 3 * DiscRangeCache.blockBytes,
        _reader = DiscSpeedReader(
@@ -32,42 +35,111 @@ class DiscOrderedReader {
        );
 
   static const chunkBytes = 64 * 1024;
+  static const _openingSampleBytes = 1024 * 1024;
+  static const _largeDiscBytes = 32 * 1024 * 1024 * 1024;
   final int maxBytes;
   final DiscSpeedReader _reader;
   final bool _parallel;
+  final void Function(String)? _onDiagnostic;
+  final _clock = Stopwatch()..start();
   double _speed = 1;
-  bool _starved = false;
+  bool _starved = false, _openingDemand = false;
+  Timer? _largeRecoveryTimer;
+  String? _spoolDirectory;
+  int _forwardBytes = 0;
+  bool _spoolUnavailable = false;
+  bool get _recoveringNormalSpeed =>
+      _speed == 1 && _session?.recovering == true;
+  bool get _accelerating =>
+      _speed >= 2 || (_speed > 1 && _starved) || _recoveringNormalSpeed;
   int get _queueLimit =>
       maxBytes -
-      (_parallel &&
-              (_speed >= 2 || (_speed > 1 && _starved) || _reader.hasParts)
+      (_parallel && (_accelerating || _reader.hasParts)
           ? 2 * _reader.partBytes
           : 0);
   void setSpeed(double speed) {
+    if (_speed != speed) cancelLargeRecovery();
     _speed = speed;
     _updateDemand();
   }
 
-  void setBuffering(bool value) {
+  void setBuffering(bool value, {bool recoverLargeInput = false}) {
+    if (!value || !recoverLargeInput) {
+      _largeRecoveryTimer?.cancel();
+    } else if (!_starved && _parallel && _speed == 1) {
+      final session = _session;
+      if (session != null &&
+          session.supplyEligible &&
+          !session.recovering &&
+          (session.total ?? 0) >= _largeDiscBytes) {
+        _largeRecoveryTimer?.cancel();
+        _largeRecoveryTimer = Timer(const Duration(seconds: 3), () {
+          if (_closed ||
+              !_starved ||
+              _speed != 1 ||
+              _session != session ||
+              session.cancelled ||
+              session.retained >= 1024 * 1024) {
+            return;
+          }
+          session.recovering = true;
+          _updateDemand();
+        });
+      }
+    }
     _starved = value;
     _updateDemand();
   }
 
-  // At ordinary speed, keep the established response through temporary
-  // starvation. Opening fresh ranges here adds handshakes to the empty cache
-  // and repeatedly measured no gain. Higher-speed trials remain bounded.
+  void cancelLargeRecovery() {
+    _largeRecoveryTimer?.cancel();
+    if (_session case final session?) {
+      session.recovering = false;
+    }
+    _updateDemand();
+  }
+
+  void configureForwardSpool(String? directory, int bytes) {
+    _spoolDirectory = directory;
+    _forwardBytes = bytes ~/ chunkBytes * chunkBytes;
+    _session?.pulse();
+  }
+
+  void setOpeningDemand(bool value) {
+    _openingDemand = value;
+    _updateDemand();
+  }
+
+  void _spoolFailed() {
+    if (_spoolUnavailable) return;
+    _spoolUnavailable = true;
+    _onDiagnostic?.call('原盘临时磁盘缓存不可用，继续原生直读');
+  }
+
+  // Brief ordinary-speed starvation keeps the continuous response. Only
+  // sustained starvation on large native disc inputs can try an adjacent range.
   void _updateDemand() {
     _reader.setSpeed(
       _parallel &&
-              _session != null &&
-              _session!.supplyEligible &&
-              (_speed >= 2 || (_speed > 1 && _starved))
+              (_session?.supplyEligible == true ||
+                  _openingDemand && _recoveringNormalSpeed) &&
+              _accelerating
           ? (_speed >= 2 ? _speed : 2)
           : 1,
+      recovery: _recoveringNormalSpeed,
+      opening: _openingDemand,
     );
     _session?.trimSpares();
     _session?.pulse();
   }
+
+  bool _canRecoverOpening(_OrderedSession session) =>
+      _openingDemand &&
+      _parallel &&
+      _speed == 1 &&
+      !session.recovering &&
+      (session.total ?? 0) >= _largeDiscBytes &&
+      session.consumed - session.start >= _openingSampleBytes;
 
   _OrderedSession? _session;
   Future<void> _tail = Future.value();
@@ -84,6 +156,7 @@ class DiscOrderedReader {
   String get mode => '${_reader.mode}（有序小块）';
   String get deliveryHealth =>
       '顺序队列=${(retainedBytes / 1048576).toStringAsFixed(2)} MiB；'
+      '原盘磁盘前向缓存=${((_session?.diskUnread ?? 0) / 1048576).toStringAsFixed(2)} MiB；'
       '待交付数据=${((_session?.retained ?? 0) / 1048576).toStringAsFixed(2)} MiB；'
       '复用空闲内存=${((_session?.spares.length ?? 0) * chunkBytes / 1048576).toStringAsFixed(2)} MiB；'
       '顺序队列上限=${maxBytes ~/ 1048576} MiB；交付小块=64 KiB；'
@@ -97,10 +170,33 @@ class DiscOrderedReader {
     DiscReadProgress? onProgress,
     bool availableOnly = false,
   }) {
-    final result = _tail.then(
-      (_) =>
-          _read(path, start, length, cancellation, onProgress, availableOnly),
-    );
+    final result = _tail.then((_) async {
+      try {
+        return await _read(
+          path,
+          start,
+          length,
+          cancellation,
+          onProgress,
+          availableOnly,
+        );
+      } on _DiscSpoolFailure {
+        _spoolFailed();
+        final current = _session;
+        current?.cancel();
+        if (current != null) await current.release();
+        _session = null;
+        cancellation.check();
+        return _read(
+          path,
+          start,
+          length,
+          cancellation,
+          onProgress,
+          availableOnly,
+        );
+      }
+    });
     _tail = result.then<void>((_) {}, onError: (Object _) {});
     return result;
   }
@@ -126,7 +222,7 @@ class DiscOrderedReader {
         start < session.consumed ||
         (start != session.consumed && start > session.published)) {
       session?.cancel();
-      if (session != null) await session.done;
+      if (session != null) await session.release();
       await _reader.retire();
       cancellation.check();
       if (_closed) throw const AppFailure('原盘读取已取消');
@@ -144,6 +240,7 @@ class DiscOrderedReader {
     Uint8List? output;
     var limit = length;
     var written = 0, announced = 0;
+    int? openingWaitStart;
     try {
       while (written < limit) {
         cancellation.check();
@@ -155,9 +252,49 @@ class DiscOrderedReader {
         final block = current.ready.isEmpty ? null : current.ready.first;
         if (block == null) {
           if (current.error != null) throw current.error!;
+          final spool = current.spool;
+          final diskStart = current.diskStart;
+          final at = start + written;
+          if (spool != null && diskStart != null && at < current.published) {
+            if (at < diskStart) throw const _DiscSpoolFailure();
+            if (output == null) {
+              if (availableOnly) {
+                limit = (current.published - start).clamp(1, length);
+              }
+              output = Uint8List(limit);
+            }
+            final count = (current.published - at).clamp(0, limit - written);
+            try {
+              await spool.readInto(at, output, written, count);
+            } on FileSystemException {
+              throw const _DiscSpoolFailure();
+            }
+            cancellation.check();
+            if (_closed || current.cancelled) {
+              throw const AppFailure('原盘读取已取消');
+            }
+            written += count;
+            current.consumed = start + written;
+            current.pulse();
+            continue;
+          }
           if (availableOnly && written > 0) break;
+          if (_canRecoverOpening(current)) {
+            openingWaitStart ??= _clock.elapsedMicroseconds;
+          }
           await current.changed.future;
           continue;
+        }
+        if (openingWaitStart case final began?) {
+          openingWaitStart = null;
+          if (_canRecoverOpening(current)) {
+            current.openingWaitMicros += _clock.elapsedMicroseconds - began;
+            if (current.openingWaitMicros >= 1500000) {
+              current.recovering = true;
+              _onDiagnostic?.call('原盘开播读取等待累计达到 1.5 秒，尝试提前预热相邻范围');
+              _updateDemand();
+            }
+          }
         }
         if (block.start + block.bytes.length <= start + written) {
           current.take();
@@ -221,9 +358,10 @@ class DiscOrderedReader {
 
   Future<void> close() async {
     _closed = true;
+    _largeRecoveryTimer?.cancel();
     final current = _session;
     current?.cancel();
-    if (current != null) await current.done;
+    if (current != null) await current.release();
     await _reader.close();
   }
 }
@@ -242,11 +380,23 @@ class _OrderedSession {
   Completer<void> changed = Completer<void>();
   Future<void> done = Future.value();
   int consumed, published, demand, retained = 0;
+  int openingWaitMicros = 0;
   int? total;
   int get storageBytes =>
       retained + spares.length * DiscOrderedReader.chunkBytes;
-  bool prefetch = false, supplyEligible = false;
+  bool prefetch = false, supplyEligible = false, recovering = false;
   Object? error;
+  DiscForwardSpool? spool;
+  int? diskStart;
+  int get diskUnread {
+    final start = diskStart;
+    if (start == null) return 0;
+    return (published - (consumed > start ? consumed : start)).clamp(
+      0,
+      spool!.size,
+    );
+  }
+
   bool get cancelled => cancellation.cancelled;
 
   void pulse() {
@@ -260,6 +410,47 @@ class _OrderedSession {
     spares.clear();
     retained = 0;
     pulse();
+  }
+
+  Future<void> release() async {
+    await done;
+    await spool?.close();
+  }
+
+  int get _forwardLimit {
+    if (owner._spoolUnavailable ||
+        owner._spoolDirectory == null ||
+        owner._forwardBytes <= owner._queueLimit ||
+        !prefetch) {
+      return owner._queueLimit;
+    }
+    final size = spool?.size;
+    return size != null && size < owner._forwardBytes
+        ? size
+        : owner._forwardBytes;
+  }
+
+  bool get _full {
+    final limit = _forwardLimit;
+    final buffered = diskUnread == 0 ? retained : published - consumed;
+    return buffered + DiscOrderedReader.chunkBytes > limit;
+  }
+
+  bool get _needsSpool =>
+      spool == null &&
+      _forwardLimit > owner._queueLimit &&
+      retained + DiscOrderedReader.chunkBytes > owner._queueLimit;
+
+  Future<void> _openSpool() async {
+    try {
+      spool = await DiscForwardSpool.open(
+        owner._spoolDirectory!,
+        published,
+        _forwardLimit,
+      );
+    } on FileSystemException {
+      owner._spoolFailed();
+    }
   }
 
   void take() {
@@ -284,14 +475,13 @@ class _OrderedSession {
   Future<void> produce() async {
     try {
       while (!cancelled && (total == null || published < total!)) {
-        while (!cancelled &&
-            (retained + DiscOrderedReader.chunkBytes > owner._queueLimit ||
-                (!prefetch && published >= demand))) {
-          final full =
-              retained + DiscOrderedReader.chunkBytes > owner._queueLimit;
+        if (_needsSpool) await _openSpool();
+        while (!cancelled && (_full || (!prefetch && published >= demand))) {
+          final full = _full;
           final watch = Stopwatch()..start();
           await changed.future;
           if (full) owner.fullWaitMicroseconds += watch.elapsedMicroseconds;
+          if (_needsSpool) await _openSpool();
         }
         cancellation.check();
         final block = await owner._reader.read(
@@ -310,19 +500,42 @@ class _OrderedSession {
           throw const DiscIdentityFailure();
         }
         total = block.total;
-        ready.add(block);
+        final target = spool;
+        if (target == null ||
+            diskUnread == 0 &&
+                retained + block.bytes.length <= owner._queueLimit) {
+          diskStart = null;
+          ready.add(block);
+          retained += block.bytes.length;
+          if (retained > owner.peakBytes) owner.peakBytes = retained;
+        } else {
+          final firstOffset = diskUnread == 0 ? published : diskStart;
+          try {
+            await target.append(published, block.bytes);
+          } on FileSystemException {
+            throw const _DiscSpoolFailure();
+          }
+          cancellation.check();
+          diskStart = firstOffset;
+          if (block.bytes.length == DiscOrderedReader.chunkBytes) {
+            spares.add(block.bytes);
+            trimSpares();
+          }
+        }
         published += block.bytes.length;
-        retained += block.bytes.length;
-        if (retained > owner.peakBytes) owner.peakBytes = retained;
         pulse();
       }
     } catch (e) {
       if (!cancelled && !owner._closed) {
         error = e;
-        owner._failure = e;
+        if (e is! _DiscSpoolFailure) owner._failure = e;
       }
     } finally {
       pulse();
     }
   }
+}
+
+class _DiscSpoolFailure implements Exception {
+  const _DiscSpoolFailure();
 }

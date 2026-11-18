@@ -199,6 +199,12 @@ class _PlayerMenuState extends State<PlayerMenu> {
     if (pane == 'root') {
       return [
         SettingsRow(
+          '播放问题反馈',
+          icon: CupertinoIcons.exclamationmark_bubble,
+          onTap: () =>
+              Navigator.pop(context, const PlayerMenuChoice('report', true)),
+        ),
+        SettingsRow(
           '片头片尾',
           icon: CupertinoIcons.forward,
           singleLine: true,

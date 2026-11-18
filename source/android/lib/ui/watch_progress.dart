@@ -4,11 +4,12 @@ import '../core/store.dart';
 import '../core/server_resume.dart';
 import 'style.dart';
 
-String watchTime(Duration value) {
+String watchTime(Duration value, {bool padMinutes = true}) {
   final s = value.inSeconds.clamp(0, 1 << 40);
   final m = (s ~/ 60 % 60).toString().padLeft(2, '0');
   final sec = (s % 60).toString().padLeft(2, '0');
-  return s >= 3600 ? '${s ~/ 3600}:$m:$sec' : '$m:$sec';
+  if (s >= 3600) return '${s ~/ 3600}:$m:$sec';
+  return '${padMinutes ? m : s ~/ 60}:$sec';
 }
 
 class WatchProgressState {
@@ -28,8 +29,18 @@ class WatchProgressState {
   factory WatchProgressState.resolve(
     MediaItem item,
     Session? account,
-    AppStore? store,
-  ) {
+    AppStore? store, {
+    bool showCompletionWithoutDuration = false,
+  }) {
+    if (item is CompletedResumeItem) {
+      return const WatchProgressState(
+        fraction: 1,
+        label: '已看完',
+        completed: true,
+        known: true,
+        position: Duration.zero,
+      );
+    }
     final serverOwned = item is ServerResumeItem;
     final position = account == null || serverOwned
         ? item.resume
@@ -64,34 +75,41 @@ class WatchProgressState {
     final started =
         position > Duration.zero &&
         (!completionPending || completionSuperseded);
-    final hasDuration = item.duration > Duration.zero;
+    final duration = item.watchDuration;
+    final hasDuration = duration > Duration.zero;
     final reported = object(item.data['UserData'])['PlayedPercentage'];
     final serverFraction =
-        serverOwned &&
+        (serverOwned || showCompletionWithoutDuration) &&
+            !pending &&
+            position == item.resume &&
             started &&
             reported is num &&
             reported.isFinite &&
             reported > 0 &&
-            reported <= 100
+            reported < 100
         ? reported / 100
         : null;
-    final known = hasDuration || serverFraction != null;
+    final completed = played && !restart && !started;
+    // Without a usable replay ratio, the detail bar can still show the
+    // confirmed historical completion without changing the replay position.
+    final completionFallback =
+        showCompletionWithoutDuration && played && !restart;
+    final known = completionFallback || hasDuration || serverFraction != null;
     final fraction = restart
         ? 0.0
-        : played && !started
+        : completed
         ? 1.0
         : hasDuration
-        ? (position.inMicroseconds / item.duration.inMicroseconds).clamp(
-            0.0,
-            1.0,
-          )
-        : serverFraction ?? 0.0;
+        ? (position.inMicroseconds / duration.inMicroseconds).clamp(0.0, 1.0)
+        : serverFraction ?? (completionFallback ? 1.0 : 0.0);
     final label = restart
         ? played
               ? '已看完 · 从头重看'
               : '从头播放'
+        : completed
+        ? '已看完'
         : started
-        ? '${played ? '已看完 · 重看至' : '看到'} ${watchTime(position)}${hasDuration ? ' / ${watchTime(item.duration)}' : ''}'
+        ? '${played ? '已看完 · 重看至' : '看到'} ${watchTime(position)}${hasDuration ? ' / ${watchTime(duration)}' : ''}'
         : played
         ? '已看完'
         : '未观看';
@@ -100,7 +118,7 @@ class WatchProgressState {
       position: position,
       fraction: fraction,
       label: label,
-      completed: played && !started && !restart,
+      completed: completed,
       known: known,
       detail: detail,
     );
@@ -119,7 +137,12 @@ class WatchProgress extends StatelessWidget {
   final AppStore? store;
   @override
   Widget build(BuildContext context) {
-    final state = WatchProgressState.resolve(item, account, store);
+    final state = WatchProgressState.resolve(
+      item,
+      account,
+      store,
+      showCompletionWithoutDuration: true,
+    );
     final label = state.label, detail = state.detail;
     return Semantics(
       label: '$label${detail == null ? '' : ' · $detail'}',
@@ -133,16 +156,17 @@ class WatchProgress extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(fontSize: 12, color: secondaryColor(context)),
           ),
-          const SizedBox(height: 5),
-          // Unknown durations keep an empty, non-animated bar; no invented %.
-          LinearProgressIndicator(
-            key: ValueKey('watch-progress-${item.id}'),
-            value: state.fraction,
-            minHeight: 3,
-            borderRadius: BorderRadius.circular(2),
-            backgroundColor: secondaryColor(context).withValues(alpha: .15),
-            color: accentColor(context),
-          ),
+          if (state.known || state.completed) ...[
+            const SizedBox(height: 5),
+            LinearProgressIndicator(
+              key: ValueKey('watch-progress-${item.id}'),
+              value: state.fraction,
+              minHeight: 3,
+              borderRadius: BorderRadius.circular(2),
+              backgroundColor: secondaryColor(context).withValues(alpha: .15),
+              color: accentColor(context),
+            ),
+          ],
         ],
       ),
     );

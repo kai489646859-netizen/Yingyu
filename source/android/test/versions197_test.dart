@@ -6,6 +6,7 @@ import 'package:http/testing.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 import 'package:yingyu/core/emby.dart';
 import 'package:yingyu/core/models.dart';
+import 'package:yingyu/core/video_labels.dart';
 import 'package:yingyu/ui/detail.dart';
 import 'package:yingyu/ui/media_versions.dart';
 import 'core_test.dart' show syntheticSession, response;
@@ -62,6 +63,39 @@ void main() {
     syntheticImagePaths();
     VisibilityDetectorController.instance.updateInterval = Duration.zero;
   });
+  test('Emby extended formats and exact dimensions are displayed', () {
+    expect(videoPixelLabel({'Width': 3840, 'Height': 1636}), '3840×1636');
+    expect(videoPixelLabel({'Width': 3840}), '宽 3840 px');
+    expect(videoCodecLabel({'Codec': 'av01'}), 'AV1');
+    for (final entry in {
+      'Hdr10': 'HDR10',
+      'Hdr10Plus': 'HDR10+',
+      'HyperLogGamma': 'HLG',
+    }.entries) {
+      expect(resourceName({'ExtendedVideoType': entry.key}), entry.value);
+    }
+  });
+
+  test(
+    'format lookup only returns the requested source without opening media',
+    () async {
+      var requests = 0;
+      final api = EmbyClient(
+        client: MockClient((request) async {
+          requests++;
+          expect(request.url.path, endsWith('/Items/movie/PlaybackInfo'));
+          final body = jsonDecode(request.body);
+          expect(body['IsPlayback'], false);
+          expect(body['AutoOpenLiveStream'], false);
+          expect(body['EnableTranscoding'], false);
+          expect(body['MediaSourceId'], 'missing');
+          return response(jsonEncode({'MediaSources': versions}), 200);
+        }),
+      )..session = syntheticSession();
+      expect(await api.inspectMediaSource('movie', 'missing'), isNull);
+      expect(requests, 1);
+    },
+  );
   test(
     'metadata uses actual selected stream and never guesses unknown Dolby',
     () {
@@ -151,7 +185,7 @@ void main() {
             tester
                 .widget<Text>(find.byKey(const Key('selected-version-summary')))
                 .data,
-            allOf(contains('1080p'), isNot(contains('杜比'))),
+            allOf(contains('1080P'), isNot(contains('杜比'))),
           );
           await captureOffline(
             tester,

@@ -101,6 +101,10 @@ abstract class OpeningTracksBackend {
   Future<void> settleOpeningTracks();
 }
 
+abstract class OpeningStartBackend {
+  set resolveOpeningStart(Duration Function(Duration)? value);
+}
+
 abstract class VideoGeometryBackend {
   double? get videoAspectRatio;
 }
@@ -130,7 +134,12 @@ abstract class DiscNavigationBackend {
 }
 
 abstract class PersistentPlaybackBackend {
-  void configureCache(PlaybackByteCache cache, String scope, Duration duration);
+  void configureCache(
+    PlaybackByteCache cache,
+    String scope,
+    Future<bool> Function() prepare,
+  );
+  void setReadAheadForeground(bool foreground);
 }
 
 abstract class InitialSubtitleBackend {
@@ -162,7 +171,11 @@ class MpvBackend
         AudioBalanceBackend,
         PlaybackOutputBackend,
         OpeningTracksBackend,
+        OpeningStartBackend,
         MediaNoticeBackend {
+  @override
+  Duration Function(Duration)? resolveOpeningStart;
+
   MpvBackend({
     int bufferBytes = 64 * 1024 * 1024,
     this.log,
@@ -201,6 +214,20 @@ class MpvBackend
             log.text.trim() ==
                 'Yingyu CLPI indexed landing; exact decode retained.') {
           this.log?.add(LogArea.player, '原盘定位已使用 CLPI 访问点；继续精确解码到目标位置');
+          return;
+        } else if (_disc != null && _opening) {
+          final reason = switch (log.text.trim()) {
+            'Yingyu CLPI timestamp fallback: seek-mode.' => '当前定位模式需按时间戳搜索',
+            'Yingyu CLPI timestamp fallback: video-selection.' => '当前视频轨道不唯一',
+            'Yingyu CLPI timestamp fallback: index-match.' =>
+              '索引与轨道、目标位置或长度未匹配',
+            'Yingyu CLPI timestamp fallback: byte-position.' => '未确认索引字节落点',
+            _ => null,
+          };
+          if (reason != null) {
+            this.log?.add(LogArea.player, '原盘 CLPI 回退：$reason');
+            return;
+          }
         }
         _observeDiscPacketTimestamp(log.prefix, log.level, log.text);
         final hdrStage = nativeHdrFailureStage(log.text);
@@ -336,13 +363,19 @@ class MpvBackend
           now: _runtimeClock.elapsed,
           playing: playing,
         );
-        _disc?.setBuffering(playing && !_opening && player.state.buffering);
+        _disc?.setBuffering(
+          playing && !_opening && player.state.buffering,
+          recoverLargeInput: !_bufferPhase.fast,
+        );
         emit();
       }),
       player.stream.buffering.listen((buffering) {
         if (buffering) _audioDecode.suspend();
         // Opening/paused initialization is not proof of network starvation.
-        _disc?.setBuffering(buffering && !_opening && player.state.playing);
+        _disc?.setBuffering(
+          buffering && !_opening && player.state.playing,
+          recoverLargeInput: !_bufferPhase.fast,
+        );
         _scheduleStarvationRecovery(buffering);
         emit();
       }),
@@ -359,13 +392,16 @@ class MpvBackend
   void _scheduleStarvationRecovery(bool buffering) {
     if (!buffering) {
       _streamBuffer.endStarvation();
+      _discStarvationActive = false;
       return;
     }
-    if (!buffering ||
-        _opening ||
-        _disc != null ||
-        !_networkFile ||
-        !player.state.playing) {
+    if (_opening || !player.state.playing || !_usesBufferPolicy) {
+      return;
+    }
+    if (_disc != null) {
+      if (!_bufferPhase.fast && _speed == 1) {
+        _scheduleDiscStarvationRecovery();
+      }
       return;
     }
     final serial = _loadSerial, intent = _playIntent;
@@ -385,6 +421,67 @@ class MpvBackend
           log?.add(
             LogArea.player,
             '缓冲恢复目标未调整，保留原缓冲条件',
+            level: LogLevel.warning,
+          );
+        }
+      }),
+    );
+  }
+
+  bool _discStarvationActive = false;
+  int _discStarvationCount = 0, _discNormalResumeSeconds = 2;
+  Duration? _lastDiscStarvation;
+
+  void _scheduleDiscStarvationRecovery() {
+    final serial = _loadSerial, play = _playIntent, seek = _seekIntent;
+    final native = player.platform;
+    if (native is! NativePlayer) return;
+    bool current() =>
+        !_disposed &&
+        !_opening &&
+        _lastFailure == null &&
+        serial == _loadSerial &&
+        play == _playIntent &&
+        seek == _seekIntent &&
+        !_bufferPhase.fast &&
+        !_runtimePosition.settling &&
+        _speed == 1 &&
+        player.state.playing &&
+        player.state.buffering &&
+        !_discStarvationActive;
+    unawaited(
+      _rates.run(() async {
+        if (!current()) return;
+        final previous = _discNormalResumeSeconds;
+        try {
+          final paused = await native
+              .getProperty('paused-for-cache')
+              .timeout(const Duration(milliseconds: 600));
+          if (!current() || paused != 'yes') return;
+          final plan = _appliedDiscPlan;
+          if (plan == null) return;
+          _discStarvationActive = true;
+          final now = _runtimeClock.elapsed;
+          final last = _lastDiscStarvation;
+          _lastDiscStarvation = now;
+          if (last == null || now - last > const Duration(seconds: 45)) {
+            _discStarvationCount = 0;
+          }
+          final count = ++_discStarvationCount;
+          final seconds = count >= 4
+              ? 6
+              : count >= 2
+              ? 4
+              : 2;
+          if (seconds == previous) return;
+          _discNormalResumeSeconds = seconds;
+          await _setDiscPlan(plan);
+          log?.add(LogArea.player, '原盘 1 倍速连续缺数据，恢复缓冲水位调整为 $seconds 秒');
+        } catch (_) {
+          _discNormalResumeSeconds = previous;
+          log?.add(
+            LogArea.player,
+            '原盘缓冲恢复水位未调整，保留原条件',
             level: LogLevel.warning,
           );
         }
@@ -566,7 +663,7 @@ class MpvBackend
   String get outputDescription => _dolbyMapping
       ? (_hdr.dolbyEstablished ? _hdr.dolbyHdrLabel : '杜比映射 SDR')
       : _hdr.established
-      ? '${_noticeDecoded['video-params/gamma'] == 'hlg' ? 'HLG' : 'HDR10'} · 高动态范围'
+      ? '${_hdr.establishedTransfer == 'hlg' ? 'HLG' : 'HDR10'} · 高动态范围'
       : const {'pq', 'hlg'}.contains(_noticeDecoded['video-params/gamma'])
       ? 'SDR · HDR 色彩适配'
       : 'SDR · 标准动态范围';
@@ -839,21 +936,32 @@ class MpvBackend
   final _observation = PlaybackObservation();
   final _rateAudio = RateAudioSetup();
   PlaybackByteCache? _persistentCache;
+  Future<bool> Function()? _prepareDiskCache;
+  bool _diskCacheConfigured = false;
   String _cacheScope = '';
-  Duration _cacheDuration = Duration.zero;
   CachedPlaybackTransport? _cachedTransport;
-  final _readAhead = PlaybackReadAhead();
-  bool _readAheadAllowed = false;
+  bool _readAheadStarted = false, _readAheadForeground = true;
   Map<String, String>? _discAppliedOptions;
   @override
   void configureCache(
     PlaybackByteCache cache,
     String scope,
-    Duration duration,
+    Future<bool> Function() prepare,
   ) {
     _persistentCache = cache;
     _cacheScope = scope;
-    _cacheDuration = duration;
+    _prepareDiskCache = prepare;
+  }
+
+  @override
+  void setReadAheadForeground(bool foreground) {
+    _readAheadForeground = foreground;
+    if (foreground) {
+      _updatePersistentReadAhead();
+    } else {
+      _cachedTransport?.reader.stopWarming();
+      _disc?.stopPersistentReadAhead();
+    }
   }
 
   final _discStartup = DiscStartupSetup();
@@ -1117,6 +1225,7 @@ class MpvBackend
       level: LogLevel.error,
     );
     _lastFailure = error;
+    setReadAheadForeground(false);
     _noticeReady = false;
     if (_opening) {
       if (_openFailure?.isCompleted == false) {
@@ -1141,6 +1250,7 @@ class MpvBackend
           streams: _noticeStreams,
           decoded: _noticeDecoded,
           nativeHdr: _hdr.established,
+          outputTransfer: _hdr.establishedTransfer,
           dolbyMapped: _dolbyMapping,
           currentGamma: player.state.videoParams.gamma,
           currentMatrix: player.state.videoParams.colormatrix,
@@ -1457,30 +1567,16 @@ class MpvBackend
     DiscKind kind, {
     String? address,
   }) async {
-    if (_persistentCache == null) {
-      await (_nativeDiscRegistration ??= _registerNativeDisc());
-      return DiscWorkerTransport(
-        route,
-        kind: kind,
-        address: address,
-        log: log,
-        onStage: _setStage,
-        onFailure: _discFailed,
-        cacheBytes: _discCacheBytes,
-        directNative: true,
-      );
-    }
-    return DiscTransport(
+    await (_nativeDiscRegistration ??= _registerNativeDisc());
+    return DiscWorkerTransport(
       route,
       kind: kind,
       address: address,
-      backgroundOutput: true,
       log: log,
       onStage: _setStage,
       onFailure: _discFailed,
       cacheBytes: _discCacheBytes,
-      persistentCache: _persistentCache,
-      cacheScope: _cacheScope,
+      directNative: true,
     );
   }
 
@@ -2450,8 +2546,16 @@ class MpvBackend
     }
   }
 
+  /// Read the capabilities while the accepted session prepares its source.
+  /// HDR output admission still requires the actual track and surface.
+  void observeOpeningDisplay() {
+    if (nativeHdr && !_disposed) unawaited(_hdr.start());
+  }
+
   @override
   Future<void> open(PlaybackRoute route, Duration start) async {
+    final resolveStart = resolveOpeningStart;
+    resolveOpeningStart = null;
     if (_hdr.autoDolby) {
       if (_hdr.established || _hdr.autoArmed) await player.stop();
       await _hdr.resetAuto();
@@ -2473,6 +2577,10 @@ class MpvBackend
       throw const AppFailure('音轨刷新参数恢复失败，请退出播放器后重试');
     }
     _initialDiscCushionUsed = false;
+    _discStarvationActive = false;
+    _discStarvationCount = 0;
+    _discNormalResumeSeconds = 2;
+    _lastDiscStarvation = null;
     await _stopPacketTrace();
     _networkFile = const {
       'http',
@@ -2545,6 +2653,7 @@ class MpvBackend
           headers: route.headers,
           cache: _persistentCache!,
           scope: _cacheScope,
+          deferDiskUntilPlayback: true,
         );
         _cachedTransport = cached;
         mediaAddress = await cached.start();
@@ -2555,6 +2664,7 @@ class MpvBackend
         final loadClock = Stopwatch()..start();
         final native = player.platform;
         if (native is! NativePlayer) throw const AppFailure('MPV 原生后端未就绪');
+        final maySeekOnOpen = start > Duration.zero || resolveStart != null;
         await _openingSubtitleRead.restore(
           read: native.getProperty,
           write: native.setProperty,
@@ -2581,7 +2691,19 @@ class MpvBackend
         final dolby = requestsDolbyMapping(route.streams);
         {
           if (dolby != _dolbyMapping) await player.stop();
-          final changed = await video.setDolbyMapping(dolby);
+          final bool changed;
+          try {
+            changed = await video.setDolbyMapping(dolby);
+          } catch (_) {
+            if (!_disposed && serial == _loadSerial) {
+              log?.add(
+                LogArea.player,
+                dolby ? '开播准备未完成：杜比输出参数' : '开播准备未完成：普通视频输出恢复',
+                level: LogLevel.warning,
+              );
+            }
+            rethrow;
+          }
           _dolbyMapping = dolby;
           if (changed) {
             log?.add(
@@ -2594,11 +2716,43 @@ class MpvBackend
         }
         final oldHook = _dolbyPreloadedHook;
         if (oldHook != null) native.onPreloadedHooks.remove(oldHook);
+        var effectiveStart = start;
         _dolbyPreloadedHook = () async {
           bool active() =>
               !_disposed && serial == _loadSerial && _lastFailure == null;
           if (!active()) return;
-          await _prepareOpeningSubtitles(native, address, start, active);
+          if (resolveStart != null) {
+            final seconds = double.tryParse(
+              await native.getProperty(
+                'duration',
+                waitForInitialization: false,
+              ),
+            );
+            if (!active()) return;
+            if (seconds != null && seconds.isFinite && seconds > 0) {
+              effectiveStart = resolveStart(
+                Duration(microseconds: (seconds * 1000000).round()),
+              );
+              if (effectiveStart != start) {
+                await native.setProperty(
+                  'file-local-options/start',
+                  (effectiveStart.inMilliseconds / 1000).toStringAsFixed(3),
+                  waitForInitialization: false,
+                );
+                _runtimePosition.reset(effectiveStart);
+                log?.add(
+                  LogArea.player,
+                  '开播定位按媒体片长校正为 ${effectiveStart.inMilliseconds} ms',
+                );
+              }
+            }
+          }
+          await _prepareOpeningSubtitles(
+            native,
+            address,
+            effectiveStart,
+            active,
+          );
           if (!active()) return;
           log?.add(
             LogArea.player,
@@ -2770,20 +2924,22 @@ class MpvBackend
         if (indexed) {
           log?.add(LogArea.player, '原盘已启用 CLPI 访问点定位；目标位置、轨道探测与原画保持');
         }
-        final fastResume = await _startupSeek.prepare(
-          read: (key) => native
-              .getProperty(key)
-              .timeout(const Duration(milliseconds: 600)),
-          write: (key, value) => native
-              .setProperty(key, value)
-              .timeout(const Duration(seconds: 2)),
-        );
-        if (fastResume) {
-          log?.add(LogArea.player, '首次精确定位：允许解码器跳过目标前的帧；目标位置与原画输出保持');
+        if (maySeekOnOpen) {
+          final fastResume = await _startupSeek.prepare(
+            read: (key) => native
+                .getProperty(key)
+                .timeout(const Duration(milliseconds: 600)),
+            write: (key, value) => native
+                .setProperty(key, value)
+                .timeout(const Duration(seconds: 2)),
+          );
+          if (fastResume) {
+            log?.add(LogArea.player, '首次精确定位：允许解码器跳过目标前的帧；目标位置与原画输出保持');
+          }
         }
-        // Persistent raw ranges replace the unbounded temporary packet dump.
-        // The existing device-based packet RAM limit remains in force.
-        if (_persistentCache != null) {
+        // Raw disk caching is for ordinary files. Native disc input also uses
+        // the bounded packet RAM budget instead of an unbounded MPV disk dump.
+        if (_cachedTransport != null || _disc != null) {
           await native.setProperty('cache-on-disk', 'no');
         }
         final audioSetup = await _rateAudio.prepare(
@@ -2902,7 +3058,7 @@ class MpvBackend
         // MKV copies its demuxer options while opening, before on_preloaded.
         // Set the subtitle window before that snapshot; select the actual
         // subtitle in the hook. No subtitle packets are requested by this IO.
-        if (start > Duration.zero && _openingSubtitleChoice != null) {
+        if (maySeekOnOpen && _openingSubtitleChoice != null) {
           await _openingSubtitleRead.prepare(
             container: 'mkv',
             read: (key) =>
@@ -2940,6 +3096,7 @@ class MpvBackend
         if (_disposed || serial != _loadSerial) {
           throw const AppFailure('播放打开已取消');
         }
+        _disc?.endOpeningDemand();
         if (player.state.width == null || player.state.width! <= 0) {
           throw const AppFailure('MPV 未就绪');
         }
@@ -3144,28 +3301,31 @@ class MpvBackend
   Future<void> _recordOutput(PlaybackRoute route) async {
     final native = player.platform;
     if (native is! NativePlayer || _disposed) return;
+    final serial = _loadSerial;
+    bool active() => !_disposed && serial == _loadSerial;
     _pendingHdrTransfer = null;
     if (_hdr.autoArmed && !await _hdr.confirmWarm()) {
+      if (!active()) return;
       // A rejected first frame restored SDR. Release the optional admission
       // owner so the decoded HDR10/HLG transaction can still be considered.
       await _hdr.resetAuto();
     }
-    final serial = _loadSerial;
+    if (!active()) return;
     final values = await openingOutputProperties(
       native.getProperty,
-      active: () => !_disposed && serial == _loadSerial,
+      active: active,
     );
-    if (_disposed || serial != _loadSerial) return;
+    if (!active()) return;
     var detectedRange = DetectedVideoRange.unknown;
     var detectedContainer = '';
     if (nativeHdr) {
       try {
-        final profile = await native.getProperty(
-          'yingyu-hdr-source-dv-profile',
-        );
-        detectedContainer = await native.getProperty('file-format');
-        if (_disposed || serial != _loadSerial) return;
-        detectedRange = detectVideoRange(values, profile);
+        final properties = await Future.wait([
+          native.getProperty('yingyu-hdr-source-dv-profile'),
+          native.getProperty('file-format'),
+        ]).timeout(const Duration(seconds: 1));
+        detectedContainer = properties[1];
+        detectedRange = detectVideoRange(values, properties[0]);
         log?.add(
           LogArea.player,
           '实际片源动态范围检测：${detectedRange.name}；依据当前视频轨和已解码色彩，服务器标签仅作参考',
@@ -3173,12 +3333,15 @@ class MpvBackend
       } catch (_) {
         detectedRange = DetectedVideoRange.unknown;
       }
-      // Positive observations of an ordinary HDR frame can supersede an
+      if (!active()) return;
+      // Positive observations of an ordinary frame can supersede an
       // inaccurate server label. Actual Dolby and unknown stay unchanged.
       if (_dolbyMapping &&
+          !_hdr.established &&
           _disc == null &&
           supportedHdrContainer(detectedContainer) &&
           const {
+            DetectedVideoRange.sdr,
             DetectedVideoRange.hdr10,
             DetectedVideoRange.hlg,
           }.contains(detectedRange)) {
@@ -3187,8 +3350,12 @@ class MpvBackend
         } catch (_) {
           throw const AppFailure('实际片源输出设置恢复失败，已保留观看进度');
         }
+        if (!active()) return;
         _dolbyMapping = false;
-        log?.add(LogArea.player, '当前实际轨为普通 HDR；已撤销服务器杜比标签触发的预设，按实际片源协商显示');
+        log?.add(
+          LogArea.player,
+          '当前实际轨为 ${detectedRange.name}；已撤销服务器杜比标签触发的预设',
+        );
       }
     }
     _hardwareFallback.observeHardware(values['hwdec-current'] ?? '');
@@ -3211,7 +3378,7 @@ class MpvBackend
         level: LogLevel.warning,
       );
     }
-    if (!_hdr.dolbyEstablished &&
+    if (!_hdr.established &&
         const {'pq', 'hlg'}.contains(values['video-params/gamma'])) {
       // The existing Flutter texture pipeline has no verified Android HDR
       // surface contract. Use MPV's documented SDR tone mapping explicitly.
@@ -3219,9 +3386,11 @@ class MpvBackend
         'target-prim': 'bt.709',
         'target-trc': 'bt.1886',
         'tone-mapping': 'bt.2390',
+        'hdr-contrast-recovery': '0.0',
         'dither': 'fruit',
         'dither-depth': '8',
       }.entries) {
+        if (!active()) return;
         try {
           await native.setProperty(entry.key, entry.value);
           final actual = await native.getProperty('options/${entry.key}');
@@ -3238,17 +3407,15 @@ class MpvBackend
         }
       }
     }
+    if (!active()) return;
     log?.add(LogArea.player, '音频采用解码输出；TrueHD／E-AC-3 不等同于 Atmos 对象输出，未启用直通');
     if (nativeHdr && _disc == null && !_hdr.autoDolby) {
       await _hdr.start();
+      if (!active()) return;
       try {
         final transfer =
             detectedRange == DetectedVideoRange.dolby && _dolbyMapping
-            ? (_hdr.capabilities.hdr.contains(2)
-                  ? 'pq'
-                  : _hdr.capabilities.hdr.contains(3)
-                  ? 'hlg'
-                  : null)
+            ? dolbyHdrTransfers(_hdr.capabilities).firstOrNull
             : nativeHdrTransfer(
                 requested: nativeHdr,
                 disc: _disc != null,
@@ -3259,16 +3426,14 @@ class MpvBackend
         final paused = transfer == null
             ? ''
             : await native.getProperty('pause');
+        if (!active()) return;
         log?.add(
           LogArea.player,
           'HDR 输出准入：动态范围=${detectedRange.name}；容器=${supportedHdrContainer(detectedContainer) ? detectedContainer : '其他或未知'}；'
           'SDK=${_hdr.capabilities.sdk}；屏幕HDR=${_hdr.capabilities.hdr.toList()..sort()}；'
           '候选=${transfer ?? '无'}；已暂停=$paused',
         );
-        if (!_disposed &&
-            serial == _loadSerial &&
-            transfer != null &&
-            paused == 'yes') {
+        if (transfer != null && paused == 'yes') {
           // Selecting a newly enabled subtitle may refresh the demuxer and
           // invalidate its queues. Finish initial track selection first, then
           // let the existing HDR exact refill rebuild all selected streams.
@@ -3277,6 +3442,7 @@ class MpvBackend
           log?.add(LogArea.player, 'HDR 输出等待初始轨道处理；保持暂停与加载遮罩');
         }
       } catch (_) {
+        if (!active()) return;
         log?.add(
           LogArea.player,
           'HDR 输出事务失败：${_hdr.status}；${await video.nativeHdrStatus}',
@@ -3318,6 +3484,7 @@ class MpvBackend
         read: (key) => native.getProperty(key, waitForInitialization: false),
         active: () =>
             !_disposed && intent == _playIntent && serial == _loadSerial,
+        speed: _speed,
       );
       if (!_disposed && serial == _loadSerial) {
         _disc?.setBuffering(player.state.buffering);
@@ -3336,8 +3503,9 @@ class MpvBackend
       if (_disposed || intent != _playIntent || serial != _loadSerial) return;
     }
     _phonePlayingSince ??= DateTime.now();
-    _readAheadAllowed = true;
     await player.play();
+    if (_disposed || intent != _playIntent || serial != _loadSerial) return;
+    _readAheadStarted = true;
     _updatePersistentReadAhead();
   }
 
@@ -3346,9 +3514,6 @@ class MpvBackend
     ++_playIntent;
     _audioDecode.suspend();
     _phonePlayingSince = null;
-    _readAheadAllowed = false;
-    _cachedTransport?.reader.stopWarming();
-    _disc?.stopPersistentReadAhead();
     await player.pause();
   }
 
@@ -3515,7 +3680,6 @@ class MpvBackend
       _retainDiscCache();
       return;
     }
-    if (_disc != null) _readAhead.speed(value);
     _rateProbe.cancel();
     final previousSpeed = _speed;
     _observation.invalidate();
@@ -3534,7 +3698,7 @@ class MpvBackend
                 previous.tier >= discBufferTier(value)
             ? previous.withPlaybackSpeed(value)
             : await _discPlan(value, fast: _bufferPhase.fast);
-        await _setDiscPlan(plan);
+        await _setDiscPlan(plan, speed: value);
       }
       if (_disposed) return;
       await player.setRate(value);
@@ -3549,7 +3713,7 @@ class MpvBackend
       }
       if (!_disposed && previous != null) {
         try {
-          await _setDiscPlan(previous);
+          await _setDiscPlan(previous, speed: previousSpeed);
         } catch (_) {
           log?.add(
             LogArea.player,
@@ -3564,8 +3728,6 @@ class MpvBackend
     _speed = value;
     _dolbyRecovery.observeSpeed(value);
     _runtimeWatch.observeSpeed(value);
-    _readAhead.speed(value, retainPeak: _disc != null);
-    _updatePersistentReadAhead();
     _retainDiscCache();
     _observation.invalidate();
     if (_bufferPhase.promotionFailed) {
@@ -3587,7 +3749,7 @@ class MpvBackend
       log?.add(
         LogArea.player,
         '实际倍速=$_speed；预读缓存档=${plan.tier} 保持至本次视频关闭；'
-        '恢复播放门槛=${plan.options["cache-pause-wait"]} 秒媒体时间',
+        '恢复播放门槛=${_discAppliedOptions?["cache-pause-wait"]} 秒媒体时间',
       );
     }
   }
@@ -3631,7 +3793,7 @@ class MpvBackend
     if (plan == null) return '原盘缓存尚未配置';
     return '${plan.fast ? "快速出画面" : "持续预读"}；缓存档=${plan.tier}；'
         '前向包缓存上限=${plan.bytes ~/ 1048576} MiB；'
-        '恢复播放目标=${plan.options["cache-pause-wait"]} 秒媒体时间';
+        '恢复播放目标=${_discAppliedOptions?["cache-pause-wait"]} 秒媒体时间';
   }
 
   Future<DiscBufferPlan> _discPlan(double speed, {required bool fast}) async {
@@ -3651,15 +3813,15 @@ class MpvBackend
     );
   }
 
-  Future<void> _setDiscPlan(DiscBufferPlan plan) async {
+  Future<void> _setDiscPlan(DiscBufferPlan plan, {double? speed}) async {
     final native = player.platform;
     if (_disposed || _disc == null || native is! NativePlayer) return;
     final previous = _appliedDiscPlan;
     final previousOptions = _discAppliedOptions;
-    final options = {
-      ...plan.options,
-      'cache-secs': '${plan.fast ? 10 : _readAhead.seconds}',
-    };
+    final options = plan.options;
+    if (!plan.fast && (speed ?? _speed) == 1 && _discNormalResumeSeconds > 2) {
+      options['cache-pause-wait'] = _discNormalResumeSeconds.toStringAsFixed(2);
+    }
     try {
       for (final option in changedDiscOptions(
         previousOptions,
@@ -3704,17 +3866,37 @@ class MpvBackend
 
   void _updatePersistentReadAhead() {
     if (_disposed ||
-        (_bufferPhase.fast && !phoneViewport) ||
-        !_readAheadAllowed) {
+        _lastFailure != null ||
+        _bufferPhase.fast ||
+        !_readAheadStarted ||
+        !_readAheadForeground ||
+        (_cachedTransport == null && _disc == null)) {
       return;
     }
-    final reader = _cachedTransport?.reader;
-    if (reader != null) {
-      reader.configureAhead(
-        _readAhead.bytes(total: reader.total, duration: _cacheDuration),
+    final prepare = _prepareDiskCache;
+    if (prepare != null) {
+      _prepareDiskCache = null;
+      unawaited(
+        prepare().then((ready) {
+          if (!ready) return;
+          _diskCacheConfigured = true;
+          log?.add(LogArea.player, '播放输出就绪后已准备前向磁盘缓存');
+          _updatePersistentReadAhead();
+        }),
+      );
+      return;
+    }
+    if (!_diskCacheConfigured) return;
+    final cache = _persistentCache;
+    if (cache != null && cache.ready && cache.limitBytes != 0) {
+      _cachedTransport?.reader.configureAhead(playbackReadAheadBytes);
+      final limit = cache.limitBytes;
+      _disc?.configurePersistentReadAhead(
+        limit < 0
+            ? playbackReadAheadBytes
+            : playbackReadAheadBytes.clamp(0, limit),
       );
     }
-    _disc?.configurePersistentReadAhead(_readAhead.seconds);
   }
 
   void _armBufferPhase() {
@@ -3749,15 +3931,6 @@ class MpvBackend
     _bufferPhaseProbeBusy = true;
     try {
       final output = await _readVideoOutput();
-      // A phone may already have a real frame while MPV waits for its initial
-      // cushion. Start the existing bounded persistent read-ahead at that point,
-      // rather than waiting for that very cache pause to finish first.
-      if (phoneViewport &&
-          output.ready &&
-          !output.seeking &&
-          !_runtimePosition.settling) {
-        _updatePersistentReadAhead();
-      }
       final cache = await native
           .getProperty('paused-for-cache')
           .timeout(const Duration(milliseconds: 600));
@@ -3802,7 +3975,6 @@ class MpvBackend
             await _streamBuffer.configure(_speed, fast: false);
           }
           if (_disposed || epoch != _bufferPhase.epoch) return;
-          _readAhead.speed(_speed, retainPeak: _disc != null);
           _bufferPhase.complete(epoch);
           _updatePersistentReadAhead();
           _bufferPhaseTimer?.cancel();

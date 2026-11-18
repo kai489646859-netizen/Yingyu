@@ -5,6 +5,8 @@ import '../core/interface_preferences.dart';
 import '../core/image_loading.dart';
 import '../core/appearance.dart';
 import '../core/models.dart';
+import '../core/settings_export.dart';
+import '../core/settings_import.dart';
 import '../core/store.dart';
 import 'licenses.dart';
 import 'logs.dart';
@@ -16,6 +18,8 @@ import '../core/home_feed.dart';
 import 'home_order.dart';
 import 'settings_choice.dart';
 import '../playback/cache_policy.dart';
+import '../playback/danmaku_preferences.dart';
+import '../playback/danmaku_settings.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
@@ -67,7 +71,131 @@ class _SettingsPageState extends State<SettingsPage> {
 
   String? notice;
   bool clearing = false;
+  bool exportingSettings = false;
+  bool importingSettings = false, applyingSettings = false;
+  String? settingsExportStatus;
+  String? settingsImportStatus;
+
+  Future<void> exportSettings() async {
+    if (exportingSettings || importingSettings) return;
+    setState(() {
+      exportingSettings = true;
+      settingsExportStatus = null;
+    });
+    try {
+      final saved = await SettingsExport.save(
+        widget.store,
+        preferences,
+        widget.browse.preferences,
+      );
+      if (mounted) {
+        setState(() => settingsExportStatus = saved ? '已保存设置文件' : '已取消导出');
+      }
+    } catch (_) {
+      if (mounted) setState(() => settingsExportStatus = '设置文件保存失败，请重试');
+    } finally {
+      if (mounted) setState(() => exportingSettings = false);
+    }
+  }
+
+  Future<void> importSettings() async {
+    if (importingSettings || exportingSettings || clearing) return;
+    setState(() {
+      importingSettings = true;
+      settingsImportStatus = null;
+    });
+    try {
+      final bytes = await SettingsImport.choose();
+      if (!mounted) return;
+      if (bytes == null) {
+        setState(() => settingsImportStatus = '已取消导入');
+        return;
+      }
+      final plan = SettingsImport.parse(
+        bytes,
+        widget.store,
+        preferences,
+        widget.browse.preferences,
+      );
+      if (plan.changeCount == 0) {
+        setState(() => settingsImportStatus = '文件中的设置与当前一致');
+        return;
+      }
+      final accepted = await showCupertinoDialog<bool>(
+        context: context,
+        builder: (context) => CupertinoAlertDialog(
+          title: const Text('导入映屿设置？'),
+          content: const Text('将应用文件中的全局偏好。账号和观看记录保留在本机。'),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            CupertinoDialogAction(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('导入'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (accepted != true) {
+        setState(() => settingsImportStatus = '已取消导入');
+        return;
+      }
+      setState(() => applyingSettings = true);
+      final before = (
+        preferences.cacheGB,
+        preferences.actorCacheGB,
+        preferences.landscapeCacheGB,
+        preferences.imageAutoCleanDays,
+      );
+      await plan.apply();
+      setImageLoadSpeed(preferences.imageLoadSpeed);
+      setImageRequestLimit(preferences.imageRequestLimit);
+      try {
+        if (preferences.cacheGB != before.$1) {
+          await imageCacheBudget.setLimit(preferences.cacheGB * imageGB);
+        }
+        if (preferences.actorCacheGB != before.$2) {
+          await actorCacheBudget.setLimit(preferences.actorCacheGB * imageGB);
+        }
+        if (preferences.landscapeCacheGB != before.$3) {
+          await landscapeCacheBudget.setLimit(
+            preferences.landscapeCacheGB * imageGB,
+          );
+        }
+        if (preferences.imageAutoCleanDays != before.$4) {
+          await imageCacheBudget.setAutoCleanDays(
+            preferences.imageAutoCleanDays,
+          );
+        }
+        if (mounted) setState(() => settingsImportStatus = '已导入设置');
+      } catch (_) {
+        if (mounted) {
+          setState(() => settingsImportStatus = '设置已导入，缓存配置将在下次启动生效');
+        }
+      }
+    } on FormatException {
+      if (mounted) {
+        setState(() => settingsImportStatus = '设置文件不是有效的 UTF-8 JSON');
+      }
+    } on AppFailure catch (error) {
+      if (mounted) setState(() => settingsImportStatus = safeError(error));
+    } catch (_) {
+      if (mounted) setState(() => settingsImportStatus = '无法读取设置文件，请重试');
+    } finally {
+      if (mounted) {
+        setState(() {
+          importingSettings = false;
+          applyingSettings = false;
+        });
+      }
+    }
+  }
+
   Future<void> change(Future<void> Function() action) async {
+    if (applyingSettings) return;
     try {
       await action();
       if (mounted) setState(() => notice = null);
@@ -77,6 +205,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> clear(String name, Future<void> Function() action) async {
+    if (applyingSettings) return;
     final confirmed = await showCupertinoDialog<bool>(
       context: context,
       builder: (context) => CupertinoAlertDialog(
@@ -263,10 +392,24 @@ class _SettingsPageState extends State<SettingsPage> {
           title: '播放',
           children: [
             SettingsRow(
-              '原生 HDR（测试）',
+              '弹幕',
+              icon: CupertinoIcons.chat_bubble,
+              subtitle: '显示、精选、来源和缓存',
+              onTap: () => showSurface<void>(
+                context,
+                (_) => DanmakuSettings(
+                  initial: DanmakuPreferences.read(widget.store.prefs),
+                  onChanged: (value) async {
+                    await value.save(widget.store.prefs);
+                  },
+                ),
+              ),
+            ),
+            SettingsRow(
+              'HDR（测试）',
               icon: CupertinoIcons.sun_max,
               subtitle:
-                  '下次播放生效；关闭时杜比、HDR10／HLG 均映射 SDR；开启后按设备能力输出 HDR，杜比优先映射 HDR10，不支持则保持 SDR',
+                  'SDR 始终保持 SDR。开启后优先使用与片源相同的 HDR 格式，杜比转换优先尝试 HDR10。下次播放生效。',
               onTap: () => change(
                 () => widget.store.setNativeHdr(!widget.store.nativeHdr),
               ),
@@ -581,6 +724,30 @@ class _SettingsPageState extends State<SettingsPage> {
               icon: CupertinoIcons.chevron_left_slash_chevron_right,
               onAction: () =>
                   showSurface<void>(context, (_) => const LicensesPage()),
+            ),
+            SettingsAction(
+              id: 'export-settings',
+              title: '导出设置',
+              actionLabel: '保存 JSON',
+              reducedMotion: preferences.reducedMotion,
+              icon: CupertinoIcons.square_arrow_up,
+              subtitle: exportingSettings
+                  ? '正在导出…'
+                  : settingsExportStatus ?? '导出全局偏好，不含账号和观看记录',
+              enabled: !exportingSettings && !importingSettings,
+              onAction: exportSettings,
+            ),
+            SettingsAction(
+              id: 'import-settings',
+              title: '导入设置',
+              actionLabel: '选择 JSON',
+              reducedMotion: preferences.reducedMotion,
+              icon: CupertinoIcons.square_arrow_down,
+              subtitle: importingSettings
+                  ? '正在导入…'
+                  : settingsImportStatus ?? '从映屿设置文件恢复全局偏好',
+              enabled: !exportingSettings && !importingSettings && !clearing,
+              onAction: importSettings,
             ),
           ],
         ),

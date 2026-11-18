@@ -124,10 +124,10 @@ public static class DesktopSettings
     {
         "AccountSettingsSection"=>"账户 账号 服务器 登录 代理 网络 进度 同步 翻译 在线 英文 日语",
         "AppearanceSettingsSection"=>"外观 窗口 主题 配色 海报 密度 圆角 个性化 动画",
-        "ExperienceSettingsSection"=>"播放 字幕 音轨 延迟 大小 位置 下一集 选集 首页 栏目 快捷键 弹幕 精选 自动匹配 哔哩哔哩 腾讯 爱奇艺 芒果 弹幕速度 不透明度 显示区域 背景框 时间偏移 自建备用服务",
+        "ExperienceSettingsSection"=>"播放 字幕 音轨 延迟 大小 位置 下一集 选集 首页 栏目 快捷键 弹幕 精选 自动匹配 哔哩哔哩 腾讯 爱奇艺 芒果 弹幕速度 不透明度 显示区域 背景框 时间偏移 自建备用服务 视频渲染 GPU-Next D3D11 兼容模式 HDR 画质预设 GLSL Shader 音频输出 WASAPI 独占 HDMI 直通 PCM",
         "CacheSettingsSection"=>"缓存 同步 刷新 图片 海报 存储 演员 容量",
         "DiagnosticsSettingsSection"=>"日志 诊断 反馈 导出",
-        _=>"关于 版本"
+        _=>"关于 版本 检查更新"
     };
     static void HideEpisodeDisplay(object page)
     {

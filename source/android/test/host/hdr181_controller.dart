@@ -150,7 +150,7 @@ class Engine181 {
  bool disposed=false, rejectPq=false;int outputEpoch=1,refills=0;
  String vo='gpu',selected='1';
  final writes=<(String,String)>[];
- final values=<String,String>{'gpu-context':'','target-prim':'bt.709','target-trc':'bt.1886','target-peak':'auto','tone-mapping':'bt.2390','dither':'fruit','dither-depth':'8','panscan':'0','vid':'auto','video-output-levels':'auto','wid':'900','hr-seek-framedrop':'no'};
+ final values=<String,String>{'gpu-context':'','target-prim':'bt.709','target-trc':'bt.1886','target-peak':'auto','tone-mapping':'bt.2390','hdr-contrast-recovery':'0.30','dither':'fruit','dither-depth':'8','panscan':'0','vid':'auto','video-output-levels':'auto','wid':'900','hr-seek-framedrop':'no'};
  Future<void> refreshOutputFrame(String p,{required int epoch})async{refills++;}
  Future<String> getProperty(String k,{bool waitForInitialization=true})=>getOutputProperty(k);
  Future<String> getOutputProperty(String k)async{

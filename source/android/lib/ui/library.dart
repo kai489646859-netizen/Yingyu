@@ -3,12 +3,15 @@ import 'poster_press.dart';
 import 'package:flutter/cupertino.dart';
 import '../core/emby.dart';
 import '../core/models.dart';
+import '../core/server_resume.dart';
+import 'continue_watching.dart' show continueWatchingCaption, ResumeProgressBar;
 import 'poster.dart';
 import 'poster_art.dart';
 import 'style.dart';
 import 'resume_button.dart';
 import 'episode_badge.dart';
 import 'version_group.dart';
+import 'watch_progress.dart';
 export 'browse_page.dart' show LibraryPage;
 
 // NipaPlay's Emby catalogue uses HorizontalAnimeCard in both display surfaces.
@@ -21,6 +24,7 @@ class MediaCard extends StatelessWidget {
     required this.onTap,
     this.onPlay,
     this.posterAction,
+    this.resumeProgress,
     this.active = true,
   });
   final MediaItem item;
@@ -28,6 +32,7 @@ class MediaCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback? onPlay;
   final Widget? posterAction;
+  final WatchProgressState? resumeProgress;
   final bool active;
   @override
   Widget build(BuildContext context) => Semantics(
@@ -59,6 +64,11 @@ class MediaCard extends StatelessWidget {
                     if (posterAction != null &&
                         PosterActionsScope.maybeOf(context) == null)
                       Positioned(bottom: 4, right: 0, child: posterAction!),
+                    if (resumeProgress != null)
+                      ResumeProgressBar(
+                        itemId: item.id,
+                        progress: resumeProgress!,
+                      ),
                   ],
                 ),
               ),
@@ -103,7 +113,9 @@ class MediaCard extends StatelessWidget {
                       active: active,
                       resume: posterAction != null,
                       child: Text(
-                        item.title,
+                        posterAction == null
+                            ? item.title
+                            : item.resumeDisplayTitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -113,9 +125,19 @@ class MediaCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    if (item.resume > Duration.zero) ...[
+                    if (posterAction != null ||
+                        item is CompletedResumeItem ||
+                        item.resume > Duration.zero) ...[
                       Text(
-                        '已看 ${item.resume.inMinutes} 分钟',
+                        posterAction != null
+                            ? continueWatchingCaption(
+                                item,
+                                progress: resumeProgress,
+                                showEpisode: false,
+                              )
+                            : item is CompletedResumeItem
+                            ? '已看完'
+                            : '已看 ${item.resume.inMinutes} 分钟',
                         maxLines: 1,
                         style: const TextStyle(
                           fontSize: 12,

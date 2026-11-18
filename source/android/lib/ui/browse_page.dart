@@ -30,6 +30,7 @@ import '../core/models.dart';
 import '../core/interface_preferences.dart';
 import 'library_layout.dart';
 import 'library.dart' show MediaCard;
+import 'watch_progress.dart';
 import 'style.dart';
 import 'alphabet_rail.dart';
 import 'poster_motion.dart';
@@ -1356,7 +1357,7 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final resumeVisibleItems = resumeMode
-        ? items.where(widget.resumeFeed!.allowsResume).toList()
+        ? widget.resumeFeed!.projectResume(items, limit: 1000000)
         : items;
     final unfiltered = catalogMode
         ? catalogShown
@@ -1779,6 +1780,19 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
                                                           choose(shown[index]),
                                                     )
                                                   : MediaCard(
+                                                      resumeProgress: resumeMode
+                                                          ? WatchProgressState.resolve(
+                                                              shown[index],
+                                                              widget
+                                                                  .resumeFeed!
+                                                                  .account,
+                                                              widget
+                                                                  .resumeFeed!
+                                                                  .store,
+                                                              showCompletionWithoutDuration:
+                                                                  true,
+                                                            )
+                                                          : null,
                                                       posterAction: resumeMode
                                                           ? ResumeMenu(
                                                               feed: widget

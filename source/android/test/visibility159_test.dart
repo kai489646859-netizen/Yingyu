@@ -439,6 +439,10 @@ void main() {
           if (r.url.queryParameters['SortBy'] == 'DatePlayed') {
             return response(page([latest.data]), 200);
           }
+          if (r.url.path.endsWith('/NextUp') ||
+              r.url.queryParameters['SortBy'] == 'DatePlayed,SortName') {
+            return response(page([]), 200);
+          }
           inventories++;
           return response(page([]), 200);
         }),
@@ -491,6 +495,10 @@ void main() {
           if (r.url.path.endsWith('/Resume') ||
               r.url.queryParameters['SortBy'] == 'DatePlayed') {
             return response(page([stale.data]), 200);
+          }
+          if (r.url.path.endsWith('/NextUp') ||
+              r.url.queryParameters['SortBy'] == 'DatePlayed,SortName') {
+            return response(page([]), 200);
           }
           inventories++;
           return response(page([]), 200);

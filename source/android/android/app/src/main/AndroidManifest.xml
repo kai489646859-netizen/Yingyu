@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission android:name="${applicationId}.INTERNAL_MEDIA_CONTROL" android:protectionLevel="signature" />
+    <uses-permission android:name="${applicationId}.INTERNAL_MEDIA_CONTROL" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -9,6 +12,7 @@
         android:allowBackup="false"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <receiver android:name=".UpdateInstallReceiver" android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:label="映屿"

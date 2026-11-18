@@ -32,7 +32,9 @@ internal static class PlayerDanmaku
     internal static void Observe(object session, MpvClientNotifyEventArgs args)
     {
         if (args.Id is not (MpvClientEventId.PositionChanged or MpvClientEventId.SpeedChanged or MpvClientEventId.StateChanged)) return;
-        if (States.TryGetValue(session, out var state)) state.MediaClock.Observe(args);
+        if (!States.TryGetValue(session, out var state)) return;
+        state.MediaClock.Observe(args);
+        if(args.Id==MpvClientEventId.SpeedChanged)state.OnSpeedChanged();
     }
     internal static void Stop(object session){try{if(States.TryGetValue(session,out var state))state.BeginStop();}catch(Exception e){Log(e);}}
     internal static void Ready(object session)=>Dispatch(session,playlistChanged:false);
@@ -92,7 +94,7 @@ internal static class PlayerDanmaku
         internal required Border View;
         internal bool FirstFrame,TravelDone;
         internal Storyboard? Travel;
-        internal double OriginX,ExitX;
+        internal double OriginX,ExitX,TravelStartX;
         internal float DrawnX=float.NaN;
         internal DanmakuComment Comment=null!;internal double End,Width,Height,Velocity,X;internal int Row;internal bool Fits=true;internal TextBlock[] Glyphs=[];
     }
@@ -169,6 +171,7 @@ internal static class PlayerDanmaku
         DanmakuOptions options=new();DanmakuIdentity? identity,lastSearchIdentity;DanmakuTrack? track;
         readonly DispatcherQueueTimer saveTimer;readonly DispatcherQueueTimer retryTimer;double feedPosition;int attempts;string? lastQuery;bool searching;
         DanmakuCandidate[] candidates=[];ComboBox? candidateBox;
+        bool corrected;
         int generation=int.MinValue,request,index;bool stopped=true,attached,optionsReady,waiting;
         internal readonly DanmakuClock MediaClock = new();
         double clock,last=double.NaN;
@@ -183,7 +186,7 @@ internal static class PlayerDanmaku
         double motionRate,lastSpeed;
         long rateAt;
         double subtitleAnchor=100;
-        readonly Dictionary<(string Text,int Mode),(double Time,bool DropNext)> featuredRepeats=new();
+        readonly DanmakuFeatured featured=new();
         TextBlock? status;string description="正在准备自动匹配…";
         internal State(object session,FrameworkElement overlay)
         {
@@ -212,7 +215,7 @@ internal static class PlayerDanmaku
             Stop();
             MediaClock.Reset(Access.Get<double>(session,"_position"),Access.Get<double>(session,"_currentSpeed"));
             stopped=false;generation=Access.Get<int>(session,"_mediaGeneration");request++;
-            identity=null;lastSearchIdentity=null;optionsReady=false;rollingReported=false;entryReported=false;
+            identity=null;lastSearchIdentity=null;optionsReady=false;corrected=false;rollingReported=false;entryReported=false;
             if(overlay.IsLoaded)Attach();
             var cts=lifetime=new CancellationTokenSource();int version=request;
             _=Initialize(version,cts.Token);
@@ -347,6 +350,24 @@ internal static class PlayerDanmaku
             return id;
         }
 
+        static string? CorrectionKey(EmbyApiClient? client,EmbyItem item)
+        {
+            if(client is null||string.IsNullOrWhiteSpace(client.ServerUrl)||string.IsNullOrWhiteSpace(item.Id))return null;
+            string? user=Access.Get<string?>(client,"_userId");
+            return string.IsNullOrWhiteSpace(user)?null:VideoCacheStore.Hash(client.ServerUrl,user,item.Id);
+        }
+
+        DanmakuOptions LookupOptions()=>new()
+        {
+            CompatibleApi=options.CompatibleApi,Scroll=options.Scroll,Top=options.Top,Bottom=options.Bottom
+        };
+
+        double LookupPosition()
+        {
+            double current=Access.Get<double>(session,"_position")-options.Delay;
+            return double.IsFinite(current)?Math.Max(0,current):0;
+        }
+
         void Search(bool refresh=false,string? query=null)
         {
             if(!Current)return;
@@ -354,11 +375,9 @@ internal static class PlayerDanmaku
             Cancel();var cts=lifetime=new CancellationTokenSource();var token=cts.Token;int version=++request;
             var id=identity=CurrentIdentity();
             lastSearchIdentity=id;
-            var prefs=new DanmakuOptions{
-                CompatibleApi=options.CompatibleApi,Scroll=options.Scroll,Top=options.Top,Bottom=options.Bottom
-            };
-            double position=Math.Max(0,Access.Get<double>(session,"_position")-options.Delay);
-            if(!double.IsFinite(position))position=0;
+            var prefs=LookupOptions();
+            double position=LookupPosition();
+            candidates=[];FillCandidates();
             if(id is null)
             {
                 Describe("缺少准确片名或集数，未自动加载");
@@ -368,6 +387,7 @@ internal static class PlayerDanmaku
             {Describe("可粘贴腾讯视频、爱奇艺或芒果 TV 单集链接，其他链接可通过自建服务读取");return;}
             var client=Access.Get<EmbyApiClient?>(session,"_embyClient");
             var item=Access.Get<EmbyItem>(session,"_item");
+            string? key=string.IsNullOrWhiteSpace(query)?CorrectionKey(client,item):null;
             var seriesId=item.SeriesId;
             var seasonId=item.SeasonId;
             searching=true;
@@ -375,10 +395,34 @@ internal static class PlayerDanmaku
             _=Task.Run(async()=>{
                 int found=0;bool offered=false;
                 try{
+                    if(key is not null&&await DanmakuStorage.ReadCorrection(key,token).ConfigureAwait(false) is {} remembered
+                        && await DanmakuSources.Corrected(remembered,id,prefs,position,token).ConfigureAwait(false) is {} verified)
+                    {
+                        overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>
+                        {
+                            if(version==request&&Current&&!token.IsCancellationRequested)ApplyTrack(verified,true);
+                        }));
+                        return;
+                    }
                     DanmakuSources.Trace("player","lookup",id.AnnualEdition?"start-annual":id.ContinuousNumbering?"start-continuous":"start");
-                    var lookup=string.IsNullOrWhiteSpace(query)
-                        ?await EnrichIdentity(id,client,seriesId,seasonId,token).ConfigureAwait(false):id;
-                    await DanmakuSources.Find(lookup,prefs,candidate=>{
+                    var enrichment=string.IsNullOrWhiteSpace(query)
+                        ?EnrichIdentity(id,client,seriesId,seasonId,token):Task.FromResult(id);
+                    try
+                    {
+                        await Find(id).ConfigureAwait(false);
+                        if(found==0&&await enrichment.ConfigureAwait(false) is {} enriched
+                            &&!id.HasSameSearchIdentity(enriched))
+                        {
+                            token.ThrowIfCancellationRequested();
+                            await Find(enriched).ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        // Enrichment owns only cancellable, bounded metadata work.
+                        _ = await enrichment.ConfigureAwait(false);
+                    }
+                    Task Find(DanmakuIdentity lookup)=>DanmakuSources.Find(lookup,prefs,candidate=>{
                         if(token.IsCancellationRequested)return;Interlocked.Increment(ref found);
                         overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>{
                             if(version!=request||!Current||token.IsCancellationRequested)return;
@@ -386,7 +430,7 @@ internal static class PlayerDanmaku
                         }));
                     },token,refresh,rows=>{
                         offered=true;var copy=rows.ToArray();overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>{if(version!=request||!Current||token.IsCancellationRequested)return;identity=lookup;candidates=copy;FillCandidates();if(track is null)Describe("找到多个哔哩哔哩候选，可在弹幕面板选择版本");}));
-                    },query,position).ConfigureAwait(false);
+                    },query,position);
                     if(found==0&&!offered)overlay.DispatcherQueue.TryEnqueue(()=>Guard(()=>{
                         if(version!=request||!Current||token.IsCancellationRequested)return;
                         if(track is not null){Describe("新查询暂未匹配，保留已有弹幕来源");return;}
@@ -397,10 +441,84 @@ internal static class PlayerDanmaku
                 finally{overlay.DispatcherQueue.TryEnqueue(()=>{if(version==request)searching=false;});}
             },token);
         }
-        void ApplyTrack(DanmakuTrack candidate)
+        async Task Correct(DanmakuCorrection change)
+        {
+            int version=request;
+            CancellationToken token=default;
+            try
+            {
+                if(!Current||!options.Enabled||!change.IsValid)return;
+                var id=identity??CurrentIdentity();
+                if(id is null){Describe("缺少当前影片或集数，无法保存纠错");return;}
+                var key=CorrectionKey(Access.Get<EmbyApiClient?>(session,"_embyClient"), Access.Get<EmbyItem>(session,"_item"));
+                Cancel();waiting=false;retryTimer.Stop();
+                var cts=lifetime=new CancellationTokenSource();token=cts.Token;
+                version=++request;searching=true;
+                Describe("正在验证所选单集的弹幕…");
+                var prefs=LookupOptions();double position=LookupPosition();
+                var chosen=await Task.Run(()=>DanmakuSources.Corrected(change,id,prefs,position,token),token);
+                if(version!=request||!Current||token.IsCancellationRequested)return;
+                if(chosen is null){Describe("该单集暂时没有可用弹幕，原来源保留");return;}
+                ApplyTrack(chosen,true);
+                if(key is not null)await DanmakuStorage.UpdateCorrection(key,change);
+                else Describe("已使用所选弹幕，当前媒体缺少可保存的账号标识");
+            }
+            catch(OperationCanceledException)when(token.IsCancellationRequested){}
+            catch(Exception e)
+            {
+                if(version==request&&Current)Describe("弹幕已尝试切换，纠错记录保存失败");
+                Log(e);
+            }
+            finally{if(version==request)searching=false;}
+        }
+
+        async Task ResetCorrection()
+        {
+            int version=request;
+            try
+            {
+                if(!Current||!options.Enabled)return;
+                var key=CorrectionKey(Access.Get<EmbyApiClient?>(session,"_embyClient"), Access.Get<EmbyItem>(session,"_item"));
+                Cancel();waiting=false;retryTimer.Stop();version=++request;
+                if(key is not null)await DanmakuStorage.UpdateCorrection(key,null);
+                if(version!=request||!Current)return;
+                ResetSources();corrected=false;timer.Stop();Clear();
+                Search(true);
+            }
+            catch(Exception e)
+            {
+                if(version==request&&Current)Describe("无法移除本机纠错记录，原来源保留");
+                Log(e);
+            }
+        }
+
+        async Task OpenCloudCorrection()
+        {
+            if(!Current||overlay.XamlRoot is not {} root)return;
+            var client=Access.Get<EmbyApiClient?>(session,"_embyClient");
+            var item=Access.Get<EmbyItem>(session,"_item");
+            int generation=Access.Get<int>(session,"_mediaGeneration");
+            bool Same()=>Current&&generation==Access.Get<int>(session,"_mediaGeneration")
+                &&ReferenceEquals(client,Access.Get<EmbyApiClient?>(session,"_embyClient"));
+            var id=identity??CurrentIdentity();
+            if(id is null){Describe("缺少当前影片或季集，无法云端纠错。");return;}
+            try
+            {
+                using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                id=await EnrichIdentity(id,client,item.SeriesId,item.SeasonId,timeout.Token);
+                var key=CorrectionKey(client,item);
+                var local=key is null?null:await DanmakuStorage.ReadCorrection(key,timeout.Token);
+                if(Same())await CloudDanmakuCorrections.Show(root,id,local,Same,Correct);
+            }
+            catch(Exception error)
+            {if(Same())Describe(error is InvalidOperationException?error.Message:"无法打开云端纠错。");}
+        }
+
+        void ApplyTrack(DanmakuTrack candidate,bool manual=false)
         {
             StopFeed();
             Clear();
+            corrected=manual;
             track=candidate;
             Reindex();
             DanmakuSources.Trace("player","render","received-rolling",candidate.Comments.Count(row=>row.Mode==1));
@@ -443,18 +561,19 @@ internal static class PlayerDanmaku
             if(first&&selected.Comments.Length>0)
                 DanmakuSources.Trace("player","render","received-rolling",selected.Comments.Count(row=>row.Mode==1));
             if(options.Enabled)timer.Start();
-            Describe(selected.Comments.Length>0?selected.Source+" · "+selected.Comments.Length+" 条":
-                selected.Source+" · 正在读取弹幕");
+            string match=corrected?"手动纠错 · ":selected.Source=="本地 XML"?"":$"匹配评分 {Math.Clamp(selected.Confidence,0,100)}/100 · ";
+            Describe(match+selected.Source+" · "+(selected.Comments.Length>0
+                ?selected.Comments.Length+" 条":"正在读取弹幕"));
         }
         void FillCandidates()
         {
-            if(candidateBox is null)return;candidateBox.Items.Clear();foreach(var candidate in candidates)candidateBox.Items.Add(new ComboBoxItem{Content=candidate.Label,Tag=candidate});if(candidates.Length>0)candidateBox.SelectedIndex=0;
+            if(candidateBox is null)return;candidateBox.Items.Clear();foreach(var candidate in candidates)candidateBox.Items.Add(new ComboBoxItem{Content=$"{candidate.Label} · {Math.Clamp(candidate.Confidence,0,100)}/100",Tag=candidate});if(candidates.Length>0)candidateBox.SelectedIndex=0;
         }
         void Describe(string text){description=text;if(status is not null)status.Text=text;}
         void Guard(Action action){try{action();}catch(Exception e){try{Stop();}catch(Exception cleanup){Log(cleanup);}Log(e);}}
         void Clear()
         {
-            featuredRepeats.Clear();
+            featured.Reset();
             recentComments.Clear();
             recentCommentsOrder.Clear();
             pendingRows.Clear();
@@ -474,6 +593,13 @@ internal static class PlayerDanmaku
             int lo=0,hi=track.Comments.Length;
             while(lo<hi){int mid=lo+(hi-lo)/2;if(track.Comments[mid].Time<now)lo=mid+1;else hi=mid;}index=lo;
             if(resetClock){last=double.NaN;renderedAt=0;motionRate=0;rateAt=0;}
+        }
+        internal void OnSpeedChanged()
+        {
+            void Apply()=>Guard(()=>{if(Current&&timer.IsRunning)Render();});
+            var dispatcher=overlay.DispatcherQueue;
+            if(dispatcher.HasThreadAccess)Apply();
+            else dispatcher.TryEnqueue(DispatcherQueuePriority.High,Apply);
         }
         void Tick(DispatcherQueueTimer sender,object args)=>Guard(Render);
         void Render()
@@ -511,8 +637,7 @@ internal static class PlayerDanmaku
                         // This snapshot is only for lane admission. The UI
                         // scheduler never writes an animated row's position.
                         row.TravelDone=travel.GetCurrentState()==ClockState.Filling;
-                        row.X=row.TravelDone?row.ExitX:Math.Min(row.X,
-                            Math.Max(row.ExitX,row.OriginX-travel.GetCurrentTime().TotalSeconds*row.Velocity));
+                        row.X=row.TravelDone?row.ExitX:TravelPosition(row,travel);
                     }
                     bool expired=row.Comment.Mode==1
                         ? !row.Fits||(row.Travel is null?row.X<=row.ExitX:row.TravelDone)
@@ -528,13 +653,16 @@ internal static class PlayerDanmaku
                         DanmakuSources.Trace("player","render","rolling-entered-viewport",1);
                     }
                 }
-                bool speedChanged=sample.Speed!=lastSpeed;
+                double previousSpeed=lastSpeed;
+                bool speedChanged=sample.Speed!=previousSpeed;
+                lastSpeed=sample.Speed;
                 if(!moving)SetMotionRate(0);
                 else if(motionRate==0||speedChanged||Stopwatch.GetElapsedTime(rateAt,wall).TotalMilliseconds>=150)
                 {
-                    lastSpeed=sample.Speed;rateAt=wall;
+                    rateAt=wall;
                     SetMotionRate(DanmakuClock.Rate(clock,target,sample.Speed));
                 }
+                if(speedChanged)RetimeRows(previousSpeed,sample.Speed);
                 UpdateSubtitleBand();
                 if(moving&&(admittedAt==0||Stopwatch.GetElapsedTime(admittedAt,wall)>=TimeSpan.FromMilliseconds(30)))
                 {
@@ -567,7 +695,6 @@ internal static class PlayerDanmaku
             {
                 var comment=comments[index++];
                 if(clock-comment.Time>freshness||!ModeEnabled(comment.Mode)||recentComments.Contains(comment))continue;
-                if(options.Featured&&SkipFeaturedRepeat(comment,width))continue;
                 if(!QueueRow(comment)){index--;break;}
                 if(recentCommentsOrder.Count==512)recentComments.Remove(recentCommentsOrder.Dequeue());
                 recentComments.Add(comment);
@@ -575,14 +702,22 @@ internal static class PlayerDanmaku
             }
 
             int probes=Math.Min(pendingRows.Count,6),shown=0;
+            int rollingRows=options.Featured?active.Count(row=>row.Comment.Mode==1):0;
             while(probes-->0&&shown<3&&active.Count<48)
             {
                 var queued=pendingRows.Dequeue();
                 if(queued.Until<clock||!ModeEnabled(queued.Comment.Mode))continue;
+                var decision=options.Featured?featured.Check(queued.Comment,clock,rollingRows):default;
+                if(decision.Drop)continue;
                 if(!Show(queued.Comment,width,height,out bool blocked))
                 {
                     if(blocked)pendingRows.Enqueue(queued);
                     continue;
+                }
+                if(options.Featured)
+                {
+                    featured.Shown(decision,clock);
+                    if(queued.Comment.Mode==1)rollingRows++;
                 }
                 shown++;
                 if(queued.Comment.Mode==1&&!rollingReported)
@@ -606,36 +741,16 @@ internal static class PlayerDanmaku
             if(timer.Interval!=interval)timer.Interval=interval;
         }
 
-        bool SkipFeaturedRepeat(DanmakuComment comment,double width)
-        {
-            // Keep every distinct line. For a repeated burst, retain the first
-            // and then every second occurrence within the same media window.
-            var key=(comment.Text.Trim(),comment.Mode);
-            bool drop=featuredRepeats.TryGetValue(key,out var previous)
-                &&comment.Time>=previous.Time&&comment.Time-previous.Time<=12&&previous.DropNext;
-            if(featuredRepeats.Count>=256&&!featuredRepeats.ContainsKey(key))featuredRepeats.Clear();
-            featuredRepeats[key]=(comment.Time,!drop);
-            if(!drop||comment.Mode!=1)return drop;
-
-            // Repeat reduction must not empty a quiet rolling overlay.
-            int lanes=0;
-            foreach(var row in active)
-            {
-                if(row.Comment.Mode!=1||row.View.Visibility!=Visibility.Visible||row.X>=width||row.X+row.Width<=0)continue;
-                lanes|=1<<row.Row;
-                if((lanes&(lanes-1))!=0)return true;
-            }
-            return false;
-        }
         internal void PaintFeatured()
         {
             if(!FeaturedButtons.TryGetValue(overlay,out var button))return;
             button.IsChecked=options.Featured;button.IsEnabled=optionsReady&&options.Enabled;
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button,options.Featured?"精品弹幕：开":"精品弹幕：关");
+            string label=options.Featured?"精选弹幕已开启":"精选弹幕已关闭";
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button,label);
         }
         internal void SetFeatured(bool enabled)=>Guard(()=>{
             if(!Current||!optionsReady||!options.Enabled){PaintFeatured();return;}
-            options.Featured=enabled;featuredRepeats.Clear();PaintFeatured();
+            options.Featured=enabled;featured.Reset();PaintFeatured();
             saveTimer.Stop();saveTimer.Start();
         });
         bool Show(DanmakuComment comment,double width,double height,out bool blocked)
@@ -656,7 +771,7 @@ internal static class PlayerDanmaku
             if(!double.IsFinite(measured)||measured>width*1.5)return false;
             double exit=-measured-8;
             bool rolling=comment.Mode==1;
-            double velocity=(width+1-exit)/options.TravelSeconds*Math.Max(.25,lastSpeed);
+            double velocity=(width+1-exit)/options.TravelSeconds*DanmakuMotion.Speed(lastSpeed);
             // Both ends are beyond the clip, including room for presentation latency.
             double entry=width+Math.Max(1,velocity*.12);
             exit-=Math.Max(1,velocity*.12);
@@ -690,19 +805,42 @@ internal static class PlayerDanmaku
             if(rolling)StartTravel(item);
             active.Add(item);return true;
         }
+        static double TravelPosition(Moving row,Storyboard travel)
+            =>DanmakuMotion.Position(row.X,row.TravelStartX,row.ExitX,row.Velocity,travel.GetCurrentTime().TotalSeconds);
+
+        void RetimeRows(double previousSpeed,double speed)
+        {
+            double ratio=DanmakuMotion.SpeedRatio(previousSpeed,speed);
+            if(ratio==1)return;
+            if(motionRendering)lastMotionFrame=Stopwatch.GetTimestamp();
+            foreach(var row in active)
+            {
+                if(row.Comment.Mode!=1)continue;
+                row.Velocity*=ratio;
+                if(row.Travel is not {} travel)continue;
+                // Render sampled the old clock first. Preserve the horizontal anchor,
+                // vertical lane and clip, then animate only the remaining distance.
+                travel.Stop();
+                row.Travel=null;
+                SetPosition(row,row.X);
+                StartTravel(row);
+            }
+        }
+
         void StartTravel(Moving row)
         {
-            if(independentUnavailable||row.OriginX<=row.ExitX)return;
+            if(independentUnavailable||row.X<=row.ExitX)return;
             Storyboard? travel=null;
             try
             {
                 systemSettings??=new Windows.UI.ViewManagement.UISettings();
                 if(!systemSettings.AnimationsEnabled)return;
                 row.View.RenderTransform=new TranslateTransform();
+                row.TravelStartX=row.X;
                 var slide=new DoubleAnimation
                 {
-                    From=0,To=row.ExitX-row.OriginX,
-                    Duration=new Duration(TimeSpan.FromSeconds((row.OriginX-row.ExitX)/row.Velocity)),
+                    From=0,To=row.ExitX-row.TravelStartX,
+                    Duration=new Duration(TimeSpan.FromSeconds((row.TravelStartX-row.ExitX)/row.Velocity)),
                     FillBehavior=FillBehavior.HoldEnd
                 };
                 Storyboard.SetTarget(slide,row.View);
@@ -867,7 +1005,7 @@ internal static class PlayerDanmaku
                         continue;
                     }
 
-                    double next=Math.Max(row.ExitX,row.X-advance*row.Velocity);
+                    double next=DanmakuMotion.Position(row.X,row.X,row.ExitX,row.Velocity,advance);
                     // Present a clipped portion before showing a whole short
                     // comment or removing its last visible part on a fast frame.
                     if(row.X>right-partialEdge)next=Math.Max(right-partialEdge,next);
@@ -913,8 +1051,7 @@ internal static class PlayerDanmaku
             bool rolling=row.Comment.Mode==1;
             if(row.Travel is {} travel)
             {
-                row.X=Math.Min(row.X,Math.Max(row.ExitX,
-                    row.OriginX-travel.GetCurrentTime().TotalSeconds*row.Velocity));
+                row.X=TravelPosition(row,travel);
                 travel.Stop();
                 row.Travel=null;
             }
@@ -945,12 +1082,16 @@ internal static class PlayerDanmaku
             {
                 row.View.Background=options.Background?textBackground:null;row.View.Opacity=options.Opacity;
             }
-            Reflow();
         }
-        void AppearanceChanged()
+        void AppearanceChanged(bool modesChanged=false)
         {
             options.Normalize();
             RefreshAppearance();
+            if(modesChanged||active.Count>0&&Math.Abs(layoutFont-EffectiveFont)>.01)Reflow();
+            SaveAppearanceSoon();
+        }
+        void SaveAppearanceSoon()
+        {
             saveTimer.Stop();saveTimer.Start();
         }
         internal void GuardSeek()=>Guard(()=>{if(!Current||track is null)return;Clear();MediaClock.Seek(Access.Get<double>(session,"_position"));mediaEpoch=-1;Reindex();if(options.Enabled)timer.Start();});
@@ -966,13 +1107,19 @@ internal static class PlayerDanmaku
             {
                 if(!Current||!optionsReady)return;
                 double previousDelay=options.Delay;
+                var modes=(options.Scroll,options.Top,options.Bottom);
+                var appearance=(options.Opacity,options.Background);
+                bool wasFeatured=options.Featured;
                 bool wasAutomatic=options.Automatic;
                 string previousApi=options.CompatibleApi;
                 edit(options);
                 options.Normalize();
                 if(previousDelay!=options.Delay){Clear();Reindex();}
                 if(wasAutomatic&&!options.Automatic){waiting=false;Cancel();retryTimer.Stop();request++;}
-                RefreshAppearance();
+                if(wasFeatured!=options.Featured)featured.Reset();
+                if(appearance!=(options.Opacity,options.Background))RefreshAppearance();
+                if(modes!=(options.Scroll,options.Top,options.Bottom)
+                    ||active.Count>0&&Math.Abs(layoutFont-EffectiveFont)>.01)Reflow();
                 Changed(retry:options.Automatic&&previousApi!=options.CompatibleApi,save:false);
             });
             if(overlay.DispatcherQueue.HasThreadAccess)Apply();
@@ -1035,14 +1182,18 @@ internal static class PlayerDanmaku
             }
             Type("滚动",()=>options.Scroll,v=>options.Scroll=v);Type("顶部",()=>options.Top,v=>options.Top=v);Type("底部",()=>options.Bottom,v=>options.Bottom=v);settings.Children.Add(types);
             var refresh=new List<Action>();
-            void Range(string label,double min,double max,double step,Func<double> read,Action<double> write,Func<double,string> format)
+            void Range(string label,double min,double max,double step,Func<double> read,Action<double> write,Func<double,string> format,bool nextOnly=false)
             {
                 var row=new Grid{ColumnSpacing=10};row.ColumnDefinitions.Add(new(){Width=new(72)});row.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});row.ColumnDefinitions.Add(new(){Width=new(46)});
                 var caption=new TextBlock{Text=label,FontSize=12,VerticalAlignment=VerticalAlignment.Center};row.Children.Add(caption);
                 var slider=new Slider{Minimum=min,Maximum=max,StepFrequency=step,Value=read(),MinWidth=0,MinHeight=0,Height=28,IsThumbToolTipEnabled=false,VerticalAlignment=VerticalAlignment.Center};Grid.SetColumn(slider,1);row.Children.Add(slider);
                 var value=new TextBlock{Text=format(read()),FontSize=12,HorizontalAlignment=HorizontalAlignment.Right,VerticalAlignment=VerticalAlignment.Center};Grid.SetColumn(value,2);row.Children.Add(value);
                 PlayerSliderInput.ConfigureDanmaku(slider);
-                slider.ValueChanged+=(_,_)=>Guard(()=>{if(syncing)return;write(slider.Value);value.Text=format(read());AppearanceChanged();});
+                slider.ValueChanged+=(_,_)=>Guard(()=>{
+                    if(syncing)return;
+                    write(slider.Value);value.Text=format(read());
+                    if(nextOnly)SaveAppearanceSoon();else AppearanceChanged();
+                });
                 refresh.Add(()=>{slider.Value=read();value.Text=format(read());});settings.Children.Add(row);
             }
             Range("不透明度",15,100,5,()=>options.Opacity*100,v=>options.Opacity=v/100,v=>v.ToString("0")+"%");
@@ -1051,33 +1202,39 @@ internal static class PlayerDanmaku
             adaptive.Checked+=(_,_)=>Guard(()=>{if(!syncing){options.AdaptiveSize=true;AppearanceChanged();}});adaptive.Unchecked+=(_,_)=>Guard(()=>{if(!syncing){options.AdaptiveSize=false;AppearanceChanged();}});settings.Children.Add(adaptive);refresh.Add(()=>adaptive.IsChecked=options.AdaptiveSize);
             var background=new CheckBox{Content="显示文字背景框",IsChecked=options.Background,FontSize=12,MinHeight=28};
             background.Checked+=(_,_)=>Guard(()=>{if(!syncing){options.Background=true;AppearanceChanged();}});background.Unchecked+=(_,_)=>Guard(()=>{if(!syncing){options.Background=false;AppearanceChanged();}});settings.Children.Add(background);refresh.Add(()=>background.IsChecked=options.Background);
-            Range("显示区域",20,100,5,()=>options.Area*100,v=>options.Area=v/100,v=>v.ToString("0")+"%");
+            Range("显示区域",20,100,5,()=>options.Area*100,v=>options.Area=v/100,v=>v.ToString("0")+"%",nextOnly:true);
             Range("弹幕速度",45,225,5,()=>900/options.TravelSeconds,v=>options.TravelSeconds=900/v,v=>(v/100).ToString("0.##")+"倍");
-            var hint=new TextBlock{Text="弹幕会避开常规字幕区。底部弹幕显示在预留字幕区的上方。",FontSize=11,Opacity=.65,TextWrapping=TextWrapping.Wrap};settings.Children.Add(hint);
+            var hint=new TextBlock{Text="显示区域只影响之后入场的弹幕。弹幕会避开常规字幕区。",FontSize=11,Opacity=.65,TextWrapping=TextWrapping.Wrap};settings.Children.Add(hint);
             var reset=new Button{Content="恢复默认设置",HorizontalAlignment=HorizontalAlignment.Right};reset.Click+=(_,_)=>Guard(()=>{
+                bool modesChanged=!options.Scroll||!options.Top||!options.Bottom;
                 options.Opacity=.8;options.FontSize=24;options.AdaptiveSize=true;options.Background=false;options.Area=.5;options.TravelSeconds=9;options.Scroll=options.Top=options.Bottom=true;
-                syncing=true;try{foreach(var update in refresh)update();foreach(var update in typeRefresh)update();}finally{syncing=false;}AppearanceChanged();
+                syncing=true;try{foreach(var update in refresh)update();foreach(var update in typeRefresh)update();}finally{syncing=false;}AppearanceChanged(modesChanged);
             });settings.Children.Add(reset);
             status=new TextBlock{Text=description,TextWrapping=TextWrapping.Wrap,FontSize=12};sources.Children.Add(status);
             void Toggle(string label,bool value,Action<bool> change){var box=new CheckBox{Content=label,IsChecked=value};box.Checked+=(_,_)=>Guard(()=>change(true));box.Unchecked+=(_,_)=>Guard(()=>change(false));sources.Children.Add(box);}
             Toggle("自动在线匹配",options.Automatic,v=>{options.Automatic=v;Changed(v);if(!v){waiting=false;Cancel();retryTimer.Stop();request++;}});
             var retry=new Button{Content="重新匹配公开弹幕",HorizontalAlignment=HorizontalAlignment.Stretch};retry.Click+=(_,_)=>Guard(()=>{if(options.Enabled)Search(true);});sources.Children.Add(retry);
             var query=new TextBox{Header="搜索片名或粘贴单集链接",PlaceholderText="片名，或哔哩哔哩／腾讯视频／爱奇艺／芒果 TV 的单集链接",MaxLength=320};sources.Children.Add(query);
-            var search=new Button{Content="查找在线弹幕",HorizontalAlignment=HorizontalAlignment.Stretch};search.Click+=(_,_)=>Guard(()=>{
+            var search=new Button{Content="查找在线弹幕",HorizontalAlignment=HorizontalAlignment.Stretch};search.Click+=async(_,_)=>{
                 if(!options.Enabled||string.IsNullOrWhiteSpace(query.Text))return;
+                if(DanmakuSources.CorrectionLink(query.Text) is {} link){await Correct(new(null,link));return;}
                 if(query.Text.Contains("://",StringComparison.Ordinal)&&!DanmakuSources.IsPlatformLink(query.Text)&&!(Uri.TryCreate(query.Text.Trim(),UriKind.Absolute,out var uri)&&uri.Scheme=="https"&&uri.Host is "www.bilibili.com" or "bilibili.com")){Describe("请使用片名或支持的平台公开播放链接");return;}
-                Search(true,query.Text.Trim());
-            });sources.Children.Add(search);
+                Guard(()=>Search(true,query.Text.Trim()));
+            };sources.Children.Add(search);
             candidateBox=new ComboBox{Header="匹配候选",HorizontalAlignment=HorizontalAlignment.Stretch};FillCandidates();sources.Children.Add(candidateBox);
-            var select=new Button{Content="使用所选弹幕",HorizontalAlignment=HorizontalAlignment.Stretch};select.Click+=(_,_)=>Guard(()=>{
-                if(!Current||!options.Enabled||identity is null||candidateBox.SelectedItem is not ComboBoxItem{Tag:DanmakuCandidate choice})return;
-                Cancel();request++;retryTimer.Stop();var selected=DanmakuSources.Select(choice,identity);ApplyTrack(selected);_=SaveSelection(selected);
-            });sources.Children.Add(select);
+            var select=new Button{Content="使用所选弹幕并记住",HorizontalAlignment=HorizontalAlignment.Stretch};select.Click+=async(_,_)=>{
+                if(candidateBox?.SelectedItem is ComboBoxItem{Tag:DanmakuCandidate choice})await Correct(new(choice.Cid,null));
+            };sources.Children.Add(select);
+            var auto=new Button{Content="忘记纠错并重新自动匹配",HorizontalAlignment=HorizontalAlignment.Stretch};
+            auto.Click+=async(_,_)=>await ResetCorrection();sources.Children.Add(auto);
             var import=new Button{Content="加载本地 XML 弹幕…",HorizontalAlignment=HorizontalAlignment.Stretch};import.Click+=async(_,_)=>await Import();sources.Children.Add(import);
             var delay=new NumberBox{Header="时间偏移（秒，正数晚出现）",Value=options.Delay,Minimum=-3600,Maximum=3600,SmallChange=.5};
             delay.ValueChanged+=(_,_)=>Guard(()=>{if(double.IsFinite(delay.Value)){options.Delay=delay.Value;Clear();Reindex();Changed();}});sources.Children.Add(delay);
             var api=new TextBox{Header="自建备用服务（选填，每行一个地址）",Text=options.CompatibleApi,MaxLength=2600,AcceptsReturn=true,TextWrapping=TextWrapping.Wrap};sources.Children.Add(api);
             var apply=new Button{Content="保存服务地址",HorizontalAlignment=HorizontalAlignment.Stretch};apply.Click+=(_,_)=>Guard(()=>{options.CompatibleApi=api.Text;options.Normalize();api.Text=options.CompatibleApi;Changed(true);});sources.Children.Add(apply);
+            var cloud=new Button{Content="云端弹幕纠错…",HorizontalAlignment=HorizontalAlignment.Stretch};
+            cloud.Click+=async(_,_)=>{cloud.IsEnabled=false;try{await OpenCloudCorrection();}finally{cloud.IsEnabled=Current;}};
+            sources.Children.Add(cloud);
             var clear=new Button{Content="清空弹幕缓存",HorizontalAlignment=HorizontalAlignment.Stretch};clear.Click+=async(_,_)=>{
                 clear.IsEnabled=false;
                 try{Cancel();ResetSources();retryTimer.Stop();timer.Stop();Clear();request++;await DanmakuStorage.Clear();if(Current)Describe("弹幕缓存已清空，可重新匹配");}
@@ -1086,6 +1243,5 @@ internal static class PlayerDanmaku
             sources.Children.Add(new TextBlock{Text=DanmakuOptions.BuiltInSourcesText,TextWrapping=TextWrapping.Wrap,FontSize=12});
             return body;
         }
-        async Task SaveSelection(DanmakuTrack selection){try{await DanmakuStorage.Write(selection,CancellationToken.None).ConfigureAwait(false);}catch(Exception e){Log(e);}}
     }
 }

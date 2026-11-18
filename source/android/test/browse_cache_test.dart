@@ -307,6 +307,9 @@ void main() {
         if (request.url.path.endsWith('/Latest')) {
           return response('[{"Id":"movie","Name":"片"}]', 200);
         }
+        if (!request.url.path.endsWith('/Resume')) {
+          return response('{"Items":[]}', 200);
+        }
         resumes++;
         return response(
           jsonEncode({
@@ -324,7 +327,7 @@ void main() {
       final store = AppStore(prefs);
       final first = HomeFeed(client, store, browse: repo(client));
       await first.refresh();
-      expect(calls, 4);
+      expect(calls, 6);
       expect(resumes, 1);
       first.dispose();
       minute = 2;
@@ -335,9 +338,9 @@ void main() {
       expect(second.resume.single.resume.inMinutes, 2);
       expect(
         calls,
-        5,
+        9,
         reason:
-            'Only Resume is refreshed; views and latest sections still use their fresh caches.',
+            'Resume, recent history and NextUp refresh once; views and latest sections reuse fresh caches.',
       );
       expect(resumes, 2);
       second.dispose();

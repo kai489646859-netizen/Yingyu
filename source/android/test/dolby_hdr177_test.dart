@@ -406,17 +406,20 @@ void main() {
     const codec = StandardMethodCodec();
     var supported = true;
     Completer<Map<String, String>>? probe;
+    Completer<Map<String, Object>>? watch;
     final calls = <int>[];
     late NativeHdrAdapter adapter;
     setUp(() {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       supported = true;
       probe = null;
+      watch = null;
       calls.clear();
       binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
         call,
       ) async {
         if (call.method == 'watch') {
+          if (watch != null) return await watch!.future;
           return {
             'sdk': 34,
             'display': 0,
@@ -522,6 +525,39 @@ void main() {
         expect(calls, isEmpty);
       },
     );
+    test('late watch snapshot cannot overwrite a display change', () async {
+      watch = Completer<Map<String, Object>>();
+      final started = adapter.start();
+      final done = Completer<void>();
+      // ignore: deprecated_member_use
+      binding.defaultBinaryMessenger.handlePlatformMessage(
+        'yingyu/native_hdr',
+        codec.encodeMethodCall(
+          MethodCall('changed', {
+            'owner': adapter.owner,
+            'sdk': 34,
+            'display': 1,
+            'mode': 2,
+            'hdrTypes': <int>[],
+          }),
+        ),
+        (_) => done.complete(),
+      );
+      await done.future;
+      watch!.complete({
+        'sdk': 34,
+        'display': 0,
+        'mode': 1,
+        'hdrTypes': [2],
+      });
+      await started;
+      expect(adapter.capabilities.display, 1);
+      expect(adapter.capabilities.mode, 2);
+      expect(adapter.capabilities.supportsHdrSurface('pq'), isFalse);
+      await adapter.warmDolby();
+      expect(adapter.request.value, isNull);
+      expect(calls, isEmpty);
+    });
     test(
       'display capability loss restores once and cannot re-admit the same media',
       () async {

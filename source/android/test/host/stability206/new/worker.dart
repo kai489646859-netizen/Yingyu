@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:isolate';
+// ignore: depend_on_referenced_packages
+import 'package:path_provider/path_provider.dart';
 import 'package:yingyu/core/log.dart';
 import 'package:yingyu/core/models.dart';
 import 'package:yingyu/playback/disc_transport.dart';
@@ -8,7 +10,7 @@ import 'package:yingyu/playback/disc_native.dart';
 /// One long-lived IO isolate per temporary disc session. Only native control,
 /// redacted logs and bounded status snapshots cross the UI isolate. HTTP media
 /// bodies, range caches and the Java input server stay together in the worker.
-/// Persistent video-cache sessions keep their existing shared cache owner.
+/// Native disc read-ahead can spill into a session-only file in the worker.
 class DiscWorkerTransport extends DiscTransport {
   DiscWorkerTransport(
     super.route, {
@@ -38,6 +40,8 @@ class DiscWorkerTransport extends DiscTransport {
   String _health = '原盘独立读取线程正在准备';
   Future<void>? _closeJob;
   Future<void>? _healthJob;
+  Future<String?>? _spoolDirectory;
+  int _forwardRevision = 0;
   final _healthClock = Stopwatch()..start();
   bool? _workerLogEnabled;
   void _syncLogEnabled() {
@@ -201,8 +205,8 @@ class DiscWorkerTransport extends DiscTransport {
   }
 
   @override
-  void setBuffering(bool value) {
-    if (!_closing) _commands?.send(['buffering', value]);
+  void setBuffering(bool value, {bool recoverLargeInput = false}) {
+    if (!_closing) _commands?.send(['buffering', value, recoverLargeInput]);
   }
 
   @override
@@ -215,6 +219,37 @@ class DiscWorkerTransport extends DiscTransport {
   @override
   void resetReadAhead() {
     if (!_closing) _commands?.send(['seek']);
+  }
+
+  @override
+  void endOpeningDemand() {
+    if (!_closing) _commands?.send(['end-opening-demand']);
+  }
+
+  @override
+  void configurePersistentReadAhead(int bytes) {
+    if (_closing || !directNative || bytes <= 0) return;
+    final revision = ++_forwardRevision;
+    final directory = _spoolDirectory ??= () async {
+      try {
+        return (await getTemporaryDirectory()).path;
+      } catch (_) {
+        return null;
+      }
+    }();
+    unawaited(
+      directory.then((path) {
+        if (!_closing && revision == _forwardRevision && path != null) {
+          _commands?.send(['forward-cache', path, bytes]);
+        }
+      }),
+    );
+  }
+
+  @override
+  void stopPersistentReadAhead() {
+    ++_forwardRevision;
+    if (!_closing) _commands?.send(['forward-cache', null, 0]);
   }
 
   @override
@@ -368,9 +403,19 @@ Future<void> _discWorkerMain(_WorkerStart args) async {
       case 'speed':
         transport.setSpeed(message[1] as double);
       case 'buffering':
-        transport.setBuffering(message[1] == true);
+        transport.setBuffering(
+          message[1] == true,
+          recoverLargeInput: message[2] == true,
+        );
       case 'seek':
         transport.resetReadAhead();
+      case 'end-opening-demand':
+        transport.endOpeningDemand();
+      case 'forward-cache':
+        transport.configureDirectReadAhead(
+          message[1] as String?,
+          message[2] as int,
+        );
       case 'status':
         (message[1] as SendPort).send(health());
       case 'close':

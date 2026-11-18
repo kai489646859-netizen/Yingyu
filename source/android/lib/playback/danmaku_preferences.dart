@@ -29,17 +29,47 @@ const defaultDanmakuAppearance = (
   delay: 0.0,
 );
 
+const danmakuSourceNames = ['哔哩哔哩', '腾讯视频', '爱奇艺', '芒果 TV', '兼容弹幕服务', '本地 XML'];
+
 class DanmakuPreferences {
   const DanmakuPreferences({
     this.enabled = true,
     this.automatic = true,
     this.compatible = '',
     this.appearance = defaultDanmakuAppearance,
+    this.hidden = const {},
+    this.delays = const {},
   });
 
   final bool enabled, automatic;
   final String compatible;
   final DanmakuAppearance appearance;
+  final Set<String> hidden;
+  final Map<String, double> delays;
+
+  DanmakuPreferences configure(String source, {bool? enabled, double? delay}) {
+    if (!danmakuSourceNames.contains(source)) return this;
+    final disabled = {...hidden};
+    final offsets = {...delays};
+    if (enabled != null) {
+      if (enabled) {
+        disabled.remove(source);
+      } else {
+        disabled.add(source);
+      }
+    }
+    if (delay != null && delay.isFinite) {
+      if (delay == 0) {
+        offsets.remove(source);
+      } else {
+        offsets[source] = delay.clamp(-3600, 3600);
+      }
+    }
+    return copyWith(
+      hidden: Set.unmodifiable(disabled),
+      delays: Map.unmodifiable(offsets),
+    );
+  }
 
   factory DanmakuPreferences.read(SharedPreferences prefs) {
     Map<String, dynamic> value = {};
@@ -58,9 +88,23 @@ class DanmakuPreferences {
           : fallback;
     }
 
+    final hidden = value['hidden'];
+    final delays = value['delays'];
+
     return DanmakuPreferences(
       enabled: flag('enabled', prefs.getBool('danmaku.enabled') ?? true),
       automatic: flag('automatic', true),
+      hidden: {
+        if (hidden is List)
+          for (final name in danmakuSourceNames)
+            if (hidden.contains(name)) name,
+      },
+      delays: {
+        if (delays is Map)
+          for (final name in danmakuSourceNames)
+            if (delays[name] case final num seconds)
+              if (seconds.isFinite) name: seconds.toDouble().clamp(-3600, 3600),
+      },
       compatible: value['compatible'] is String
           ? value['compatible'] as String
           : prefs.getString('danmaku.compatible') ?? '',
@@ -85,11 +129,15 @@ class DanmakuPreferences {
     bool? automatic,
     String? compatible,
     DanmakuAppearance? appearance,
+    Set<String>? hidden,
+    Map<String, double>? delays,
   }) => DanmakuPreferences(
     enabled: enabled ?? this.enabled,
     automatic: automatic ?? this.automatic,
     compatible: compatible ?? this.compatible,
     appearance: appearance ?? this.appearance,
+    hidden: hidden ?? this.hidden,
+    delays: delays ?? this.delays,
   );
 
   Future<bool> save(SharedPreferences prefs) => prefs.setString(
@@ -109,6 +157,8 @@ class DanmakuPreferences {
       'area': appearance.area,
       'travel': appearance.travel,
       'delay': appearance.delay,
+      'hidden': hidden.toList(),
+      'delays': delays,
     }),
   );
 }

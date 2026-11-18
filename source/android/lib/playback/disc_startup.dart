@@ -5,6 +5,7 @@ import 'dart:async';
 Future<String> waitForDiscCushion({
   required Future<String> Function(String) read,
   required bool Function() active,
+  double speed = 1,
   Duration timeout = const Duration(seconds: 3),
 }) async {
   final clock = Stopwatch()..start();
@@ -16,8 +17,14 @@ Future<String> waitForDiscCushion({
         read('demuxer-cache-idle'),
         read('eof-reached'),
         read('cache-pause-wait'),
+        if (speed == 1) read('paused-for-cache'),
       ]).timeout(left);
       if (!active()) return '已取消';
+      // An MPV cache pause already stops its audio/video clock. Submit
+      // play now and let the same native gate resume when it has enough data.
+      if (speed == 1 && values[4] == 'yes') {
+        return '内核已在等待缓存，直接请求播放';
+      }
       final seconds = double.tryParse(values[0]);
       if (values[1] == 'yes' || values[2] == 'yes') return '缓存已满或到达文件尾';
       final resume = double.tryParse(values[3]);

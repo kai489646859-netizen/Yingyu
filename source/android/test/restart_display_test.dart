@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yingyu/core/emby.dart';
 import 'package:yingyu/core/home_feed.dart';
 import 'package:yingyu/core/models.dart';
+import 'package:yingyu/core/server_resume.dart';
 import 'package:yingyu/core/store.dart';
 import 'package:yingyu/ui/style.dart';
 import 'package:yingyu/ui/watch_progress.dart';
@@ -320,10 +321,17 @@ void main() {
       server = [];
       await reopened.afterPlayback(detail, actualCompleted: true);
       expect(store.completions.superseded(api.session!, detail.id), false);
-      expect(reopened.resume, isEmpty);
+      void expectCompleted(HomeFeed feed) {
+        final completed = feed.resume.single;
+        expect(completed, isA<CompletedResumeItem>());
+        expect(completed.id, detail.id);
+        expect(completed.resume, Duration.zero);
+      }
+
+      expectCompleted(reopened);
       await reopened.refreshResume(force: true);
-      expect(reopened.resume, isEmpty);
-      expect(open().resume, isEmpty);
+      expectCompleted(reopened);
+      expectCompleted(open());
     },
   );
 

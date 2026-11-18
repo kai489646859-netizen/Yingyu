@@ -47,6 +47,11 @@ internal sealed record DanmakuIdentity(string Title,int Season,int Episode,int Y
             Animation=IsAnimation(item)
         };
     }
+    internal bool HasSameSearchIdentity(DanmakuIdentity other) =>
+        Key==other.Key && Animation==other.Animation && CatalogYear==other.CatalogYear &&
+        SeasonName==other.SeasonName && SeasonYear==other.SeasonYear &&
+        Aliases.SequenceEqual(other.Aliases,StringComparer.OrdinalIgnoreCase);
+
     internal static bool IsAnimation(EmbyItem item)
         =>item.Genres?.Any(g=>g is "动画" or "動畫" or "动漫" or "動漫" or "国漫" or "國漫"
             ||string.Equals(g,"Animation",StringComparison.OrdinalIgnoreCase))==true;
@@ -61,6 +66,12 @@ internal sealed record DanmakuTrack(string Source,string Identity,double Duratio
     internal PublicDanmaku.Feed? PublicFeed{get;init;}
 }
 internal sealed record DanmakuCandidate(string Label,string Cid,double Duration,int Confidence);
+internal sealed record DanmakuCorrection(string? Cid,string? Link)
+{
+    internal bool IsValid => Cid is not null
+        ? Link is null && DanmakuSources.ValidCid(Cid)
+        : DanmakuSources.CorrectionLink(Link) is not null;
+}
 internal sealed class DanmakuOptions
 {
     internal const string BuiltInSourcesText="同时查找哔哩哔哩、腾讯视频、爱奇艺和芒果 TV，使用最先返回可用弹幕的来源。无需配置地址。";
@@ -137,6 +148,30 @@ internal static class DanmakuStorage
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);string temp=path+"."+Guid.NewGuid().ToString("N")+".tmp";
         try{await File.WriteAllTextAsync(temp,data,token).ConfigureAwait(false);token.ThrowIfCancellationRequested();File.Move(temp,path,true);}
         finally{try{if(File.Exists(temp))File.Delete(temp);}catch(IOException){}}
+    }
+    static string CorrectionPath(string key) => Path.Combine(CachePaths.UserDataRoot,"DanmakuCorrections",key+".json");
+    internal static async Task<DanmakuCorrection?> ReadCorrection(string key,CancellationToken token)
+    {
+        try
+        {
+            string path=CorrectionPath(key);
+            if(new FileInfo(path) is not {Exists:true,Length:>0 and <=4096})return null;
+            var value=JsonSerializer.Deserialize<DanmakuCorrection>(await File.ReadAllTextAsync(path,token).ConfigureAwait(false),Json);
+            return value?.IsValid==true?value:null;
+        }
+        catch(Exception e)when(e is IOException or UnauthorizedAccessException or JsonException){return null;}
+    }
+    internal static async Task UpdateCorrection(string key,DanmakuCorrection? value)
+    {
+        await Gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            string path=CorrectionPath(key);
+            if(value is null)File.Delete(path);
+            else if(value.IsValid)await Atomic(path,JsonSerializer.Serialize(value,Json),CancellationToken.None).ConfigureAwait(false);
+        }
+        catch(DirectoryNotFoundException)when(value is null){}
+        finally{Gate.Release();}
     }
     internal static async Task<DanmakuTrack?> Read(DanmakuIdentity id,CancellationToken token,string suffix="")
     {

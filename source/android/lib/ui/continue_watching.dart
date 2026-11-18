@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import '../core/home_feed.dart';
 import '../core/models.dart';
+import '../core/server_resume.dart';
 import 'poster.dart';
 import 'poster_art.dart';
 import 'style.dart';
@@ -15,23 +16,78 @@ import 'resume_menu.dart';
 import 'watch_progress.dart';
 import '../core/appearance.dart';
 
-String continueWatchingCaption(MediaItem item, {WatchProgressState? progress}) {
+String continueWatchingCaption(
+  MediaItem item, {
+  WatchProgressState? progress,
+  bool showEpisode = true,
+}) {
   final completed =
       progress?.completed ??
       (object(item.data['UserData'])['Played'] == true &&
           item.resume == Duration.zero);
-  final episode = item.type == 'Episode'
-      ? '第 ${item.data['ParentIndexNumber'] ?? '?'} 季 · 第 ${item.data['IndexNumber'] ?? '?'} 集'
+  final numbers = showEpisode ? item.episodeDisplay() : null;
+  if (completed || item is CompletedResumeItem) {
+    final episode = numbers == null
+        ? ''
+        : episodeDisplayLabel(numbers, compact: true);
+    return episode.isEmpty ? '已看完' : '已看完 · $episode';
+  }
+  final episode = numbers == null ? '' : episodeDisplayLabel(numbers);
+  final prefix = episode.isEmpty ? '' : '$episode · ';
+  final position = progress?.position ?? item.resume;
+  if (item is NextResumeItem || position <= Duration.zero) {
+    return '$prefix${item.type == 'Episode' ? '待播放' : '未观看'}';
+  }
+  final runtime = item.watchDuration;
+  final duration = runtime > Duration.zero
+      ? ' / ${watchTime(runtime, padMinutes: false)}'
       : '';
-  if (completed) {
-    return episode.isEmpty
-        ? '已看完'
-        : '已看完 · ${item.data['ParentIndexNumber'] ?? '?'}季${item.data['IndexNumber'] ?? '?'}集';
+  return '$prefix继续 ${watchTime(position, padMinutes: false)}$duration';
+}
+
+class ResumeProgressBar extends StatelessWidget {
+  const ResumeProgressBar({
+    super.key,
+    required this.itemId,
+    required this.progress,
+  });
+
+  final String itemId;
+  final WatchProgressState progress;
+
+  @override
+  Widget build(BuildContext context) {
+    final known = progress.known || progress.completed;
+    if (!known && (progress.position ?? Duration.zero) <= Duration.zero) {
+      return const SizedBox.shrink();
+    }
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: ColoredBox(
+        color: const Color(0xCC101216),
+        child: Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: ExcludeSemantics(
+            excluding: !known,
+            child: LinearProgressIndicator(
+              key: ValueKey('resume-progress-$itemId'),
+              value: progress.fraction,
+              minHeight: 4,
+              color:
+                  (Theme.of(context).extension<AccentTheme>()?.choice ??
+                          AppAccent.lilac)
+                      .dark,
+              backgroundColor: const Color(0xFF42454D),
+              trackGap: 0,
+              stopIndicatorRadius: 0,
+            ),
+          ),
+        ),
+      ),
+    );
   }
-  if (progress != null && object(item.data['UserData'])['Played'] == true) {
-    return '${episode.isEmpty ? '' : '$episode · '}${progress.label}';
-  }
-  return '${episode.isEmpty ? '' : '$episode · '}已看 ${(progress?.position ?? item.resume).inMinutes} 分钟';
 }
 
 class ContinueWatching extends StatelessWidget {
@@ -146,7 +202,7 @@ class ContinueWatching extends StatelessWidget {
               20,
             ),
             child: Text(
-              '暂无未看完的影视',
+              '暂无观看记录',
               style: TextStyle(fontSize: 13, color: secondaryColor(context)),
             ),
           ),
@@ -170,8 +226,9 @@ class ContinueWatching extends StatelessWidget {
                     item,
                     feed.account,
                     feed.store,
+                    showCompletionWithoutDuration: true,
                   );
-                  final seriesName = item.data['SeriesName']?.toString() ?? '';
+                  final title = item.resumeDisplayTitle;
                   return PosterEntrance(
                     key: ValueKey('resume-entrance-${item.id}'),
                     id: 'resume:${item.id}',
@@ -181,7 +238,7 @@ class ContinueWatching extends StatelessWidget {
                       width: posterWidth,
                       child: Semantics(
                         button: true,
-                        label: '${item.title} 详情',
+                        label: '$title 详情',
                         child: GestureDetector(
                           key: ValueKey('resume-${item.id}'),
                           behavior: HitTestBehavior.opaque,
@@ -232,44 +289,10 @@ class ContinueWatching extends StatelessWidget {
                                               onPoster: true,
                                             ),
                                           ),
-                                        if (progress.known ||
-                                            progress.completed ||
-                                            (progress.position ??
-                                                    Duration.zero) >
-                                                Duration.zero)
-                                          Positioned(
-                                            left: 0,
-                                            right: 0,
-                                            bottom: 0,
-                                            child: ColoredBox(
-                                              color: const Color(0xCC101216),
-                                              child: Padding(
-                                                padding: const EdgeInsets.only(
-                                                  top: 1,
-                                                ),
-                                                child: LinearProgressIndicator(
-                                                  key: ValueKey(
-                                                    'resume-progress-${item.id}',
-                                                  ),
-                                                  value: progress.fraction,
-                                                  minHeight: 4,
-                                                  color:
-                                                      (Theme.of(context)
-                                                                  .extension<
-                                                                    AccentTheme
-                                                                  >()
-                                                                  ?.choice ??
-                                                              AppAccent.lilac)
-                                                          .dark,
-                                                  backgroundColor: const Color(
-                                                    0xFF42454D,
-                                                  ),
-                                                  trackGap: 0,
-                                                  stopIndicatorRadius: 0,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
+                                        ResumeProgressBar(
+                                          itemId: item.id,
+                                          progress: progress,
+                                        ),
                                       ],
                                     ),
                                   ),
@@ -281,7 +304,7 @@ class ContinueWatching extends StatelessWidget {
                                 active: active,
                                 resume: true,
                                 child: Text(
-                                  seriesName.isEmpty ? item.title : seriesName,
+                                  title,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(

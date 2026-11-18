@@ -18,6 +18,7 @@ import 'package:yingyu/core/store.dart';
 import 'package:yingyu/ui/continue_watching.dart';
 import 'package:yingyu/ui/detail.dart';
 import 'package:yingyu/ui/style.dart';
+import 'package:yingyu/ui/watch_progress.dart';
 import 'package:yingyu/ui/surface.dart';
 import 'core_test.dart' show response, syntheticSession;
 import 'watch_resume131_test.dart' show ep;
@@ -46,6 +47,67 @@ void main() {
       }
     }
   });
+  testWidgets(
+    'fresh server completion overrides the season snapshot for the same episode',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      VisibilityDetectorController.instance.updateInterval = Duration.zero;
+      final previous = ep(1, seconds: 336);
+      final fresh = ep(1, seconds: 0, date: '2026-10-22T00:10:00Z');
+      final series = MediaItem({
+        'Id': 'series',
+        'Type': 'Series',
+        'Name': '合成剧集',
+      });
+      final api = EmbyClient(
+        client: MockClient((request) async {
+          expect(request.method, 'GET');
+          final path = request.url.path;
+          if (path.endsWith('/Seasons')) {
+            return response(
+              '{"Items":[{"Id":"season","Name":"第 1 季","IndexNumber":1}]}',
+              200,
+            );
+          }
+          if (path.endsWith('/Episodes')) {
+            return response(
+              jsonEncode({
+                'Items': [previous.data],
+              }),
+              200,
+            );
+          }
+          return response(jsonEncode(series.data), 200);
+        }),
+      )..session = syntheticSession();
+      addTearDown(api.close);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DetailPage(
+            item: series,
+            api: api,
+            resumeEpisode: previous,
+            watchedEpisode: (_) async => fresh,
+            play: (_, _, _) async {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final progress = tester.widgetList<WatchProgress>(
+        find.byType(WatchProgress),
+      );
+      expect(progress, isNotEmpty);
+      for (final row in progress) {
+        expect(
+          WatchProgressState.resolve(row.item, row.account, row.store).fraction,
+          1,
+        );
+      }
+    },
+  );
   for (final brightness in [Brightness.light, Brightness.dark]) {
     testWidgets(
       'real home caption and opened detail agree on episode and progress, $brightness',

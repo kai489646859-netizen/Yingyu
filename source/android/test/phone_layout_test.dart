@@ -224,7 +224,10 @@ void main() {
               if (path.endsWith('/Items/Resume')) {
                 return response(
                   jsonEncode({
-                    'Items': items.take(4).toList(),
+                    'Items': items
+                        .where((item) => item['Type'] == 'Movie')
+                        .take(4)
+                        .toList(),
                     'TotalRecordCount': 4,
                   }),
                   200,
@@ -256,6 +259,12 @@ void main() {
                   }),
                   200,
                 );
+              }
+              if (path.endsWith('/NextUp') ||
+                  path.endsWith('/Items') &&
+                      req.url.queryParameters['SortBy'] ==
+                          'DatePlayed,SortName') {
+                return response('{"Items":[]}', 200);
               }
               if (path.endsWith('/Items')) {
                 return response(
@@ -347,7 +356,7 @@ void main() {
             find.byKey(const ValueKey('resume-entrance-poster-0')),
           );
           final secondPoster = tester.getRect(
-            find.byKey(const ValueKey('resume-entrance-poster-1')),
+            find.byKey(const ValueKey('resume-entrance-poster-2')),
           );
           expect(firstPoster.left, 16);
           expect(secondPoster.left, lessThan(width));
@@ -391,7 +400,7 @@ void main() {
           await settle();
           await tester.tapAt(
             tester
-                    .getRect(find.byKey(const ValueKey('resume-poster-1')))
+                    .getRect(find.byKey(const ValueKey('latest-movies-poster-1')))
                     .topLeft +
                 const Offset(8, 8),
           );

@@ -114,8 +114,13 @@ class _VersionChooserState extends State<VersionChooser> {
               final original = widget.group.versions[i];
               final item = details[original.id];
               final error = failures[original.id];
+              final video = resourceVideo(item ?? original);
+              final format = [
+                ...resourceLabels(video),
+                resourceCodecLabel(video),
+              ].where((label) => label.isNotEmpty).join(' ');
               return SettingsRow(
-                '${i + 1}. ${resourceName(resourceVideo(item ?? original))}',
+                format.isEmpty ? '版本 ${i + 1}' : '${i + 1}. $format',
                 subtitle: [
                   if (item != null)
                     item.resume > Duration.zero

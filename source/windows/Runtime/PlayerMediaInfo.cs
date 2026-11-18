@@ -12,7 +12,11 @@ public static class PlayerMediaInfo
  {
   SubtitlePlacement.Bind(session);
  }
- public static string Snapshot(object session)=>string.Join("\n\n",PlayerInfoData.Read(session).Select(s=>s.Title+"\n"+string.Join("\n",s.Rows.Select(r=>r.Label+"："+r.Value))));
+ public static string Snapshot(object session)=>Format(PlayerInfoData.Read(session));
+ internal static string TechnicalSnapshot(object session)=>Format(PlayerInfoData.Read(session)
+    .Where(s=>s.Title is "视频" or "播放状态"));
+ static string Format(IEnumerable<PlayerInfoData.Section> sections)
+    =>string.Join("\n\n",sections.Select(s=>s.Title+"\n"+string.Join("\n",s.Rows.Select(r=>r.Label+"："+r.Value))));
  public static void Toggle(object session)
  {
     if(NativeDolby.IsClosing(session))return;

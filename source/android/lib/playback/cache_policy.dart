@@ -1,40 +1,25 @@
-import 'dart:math' as math;
+// Keep initial/seek packet buffering small. Once settled, the packet byte
+// budget is the effective MPV limit. Disk read-ahead has its own byte limit.
+const fastPacketCacheSeconds = 10;
+const steadyPacketCacheSeconds = 3600000;
+const defaultPlaybackCacheGB = 5;
+const playbackReadAheadBytes = 5 * playbackGiB;
+const playbackCacheBlockBytes = 256 * 1024;
+const playbackCacheHeaderBytes = 32;
 
-int playbackAheadSeconds(double speed) => speed > 2
-    ? 1200
-    : speed > 1
-    ? 600
-    : 60;
-
-/// Ordinary files keep one minute of wall-clock supply, following current rate.
-int streamAheadSeconds(double speed) => (60 * speed).ceil().clamp(60, 180);
+int playbackDiskQuota(int gigabytes) {
+  if (gigabytes < 0) return -1;
+  final bytes = gigabytes * playbackGiB;
+  // A full forward window stores 5 GiB of video plus per-block digests.
+  if (gigabytes != defaultPlaybackCacheGB) return bytes;
+  return bytes + bytes ~/ playbackCacheBlockBytes * playbackCacheHeaderBytes;
+}
 
 /// CPU decoded pictures have a separate bound from compressed packet caching.
 /// Keep the existing memory tiers; large pictures may allow only one frame.
 int playbackCopyQueueBytes(int packetBytes) => packetBytes >= 128 * 1024 * 1024
     ? 160 * 1024 * 1024
     : packetBytes.clamp(16 * 1024 * 1024, 64 * 1024 * 1024);
-
-/// Seconds on the film's timeline, independent of the resume/start gate.
-/// The largest requested window lives until this media closes, including holds.
-class PlaybackReadAhead {
-  int seconds = 60;
-  void speed(double value, {bool retainPeak = true}) {
-    seconds = retainPeak
-        ? math.max(seconds, playbackAheadSeconds(value))
-        : streamAheadSeconds(value);
-  }
-
-  int bytes({required int total, required Duration duration}) {
-    if (duration <= Duration.zero) return 0;
-    // A byte window is an estimate for variable-bitrate files. MPV still owns
-    // timestamp-aware demuxing; never describe this estimate as verified time.
-    return math.min(
-      total,
-      (total * seconds * 1000 / duration.inMilliseconds * 1.15).ceil(),
-    );
-  }
-}
 
 const playbackCacheChoices = <int, String>{
   0: '不缓存',

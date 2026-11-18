@@ -81,7 +81,8 @@ class AppStore extends ChangeNotifier {
   }
 
   int get playbackCacheGB {
-    final value = prefs.getInt('yingyu.playback.cacheGB.v1') ?? 0;
+    final value =
+        prefs.getInt('yingyu.playback.cacheGB.v1') ?? defaultPlaybackCacheGB;
     return playbackCacheChoices.containsKey(value) ? value : 0;
   }
 
@@ -91,7 +92,7 @@ class AppStore extends ChangeNotifier {
       throw const AppFailure('播放缓存设置保存失败');
     }
     notifyListeners();
-    await videoCache.configure(value < 0 ? -1 : value * playbackGiB);
+    await videoCache.configure(playbackDiskQuota(value));
   }
 
   bool get allowMobilePlayback =>
@@ -238,7 +239,9 @@ class AppStore extends ChangeNotifier {
     _ => ThemeMode.system,
   };
   Future<void> setTheme(ThemeMode mode) async {
-    await prefs.setString('yingyu.theme.v1', mode.name);
+    if (!await prefs.setString('yingyu.theme.v1', mode.name)) {
+      throw const AppFailure('主题设置保存失败');
+    }
     notifyListeners();
   }
 

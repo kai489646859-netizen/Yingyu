@@ -24,6 +24,10 @@ class PlaybackLevelFeedback extends StatelessWidget {
       width: 274,
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xA6000000),
+        borderRadius: BorderRadius.circular(18),
+      ),
       child: TweenAnimationBuilder<double>(
         tween: Tween(end: level.clamp(0, 1)),
         duration: const Duration(milliseconds: 140),
@@ -71,7 +75,7 @@ class PlaybackLevelFeedback extends StatelessWidget {
                     child: Stack(
                       children: [
                         const Positioned.fill(
-                          child: ColoredBox(color: Colors.white12),
+                          child: ColoredBox(color: Colors.white24),
                         ),
                         FractionallySizedBox(
                           widthFactor: value,

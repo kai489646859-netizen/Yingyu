@@ -138,6 +138,191 @@ Future<void> checkBytes(DiscSpeedReader reader, int start, int length) async {
 }
 
 void main() {
+  test(
+    'opening range is already ahead when the first response slows',
+    () async {
+      const start = 9728 * mib;
+      const chunk = 64 * 1024;
+      final source = SourceFixture(total: 82 * 1024 * mib);
+      final primed = Completer<void>();
+      final ranged = Completer<void>();
+      final drain = Completer<void>();
+      final messages = <String>[];
+      final withheld = Completer<void>();
+      int? reachedPartAt;
+      final reader = DiscSpeedReader(
+        source.single,
+        (path, at, end, identity, cancellation) async {
+          if (ranged.isCompleted) {
+            return source.part(path, at, end, identity, cancellation);
+          }
+          ranged.complete();
+          // The real continuous reader delivers a burst while headers arrive.
+          reachedPartAt = at;
+          await primed.future;
+          final response = await source.part(
+            path,
+            at,
+            end,
+            identity,
+            cancellation,
+          );
+          Stream<List<int>> body() async* {
+            var received = 0;
+            await for (final bytes in response.bytes) {
+              yield bytes;
+              received += bytes.length;
+              if (received >= 4 * mib) {
+                if (!drain.isCompleted) drain.complete();
+                break;
+              }
+            }
+            // The assertion is made while this response remains open and its
+            // first 4 MiB are the only verified bytes it can supply.
+            await withheld.future;
+          }
+
+          return DiscStreamSource(
+            start: response.start,
+            total: response.total,
+            bytes: body(),
+            identity: response.identity,
+            canResume: response.canResume,
+            close: response.close,
+          );
+        },
+        partBytes: 8 * mib,
+        onDiagnostic: messages.add,
+      );
+      try {
+        reader.setSpeed(1, opening: true);
+        for (var at = start; at < start + mib; at += chunk) {
+          await checkBytes(reader, at, chunk);
+        }
+        reader.setSpeed(2, recovery: true, opening: true);
+        for (var at = start + mib; at < start + 10 * mib; at += chunk) {
+          await checkBytes(reader, at, chunk);
+        }
+        expect(ranged.isCompleted, isTrue);
+        expect(reachedPartAt, start + 9 * mib);
+        primed.complete();
+        await drain.future.timeout(const Duration(seconds: 2));
+        await checkBytes(reader, start + 10 * mib, chunk);
+        expect(messages.any((line) => line.contains('顺序范围已接续')), isTrue);
+        expect(source.peak, lessThanOrEqualTo(2));
+        expect(reader.retainedBytes, lessThanOrEqualTo(16 * mib));
+      } finally {
+        if (!primed.isCompleted) primed.complete();
+        withheld.complete();
+        await reader.close();
+      }
+      expect(source.active, 0);
+    },
+  );
+
+  for (final outcome in ['ready', 'long burst', 'too late', 'failed']) {
+    test('opening ranged handoff with delayed headers: $outcome', () async {
+      const start = 9728 * mib;
+      const chunk = 64 * 1024;
+      final source = SourceFixture(total: 82 * 1024 * mib);
+      final ready = Completer<void>();
+      final opened = Completer<void>();
+      final received = Completer<void>();
+      final diagnostics = <String>[];
+      final reader = DiscSpeedReader(
+        source.single,
+        (path, start, end, identity, cancellation) async {
+          if (opened.isCompleted) {
+            return source.part(path, start, end, identity, cancellation);
+          }
+          opened.complete();
+          final resume = Completer<void>();
+          cancellation.abort = () => resume.complete();
+          try {
+            await Future.any([ready.future, resume.future]);
+          } finally {
+            cancellation.abort = null;
+          }
+          cancellation.check();
+          if (outcome == 'failed') {
+            throw const AppFailure('late range rejected');
+          }
+          final response = await source.part(
+            path,
+            start,
+            end,
+            identity,
+            cancellation,
+          );
+          Stream<List<int>> body() async* {
+            await for (final bytes in response.bytes) {
+              yield bytes;
+              if (!received.isCompleted) received.complete();
+            }
+          }
+
+          return DiscStreamSource(
+            start: response.start,
+            total: response.total,
+            bytes: body(),
+            identity: response.identity,
+            canResume: response.canResume,
+            close: response.close,
+          );
+        },
+        partBytes: 8 * mib,
+        onDiagnostic: diagnostics.add,
+      );
+      try {
+        await checkBytes(reader, start, chunk);
+        reader.setSpeed(2, recovery: true, opening: true);
+        final pivot = start + chunk + mib;
+        for (var at = start + chunk; at <= pivot; at += chunk) {
+          await checkBytes(reader, at, chunk);
+        }
+        expect(opened.isCompleted, isTrue);
+        expect(
+          diagnostics.any((line) => line.contains('未及时供数')),
+          isFalse,
+          reason:
+              'the first overlap elapsed before the response headers arrived',
+        );
+
+        final burst = outcome == 'long burst' ? 5 * mib : 0;
+        for (var at = pivot + chunk; at <= pivot + burst; at += chunk) {
+          await checkBytes(reader, at, chunk);
+        }
+        expect(diagnostics.any((line) => line.contains('未及时供数')), isFalse);
+        if (outcome != 'too late') {
+          ready.complete();
+          if (outcome == 'ready' || outcome == 'long burst') {
+            await received.future.timeout(const Duration(seconds: 2));
+          } else {
+            await Future<void>.delayed(Duration.zero);
+          }
+        }
+        final remaining = outcome == 'too late' ? 17 * mib : 5 * mib;
+        for (
+          var at = pivot + burst + chunk;
+          at < pivot + burst + remaining;
+          at += chunk
+        ) {
+          await checkBytes(reader, at, chunk);
+          expect(source.peak, lessThanOrEqualTo(2));
+          expect(reader.retainedBytes, lessThanOrEqualTo(16 * mib));
+        }
+        expect(
+          diagnostics.any((line) => line.contains('顺序范围已接续')),
+          outcome == 'ready' || outcome == 'long burst',
+        );
+        expect(source.opened.where((r) => !r.part), hasLength(1));
+      } finally {
+        await reader.close();
+      }
+      expect(source.active, 0);
+    });
+  }
+
   for (final secondFailure in [false, true]) {
     test(
       'bounded body interruption shares one recovery budget, secondFailure=$secondFailure',

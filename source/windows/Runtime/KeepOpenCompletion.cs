@@ -103,6 +103,15 @@ public static class KeepOpenCompletion
                     || PlaybackTransport.Get(client, "eof-reached") != "yes"
                     || PlaybackTransport.Get(client, "idle-active") != "no"
                     || PlaybackTransport.Get(client, "seeking") != "no") return;
+                string positionText = PlaybackTransport.Get(client, "time-pos");
+                string durationText = PlaybackTransport.Get(client, "duration");
+                if (!PlaybackEndPolicy.ConfirmsNaturalEnd(positionText, durationText,
+                    out double position, out double duration))
+                {
+                    PlaybackTransport.Write("Warning", "Playback.End",
+                        $"内核提前 EOF，当前位置未到媒体末尾；position={position:0.###}; duration={duration:0.###}。保留当前媒体，不自动换集。");
+                    return;
+                }
                 if (!Current() || !Ready(session, client, generation)) return;
                 PlaybackTransport.Write("Info", "Playback.End", "内核保留末帧并确认 EOF，进入原有播放完成流程。");
                 _ = Access.Call(session, "RunSafelyAsync", (Func<Task>)(() => (Task)Access.Call(session, "HandleFileEndAsync")!));

@@ -22,56 +22,109 @@ class PictureBrightnessMenu extends StatefulWidget {
 }
 
 class _PictureBrightnessMenuState extends State<PictureBrightnessMenu> {
-  double? value;
-  bool busy = true;
+  (double, double)? confirmed;
+  (double, double)? desired;
+  bool applying = false;
   String? error;
-  bool shadowBusy = false;
-  Future<void> changeShadow(double next) async {
-    if (busy || shadowBusy) return;
-    setState(() {
-      shadowBusy = true;
-      error = null;
-    });
-    try {
-      await widget.session.setShadowEnhancement(next);
-    } catch (failure) {
-      if (mounted) setState(() => error = safeError(failure));
-    } finally {
-      if (mounted) setState(() => shadowBusy = false);
-    }
-  }
 
   @override
   void initState() {
     super.initState();
-    load();
+    unawaited(load());
   }
 
   Future<void> load() async {
     try {
-      final actual = await widget.session.readPictureBrightness();
-      if (mounted) setState(() => value = actual);
+      final brightness = await widget.session.readPictureBrightness();
+      if (mounted) {
+        setState(
+          () => desired = confirmed = (
+            brightness,
+            widget.session.shadowEnhancement,
+          ),
+        );
+      }
     } catch (failure) {
       if (mounted) setState(() => error = safeError(failure));
-    } finally {
-      if (mounted) setState(() => busy = false);
     }
   }
 
-  Future<void> change(double next) async {
-    if (busy) return;
+  void change(double brightness, double shadows) {
+    final next = (
+      (brightness * 10).round() / 10,
+      (shadows * 100).round() / 100,
+    );
+    if (next == desired) return;
     setState(() {
-      busy = true;
+      desired = next;
       error = null;
     });
+    if (!applying) unawaited(applyLatest());
+  }
+
+  Future<void> applyLatest() async {
+    applying = true;
     try {
-      final actual = await widget.session.setPictureBrightness(next);
-      if (mounted) setState(() => value = actual);
-    } catch (failure) {
-      if (mounted) setState(() => error = safeError(failure));
+      while (mounted &&
+          desired != confirmed &&
+          widget.session.ready &&
+          !widget.session.closed) {
+        final next = desired!;
+        try {
+          final actual = await widget.session.setPictureEnhancements(
+            next.$1,
+            next.$2,
+          );
+          if (!mounted) return;
+          setState(() {
+            confirmed = actual;
+            if (desired == next) desired = actual;
+          });
+        } catch (failure) {
+          if (!mounted) return;
+          setState(() {
+            if (desired == next) desired = confirmed;
+            error = safeError(failure);
+          });
+        }
+        if (desired != confirmed) {
+          await Future<void>.delayed(const Duration(milliseconds: 40));
+        }
+      }
     } finally {
-      if (mounted) setState(() => busy = false);
+      applying = false;
     }
+  }
+
+  Widget adjustment(
+    String label,
+    Key key,
+    double position,
+    double maximum,
+    String text,
+    ValueChanged<double>? change,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text(label)),
+            Text(text),
+          ],
+        ),
+        Slider(
+          key: key,
+          value: position.clamp(0, maximum).toDouble(),
+          max: maximum,
+          onChanged: change,
+          semanticFormatterCallback: (value) =>
+              key == const Key('picture-brightness')
+              ? value.toStringAsFixed(1)
+              : '${(value / maximum * 100).round()}%',
+        ),
+      ],
+    );
   }
 
   @override
@@ -84,70 +137,52 @@ class _PictureBrightnessMenuState extends State<PictureBrightnessMenu> {
       compactPlayerMenu: true,
       playerMenuWidth: 360,
       onBack: widget.onBack,
-      child: ListView(
-        shrinkWrap: true,
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text('整体亮度增强', style: TextStyle(color: secondaryColor(context))),
-          const SizedBox(height: 8),
-          for (final entry in {
-            0.0: '原始画面',
-            5.0: '轻度提亮',
-            10.0: '中度提亮',
-            15.0: '较强提亮',
-          }.entries)
-            IgnorePointer(
-              ignoring:
-                  busy ||
-                  shadowBusy ||
-                  !widget.session.ready ||
-                  widget.session.closed,
-              child: SelectionRow(
-                entry.value,
-                selected: value != null && (value! - entry.key).abs() < .001,
-                onTap: () => change(entry.key),
+      child: Builder(
+        builder: (context) {
+          final (brightness, shadows) = desired ?? (0.0, 0.0);
+          final enabled =
+              desired != null && widget.session.ready && !widget.session.closed;
+          return ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.all(16),
+            children: [
+              adjustment(
+                '整体亮度增强',
+                const Key('picture-brightness'),
+                brightness,
+                15,
+                brightness.toStringAsFixed(1),
+                enabled ? (value) => change(value, shadows) : null,
               ),
-            ),
-          const SizedBox(height: 8),
-          if (widget.session.hasShadowEnhancement) ...[
-            Text('暗部增强', style: TextStyle(color: secondaryColor(context))),
-            const SizedBox(height: 8),
-            for (final entry in {
-              0.0: '关闭',
-              0.25: '轻度',
-              0.5: '中度',
-              0.75: '较强',
-            }.entries)
-              IgnorePointer(
-                ignoring:
-                    busy ||
-                    shadowBusy ||
-                    !widget.session.ready ||
-                    widget.session.closed,
-                child: SelectionRow(
-                  entry.value,
-                  selected: widget.session.shadowEnhancement == entry.key,
-                  onTap: () => changeShadow(entry.key),
+              if (widget.session.hasShadowEnhancement)
+                adjustment(
+                  '暗部增强',
+                  const Key('picture-shadows'),
+                  shadows,
+                  .75,
+                  '${(shadows / .75 * 100).round()}%',
+                  enabled ? (value) => change(brightness, value) : null,
                 ),
+              TextButton(
+                onPressed: enabled && (brightness != 0 || shadows != 0)
+                    ? () => change(0, 0)
+                    : null,
+                child: const Text('恢复原画'),
               ),
-            const SizedBox(height: 8),
-          ],
-          Text(
-            '适用于普通影片、HDR、杜比与原盘，暂停时也可预览。暗部增强可单独使用，整体亮度增强调整整幅画面；默认关闭，切换影片后恢复原始画面。',
-            style: TextStyle(color: secondaryColor(context)),
-          ),
-          SizedBox(
-            height: 20,
-            child: busy
-                ? const Center(child: CupertinoActivityIndicator())
-                : null,
-          ),
-          if (error != null)
-            Text(
-              error!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-        ],
+              Text(
+                '拖动时实时预览，暂停也可调节。仅作用于当前影片。',
+                style: TextStyle(color: secondaryColor(context)),
+              ),
+              if (desired == null && error == null)
+                const Center(child: CupertinoActivityIndicator()),
+              if (error != null)
+                Text(
+                  error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+            ],
+          );
+        },
       ),
     ),
   );

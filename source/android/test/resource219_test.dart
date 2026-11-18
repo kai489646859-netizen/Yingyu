@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/testing.dart';
 import 'package:visibility_detector/visibility_detector.dart';
+import 'package:yingyu/core/browse_cache.dart';
 import 'package:yingyu/core/emby.dart';
 import 'package:yingyu/core/models.dart';
 import 'package:yingyu/core/video_labels.dart';
@@ -19,7 +20,7 @@ import 'offline_settle.dart';
 
 Json source(String id, bool dolby) => {
   'Id': id,
-  'Name': 'PRIVATE_ORIGINAL_FILENAME_2160p.mkv',
+  'Name': 'PRIVATE_ORIGINAL_FILENAME_${dolby ? 2160 : 1080}p.mkv',
   'MediaStreams': [
     {
       'Type': 'Video',
@@ -57,12 +58,12 @@ void main() {
             }),
           ),
         ),
-        '1080p HDR10',
+        '1080P HDR10',
       );
       expect(resourceName({}), '格式未知');
       expect(
         resourceName({'Width': 1920, 'Height': 1080, 'VideoRange': 'SDR'}),
-        '1080p',
+        '1080P',
       );
     },
   );
@@ -85,6 +86,114 @@ void main() {
       expect(selected, 'b');
       expect(find.textContaining('PRIVATE_ORIGINAL_FILENAME'), findsNothing);
       await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets('STRM can show the Emby version name as an unverified format', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaVersions(
+          sources: [
+            source('original', false),
+            {
+              'Id': 'strm',
+              'Name': 'PRIVATE_TITLE (2026) - 4K.HDR.265',
+              'Container': 'strm',
+              'MediaStreams': [],
+            },
+          ],
+          selected: 'strm',
+          onSelected: (_) {},
+        ),
+      ),
+    );
+    final card = find.byKey(const ValueKey('media-version-strm'));
+    expect(
+      find.descendant(of: card, matching: find.text('4K HDR')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: card, matching: find.text('HEVC · STRM')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('PRIVATE_TITLE'), findsNothing);
+    expect(find.textContaining('名称标注'), findsNothing);
+    expect(find.textContaining('3840×2160'), findsNothing);
+  });
+  test('cached filename hints are sanitized, scoped and preferred', () {
+    final data = displayMetadata({
+      'MediaSources': [
+        {
+          'Id': 'a',
+          'Path':
+              'https://hidden.invalid/parent-8K/movie.4K.HDR.265.strm?api_key=PRIVATE',
+          'MediaStreams': [
+            {
+              'Type': 'Video',
+              'Width': 1920,
+              'Height': 810,
+              'VideoRange': 'SDR',
+            },
+          ],
+        },
+        {'Id': 'b', 'Name': 'Movie (2026)'},
+      ],
+      'MediaStreams': [
+        {'Type': 'Video', 'Width': 7680, 'Height': 4320},
+      ],
+    });
+    final item = MediaItem(data);
+    final first = resourceVideo(item, sourceId: 'a');
+    expect(resourceLabels(first), ['4K', 'HDR']);
+    expect(videoPixelLabel(first), '1920×810');
+    expect(resourceCodecLabel(first), 'HEVC');
+    expect(usesVersionNameHint(first, includeCodec: true), isTrue);
+    expect(resourceName(resourceVideo(item, sourceId: 'b')), '格式未知');
+    expect(jsonEncode(data), isNot(contains('hidden.invalid')));
+    expect(jsonEncode(data), isNot(contains('PRIVATE')));
+  });
+  testWidgets(
+    'manual lookup keeps the name label and records the selected source facts',
+    (tester) async {
+      Json? confirmed;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaVersions(
+            sources: [
+              {'Id': 'strm', 'Name': 'Movie - 4K.HDR.265', 'Container': 'strm'},
+            ],
+            selected: 'strm',
+            onSelected: (_) {},
+            onInspect: (id) async {
+              expect(id, 'strm');
+              return {
+                'Id': id,
+                'MediaStreams': [
+                  {
+                    'Type': 'Video',
+                    'Width': 1920,
+                    'Height': 810,
+                    'VideoRange': 'SDR',
+                    'Codec': 'h264',
+                  },
+                ],
+              };
+            },
+            onInspected: (id, video) {
+              expect(id, 'strm');
+              confirmed = video;
+            },
+          ),
+        ),
+      );
+      await tester.tap(find.text('检测当前版本格式'));
+      await tester.pumpAndSettle();
+      expect(find.text('HEVC · STRM'), findsOneWidget);
+      expect(find.textContaining('名称标注'), findsNothing);
+      expect(find.textContaining('1920×810'), findsNothing);
+      expect(resourceName(confirmed!), '4K HDR');
+      expect(videoPixelLabel(confirmed!), '1920×810');
     },
   );
   for (final size in [
@@ -227,7 +336,7 @@ void main() {
             tester
                 .widget<Text>(find.byKey(const Key('selected-version-summary')))
                 .data,
-            '当前选择：1080p HDR10',
+            '当前选择：1080P HDR10',
           );
           await tester.ensureVisible(tags);
           await tester.pumpAndSettle();

@@ -1,5 +1,6 @@
-import 'package:yingyu/playback/cache_policy.dart';
 import 'package:yingyu/playback/disc_buffering.dart';
+
+int streamAheadSeconds(double speed) => (60 * speed).ceil().clamp(60, 180);
 
 class StreamBufferSnapshot {
   const StreamBufferSnapshot._(

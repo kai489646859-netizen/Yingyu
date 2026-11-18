@@ -12,6 +12,7 @@ void main() {
     'target-trc': 'auto',
     'tone-mapping': 'auto',
     'tone-mapping-param': 'default',
+    'hdr-contrast-recovery': '0.30',
     'dither': 'ordered',
     'dither-depth': 'auto',
     'hdr-compute-peak': 'no',

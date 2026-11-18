@@ -12,10 +12,19 @@ namespace Yingyu.Update;
 
 public static class PlayerHover
 {
-    static readonly System.Reflection.PropertyInfo? CursorProperty=typeof(UIElement).GetProperty("ProtectedCursor",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Public);
     static readonly ConditionalWeakTable<object, State> States = new();
     public static void Configure(object overlay) => States.GetValue(overlay, x => new State(x));
     public static bool KeepVisible(object overlay) => States.TryGetValue(overlay, out var state) && state.InBottomBand;
+
+    internal static HashSet<object> ActiveFlyouts(object overlay)
+    {
+        var flyouts = Access.Get<HashSet<object>>(overlay, "_openControlFlyouts");
+        flyouts.RemoveWhere(static item => item is FlyoutBase { IsOpen: false });
+        return flyouts;
+    }
+
+    public static bool PrepareIdleCheck(object overlay)
+        => States.TryGetValue(overlay, out var state) && state.PrepareIdleCheck();
 
     sealed class State
     {
@@ -26,7 +35,6 @@ public static class PlayerHover
         readonly Flyout _flyout;
         readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _close;
         UIElement? _pointerRoot;
-        UIElement? _cursorRoot;
         bool _buttonHover, _popupHover;
         FrameworkElement? _popupPanel;
         public bool InBottomBand { get; private set; }
@@ -34,7 +42,6 @@ public static class PlayerHover
         {
             _overlay = overlay;
             Access.Get<Microsoft.UI.Dispatching.DispatcherQueueTimer>(overlay,"_autoHideTimer").Interval=TimeSpan.FromSeconds(3.5);
-            overlay.GetType().GetEvent("ControlsVisibilityChanged")!.AddEventHandler(overlay,new EventHandler<bool>((_,visible)=>Cursor(visible)));
             _root = Access.Get<Grid>(overlay, "RootGrid");
             _position = Access.Get<Slider>(overlay, "PositionSlider");
             _volume = Access.Get<Button>(overlay, "VolumeButton");
@@ -74,9 +81,13 @@ public static class PlayerHover
                     }
                 }
             };
+            _flyout.Closing += (_, e) =>
+            {
+                if (PlayerSliderInput.VolumeDragging(_overlay)) e.Cancel = true;
+            };
             _flyout.Closed += (_, _) => { _popupPanel=null; _popupHover = false; _close.Stop(); };
             ((FrameworkElement)overlay).Unloaded += (_, _) =>
-            { Cursor(true);DetachPointerRoot(); InBottomBand = false; _buttonHover = false; _popupPanel=null; _popupHover = false; _close.Stop(); _flyout.Hide(); };
+            { PlayerSliderInput.CancelVolumeDrag(_overlay); DetachPointerRoot(); InBottomBand = false; _buttonHover = false; _popupPanel=null; _popupHover = false; _close.Stop(); _flyout.Hide(); };
             if (((FrameworkElement)overlay).IsLoaded) AttachPointerRoot();
         }
         void AttachPointerRoot()
@@ -86,33 +97,10 @@ public static class PlayerHover
             // player visual root so leaving the controls for video is not lost.
             DependencyObject root = (FrameworkElement)_overlay;
             while (VisualTreeHelper.GetParent(root) is DependencyObject parent)
-            {
-                root=parent;
-                if(root is UIElement element&&root.GetType().GetMethod("HideCursor",Type.EmptyTypes)!=null
-                    &&root.GetType().GetMethod("ShowCursor",Type.EmptyTypes)!=null)_cursorRoot=element;
-            }
+                root = parent;
             _pointerRoot = root as UIElement ?? _root;
             _pointerRoot.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(Move), true);
             _pointerRoot.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler(ExitRoot), true);
-            Cursor(Access.Get<bool>(_overlay,"_controlsVisible"));
-        }
-        void Cursor(bool visible)
-        {
-            // The existing five-second control timer is the sole idle clock.
-            // Both windowed CursorGrid and the existing fullscreen shield
-            // follow this event; movement restores through the original path.
-            if(_cursorRoot is not {} root)return;
-            if(!visible&&CursorProperty?.GetSetMethod(true)!=null)
-            {
-                // Disposing an InputCursor alone leaves a disposed cursor in
-                // ProtectedCursor. Clear the local cursor first so windowed
-                // video actually hides it; the original show path restores it.
-                var previous=CursorProperty.GetValue(root) as IDisposable;
-                CursorProperty.SetValue(root,null);
-                try{previous?.Dispose();}catch(ObjectDisposedException){}
-                return;
-            }
-            if(root.GetType().GetMethod(visible?"ShowCursor":"HideCursor",Type.EmptyTypes) is {} method)method.Invoke(root,null);
         }
         void DetachPointerRoot()
         {
@@ -120,7 +108,6 @@ public static class PlayerHover
             _pointerRoot.RemoveHandler(UIElement.PointerMovedEvent, new PointerEventHandler(Move));
             _pointerRoot.RemoveHandler(UIElement.PointerExitedEvent, new PointerEventHandler(ExitRoot));
             _pointerRoot = null;
-            _cursorRoot = null;
         }
         void PopupEnter(object sender, PointerRoutedEventArgs e) { _popupHover = true; _close.Start(); }
         void PopupExit(object sender, PointerRoutedEventArgs e) { _popupHover = false; CloseSoon(); }
@@ -129,17 +116,40 @@ public static class PlayerHover
         {
             if (!((FrameworkElement)_overlay).IsLoaded || e.Pointer.PointerDeviceType == PointerDeviceType.Touch) return;
             Point p = e.GetCurrentPoint(_root).Position;
-            double top = _position.TransformToVisual(_root).TransformPoint(new Point(0, 0)).Y;
-            bool within = _position.ActualHeight > 0 && top > 0 && p.X >= 0 && p.X <= _root.ActualWidth
-                && p.Y >= top && p.Y <= _root.ActualHeight;
+            bool within = IsInBottomBand(p);
             bool changed = within != InBottomBand;
             InBottomBand = within;
             if (RefreshHover(e) || changed)
                 Access.Call(_overlay, "ShowControlsTemporarily");
-            // Use the original coordinate check and five-second timer. If the
+            // Use the original coordinate check and hide timer. If the
             // overlay already received this event, the unchanged point is a no-op.
             Access.Call(_overlay, "RootGrid_PointerMoved", sender, e);
         }
+        public bool PrepareIdleCheck()
+        {
+            if (!_root.IsLoaded || Access.Get<bool>(_overlay, "_updateDisconnected")
+                || !Access.Get<bool>(_overlay, "_controlsVisible") || !PlayerFeedback.CanIdleHide(_overlay)) return false;
+
+            // Layout changes, pointer capture and native popups can suppress exit events.
+            if (InBottomBand)
+                InBottomBand = PlayerMenuPointer.PositionIn(_root) is { } point
+                    && IsInBottomBand(point);
+            Access.Get<HashSet<FrameworkElement>>(_overlay, "_hoveredControlRegions")
+                .RemoveWhere(static region => !IsVisible(region) || !PlayerMenuPointer.Contains(region));
+            if (!Access.Get<bool>(_overlay, "_isSeeking") && Access.Get<bool>(_overlay, "_seekHovering")
+                && (!IsVisible(_position) || !PlayerMenuPointer.Contains(_position)))
+                Access.Call(_overlay, "HideSeekPreview");
+            ActiveFlyouts(_overlay);
+            return true;
+        }
+
+        bool IsInBottomBand(Point point)
+        {
+            double top = _position.TransformToVisual(_root).TransformPoint(new Point()).Y;
+            return _position.ActualHeight > 0 && top > 0 && point.X >= 0 && point.X <= _root.ActualWidth
+                && point.Y >= top && point.Y <= _root.ActualHeight;
+        }
+
         bool RefreshHover(PointerRoutedEventArgs e)
         {
             // A collapsed feedback panel or a transition to the sibling video
@@ -158,11 +168,17 @@ public static class PlayerHover
         static bool Contains(FrameworkElement element, PointerRoutedEventArgs e)
         {
             if (!element.IsLoaded || element.ActualWidth <= 0 || element.ActualHeight <= 0) return false;
-            for (DependencyObject? node = element; node != null; node = VisualTreeHelper.GetParent(node))
-                if (node is UIElement ui && ui.Visibility != Visibility.Visible) return false;
+            if (!IsVisible(element)) return false;
             Point p = e.GetCurrentPoint(element).Position;
             return p.X >= 0 && p.Y >= 0 && p.X <= element.ActualWidth && p.Y <= element.ActualHeight;
         }
+        static bool IsVisible(FrameworkElement element)
+        {
+            for (DependencyObject? node = element; node != null; node = VisualTreeHelper.GetParent(node))
+                if (node is UIElement { Visibility: not Visibility.Visible }) return false;
+            return true;
+        }
+
         void ExitRoot(object sender, PointerRoutedEventArgs e)
         {
             if (!((FrameworkElement)_overlay).IsLoaded || e.Pointer.PointerDeviceType == PointerDeviceType.Touch) return;

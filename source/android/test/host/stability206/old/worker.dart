@@ -189,7 +189,7 @@ class DiscWorkerTransport extends DiscTransport {
   }
 
   @override
-  void setBuffering(bool value) {
+  void setBuffering(bool value, {bool recoverLargeInput = false}) {
     if (!_closing) _commands?.send(['buffering', value]);
   }
 

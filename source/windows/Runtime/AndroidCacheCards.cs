@@ -425,7 +425,8 @@ public static class AndroidCacheCards
         if(target.Length==0)return candidates;
         foreach(var known in snapshot.Entries.Select(e=>e.Item).Where(i=>i.Id.Equals(target,StringComparison.OrdinalIgnoreCase)&&i.Type.Equals(type,StringComparison.OrdinalIgnoreCase)).Take(1))
             foreach(var candidate in MediaArtworkPolicy.GetLandscapeCandidates(known).Where(c=>c.ItemId.Equals(target,StringComparison.OrdinalIgnoreCase)&&c.ImageType is "Thumb" or "Backdrop"&&!string.IsNullOrWhiteSpace(c.ImageTag)).OrderBy(c=>c.ImageType=="Thumb"?0:1))
-                if(!candidates.Any(c=>c.ItemId.Equals(candidate.ItemId,StringComparison.OrdinalIgnoreCase)&&c.ImageType==candidate.ImageType))candidates.Add(candidate);
+                if(!candidates.Any(c=>c.ItemId.Equals(candidate.ItemId,StringComparison.OrdinalIgnoreCase)
+                    &&c.ImageType==candidate.ImageType&&c.ImageTag==candidate.ImageTag))candidates.Add(candidate);
         return candidates.Where(c => c.ImageType is "Thumb" or "Backdrop").ToArray();
     }
     internal static async Task<BitmapImage?> CachedDetailPoster(object page,EmbyItem item,CancellationToken token)
@@ -441,16 +442,37 @@ public static class AndroidCacheCards
         }
         return null;
     }
-    internal static async Task<BitmapImage?> CachedHomeLandscape(object page,EmbyItem item,CancellationToken token)
-    {
-        foreach(var candidate in Landscape(item,page)){
-            var image=await BitmapCore(page,item,candidate.ImageType,1280,token,candidate.ItemId,candidate.ImageTag,PosterFetchPriority.Visible,PosterCacheRetention.Detail,null,null,false,true);
-            if(image is {PixelWidth:>0,PixelHeight:>0}&&ResumeArtwork.IsLandscape(image.PixelWidth,image.PixelHeight))return image;
-        }
-        return null;
-    }
     internal static IReadOnlyList<MediaArtworkCandidate> DetailBackgroundCandidates(object page,EmbyItem item)
         =>Landscape(item,page).Where(c=>!string.IsNullOrWhiteSpace(c.ItemId)&&!string.IsNullOrWhiteSpace(c.ImageTag)).OrderBy(c=>c.ImageType=="Backdrop"?0:1).ToArray();
+    internal static async Task<BitmapImage?> HomeBitmap(object page, EmbyItem item,
+        HashSet<MediaArtworkCandidate> attempted, Func<bool> needed, CancellationToken token)
+    {
+        async Task<BitmapImage?> TryArtwork(MediaArtworkCandidate candidate, int width, PosterCacheRetention retention, bool cacheOnly)
+        {
+            if (!needed()) return null;
+            try
+            {
+                var image = await BitmapCore(page, item, candidate.ImageType, width, token, candidate.ItemId, candidate.ImageTag,
+                    PosterFetchPriority.Interactive, retention, needed, null, false, cacheOnly);
+                if (image is not { PixelWidth: > 0, PixelHeight: > 0 }) return null;
+                return candidate.ImageType == "Primary" || ResumeArtwork.IsLandscape(image.PixelWidth, image.PixelHeight) ? image : null;
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested) { return null; }
+            catch (Exception error) when (error is IOException or HttpRequestException or System.Runtime.InteropServices.COMException)
+            { return null; }
+        }
+
+        var landscape = DetailBackgroundCandidates(page, item);
+        foreach (var candidate in landscape)
+            if (await TryArtwork(candidate, 1280, PosterCacheRetention.Detail, true) is {} cached) return cached;
+        foreach (var candidate in landscape)
+            if (attempted.Add(candidate) && await TryArtwork(candidate, 1280, PosterCacheRetention.Detail, false) is {} image) return image;
+
+        if (HomeStartupDeck.Cover(item) is not {} cover || !attempted.Add(cover)) return null;
+        return await TryArtwork(cover, 360, PosterCacheRetention.Browse, false)
+            ?? await TryArtwork(cover, 1280, PosterCacheRetention.Detail, false);
+    }
+
     internal static async Task<BitmapImage?> CachedDetailBackground(object page,EmbyItem item,CancellationToken token)
     {
         foreach(var candidate in DetailBackgroundCandidates(page,item)){

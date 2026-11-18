@@ -42,6 +42,12 @@ class RefreshFixture {
           latest.add(parent!);
           return response(jsonEncode([item(parent)]), 200);
         }
+        if (path.endsWith('/NextUp') ||
+            path.endsWith('/Items') &&
+                request.url.queryParameters['SortBy'] ==
+                    'DatePlayed,SortName') {
+          return response('{"Items":[]}', 200);
+        }
         if (path.endsWith('/Items')) {
           scopes.add(parent);
           if (failCatalogue) {
@@ -238,7 +244,10 @@ void main() {
       await tester.pump();
       changePage(() => active = true);
       await tester.pump();
-      expect(find.byKey(const Key('library-loading-indicator')), findsOneWidget);
+      expect(
+        find.byKey(const Key('library-loading-indicator')),
+        findsOneWidget,
+      );
       expect(find.text('正在刷新'), findsNothing);
       f.viewGate!.complete();
       f.viewGate = null;

@@ -30,12 +30,29 @@ internal static class HomeStartupDeck
         BackdropImageTags=item.BackdropImageTags.Where(v=>Text(v,1024)).Take(4).ToList(),
         ParentThumbItemId=Text(item.ParentThumbItemId,512)?item.ParentThumbItemId:null,ParentThumbImageTag=Text(item.ParentThumbImageTag,1024)?item.ParentThumbImageTag:null,
         ParentBackdropItemId=Text(item.ParentBackdropItemId,512)?item.ParentBackdropItemId:null,ParentBackdropImageTags=item.ParentBackdropImageTags.Where(v=>Text(v,1024)).Take(4).ToList()};
+    internal static bool HasArtwork(EmbyItem item)
+        => AndroidCacheCards.HasLandscape(item) || !string.IsNullOrWhiteSpace(item.ImageTags.GetValueOrDefault("Primary"));
+
+    internal static bool IsSameSelection(EmbyItem item, EmbyItem latest)
+        => item.Id.Equals(latest.Id, StringComparison.OrdinalIgnoreCase)
+            && item.Type.Equals(latest.Type, StringComparison.OrdinalIgnoreCase);
+
+    internal static MediaArtworkCandidate? Cover(EmbyItem item)
+        => item.ImageTags.GetValueOrDefault("Primary") is { Length: > 0 } tag && !string.IsNullOrWhiteSpace(tag)
+            ? new MediaArtworkCandidate(item.Id, "Primary", tag) : null;
+
+    static bool Advertised(Entry entry)
+        => entry.ImageType == "Primary"
+            ? Cover(entry.Item) is {} cover && cover.ItemId == entry.ImageOwner && cover.ImageTag == entry.Tag
+            : MediaArtworkPolicy.GetLandscapeCandidates(entry.Item).Any(c =>
+                c.ItemId == entry.ImageOwner && c.ImageType == entry.ImageType && c.ImageTag == entry.Tag);
+
     internal static string? Resolve(PosterCacheService cache,EmbySession session,Entry entry)
     {
         if(!Allowed(entry.Item)||!Text(entry.ImageOwner,512)||!Text(entry.Tag,1024)||string.IsNullOrWhiteSpace(entry.Tag)
-            ||entry.ImageType is not ("Thumb" or "Backdrop")||entry.Width is not (360 or 480 or 700 or 720 or 960 or 1280 or 1920 or 2560)
+            ||entry.ImageType is not ("Thumb" or "Backdrop" or "Primary")||entry.Width is not (360 or 480 or 700 or 720 or 960 or 1280 or 1920 or 2560)
             ||entry.Quality is not (85 or 90)||entry.Retention is not (PosterCacheRetention.Detail or PosterCacheRetention.Browse))return null;
-        if(!MediaArtworkPolicy.GetLandscapeCandidates(entry.Item).Any(c=>c.ItemId==entry.ImageOwner&&c.ImageType==entry.ImageType&&c.ImageTag==entry.Tag))return null;
+        if(!Advertised(entry))return null;
         var request=new PosterCacheRequest(session.ServerId,session.UserId,entry.ImageOwner,entry.ImageType,entry.Tag,entry.Width,entry.Quality,entry.Retention);
         string file=Path.GetFullPath((string)Access.Call(cache,"BuildExactPath",request)!);
         string root=Path.GetFullPath(entry.Retention==PosterCacheRetention.Detail?CachePaths.Artwork:CachePaths.Posters).TrimEnd(Path.DirectorySeparatorChar);
@@ -60,12 +77,15 @@ internal static class HomeStartupDeck
         return null;
     }
     static bool Valid(Entry? entry)=>entry!=null&&Allowed(entry.Item)&&Text(entry.ImageOwner,512)&&Text(entry.Tag,1024)&&!string.IsNullOrWhiteSpace(entry.Tag)
-        &&entry.ImageType is "Thumb" or "Backdrop"&&entry.Width==1280&&entry.Quality==85&&entry.Retention==PosterCacheRetention.Detail
-        &&MediaArtworkPolicy.GetLandscapeCandidates(entry.Item).Any(c=>c.ItemId==entry.ImageOwner&&c.ImageType==entry.ImageType&&c.ImageTag==entry.Tag);
+        &&entry.Quality==85&&Advertised(entry)
+        &&(entry.ImageType is "Thumb" or "Backdrop"&&entry.Width==1280&&entry.Retention==PosterCacheRetention.Detail
+            ||entry.ImageType=="Primary"&&entry.Width==360&&entry.Retention==PosterCacheRetention.Browse);
     internal static Entry? Candidate(EmbyItem item){
         if(!Allowed(item))return null;var clean=Clean(item);
         var c=MediaArtworkPolicy.GetLandscapeCandidates(clean).FirstOrDefault(c=>c.ImageType is "Thumb" or "Backdrop"&&!string.IsNullOrWhiteSpace(c.ImageTag));
-        return c==null?null:new Entry(clean,c.ItemId,c.ImageType,c.ImageTag,1280,85,PosterCacheRetention.Detail);
+        if (c != null) return new Entry(clean,c.ItemId,c.ImageType,c.ImageTag,1280,85,PosterCacheRetention.Detail);
+        var cover = Cover(clean);
+        return cover == null ? null : new Entry(clean,cover.ItemId,cover.ImageType,cover.ImageTag,360,85,PosterCacheRetention.Browse);
     }
     internal static Task<Ready> Read(PosterCacheService cache,EmbySession session,CancellationToken token)=>Task.Run(()=>{
         token.ThrowIfCancellationRequested();try{

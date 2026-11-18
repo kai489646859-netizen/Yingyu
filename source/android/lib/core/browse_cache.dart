@@ -11,10 +11,12 @@ import 'home_order.dart';
 import 'log.dart';
 import 'library_removals.dart';
 import 'image_references.dart';
+import 'video_labels.dart';
 
 /// Display metadata only. Playback always uses EmbyClient's fresh detail and
 /// existing progress/route rules. Never persist paths, URLs or request headers.
 Json displayMetadata(Json value) {
+  final numbers = MediaItem(value).episodeDisplay();
   const fields = {
     'Id',
     'Name',
@@ -82,6 +84,14 @@ Json displayMetadata(Json value) {
       },
     for (final key in fields)
       if (value.containsKey(key)) key: value[key],
+    if (numbers.season != null || numbers.episode != null)
+      episodeDisplayHintsKey: {
+        'ParentIndexNumber': ?numbers.season,
+        'IndexNumber': ?numbers.episode,
+      },
+    if (versionNameHints(value)
+        case final hints when hints.isNotEmpty)
+      versionHintsKey: hints,
     if (value[titleKeysField] is Map)
       titleKeysField: {
         for (final key in ['title', 'upper', 'initials', 'full', 'letter'])
@@ -119,6 +129,8 @@ Json displayMetadata(Json value) {
               if (source.containsKey(key)) key: source[key],
             if (source['MediaStreams'] is List)
               'MediaStreams': displayVideoStreams(source['MediaStreams']),
+            if (versionNameHints(source) case final hints when hints.isNotEmpty)
+              versionHintsKey: hints,
           },
       ],
     if (value['MediaStreams'] is List)
@@ -795,6 +807,7 @@ class BrowseRepository {
     bool force = false,
     bool Function()? allowed,
     BackgroundWork? requestWork,
+    bool updatesBackoff = true,
   }) {
     if (!current) return Future.error(const AppFailure('浏览会话已关闭'));
     final saved = peek(query);
@@ -834,14 +847,17 @@ class BrowseRepository {
         ItemPage page;
         try {
           page = await (requestWork ?? api.backgroundWork).run(fetch);
-          failures = 0;
-          _retryAt = null;
+          if (updatesBackoff) {
+            failures = 0;
+            _retryAt = null;
+          }
         } catch (error) {
           if (error is BackgroundPaused) rethrow;
-          if (error is! AppFailure ||
-              error.status == null ||
-              error.status == 429 ||
-              error.status! >= 500) {
+          if (updatesBackoff &&
+              (error is! AppFailure ||
+                  error.status == null ||
+                  error.status == 429 ||
+                  error.status! >= 500)) {
             failures = (failures + 1).clamp(1, 4);
             _retryAt = now().add(Duration(seconds: 30 * (1 << (failures - 1))));
           }
@@ -1073,6 +1089,22 @@ class BrowseRepository {
     'resume:$start:$limit',
     () => api.resumeItems(start: start, limit: limit),
     force: force,
+  );
+  // Supplementary viewing endpoints can fail independently of Resume and
+  // catalogue requests. Their cached rows are retained by HomeFeed.
+  static const viewingResumeKey = 'resume:viewing:v1';
+  Future<ItemPage> viewingResume({bool force = false}) => read(
+    viewingResumeKey,
+    api.recentViewingItems,
+    force: force,
+    updatesBackoff: false,
+  );
+  static const nextResumeKey = 'resume:next-up:v1';
+  Future<ItemPage> nextResume({bool force = false}) => read(
+    nextResumeKey,
+    api.resumeNextEpisodes,
+    force: force,
+    updatesBackoff: false,
   );
   Future<ItemPage> catalogue({
     String? parent,
@@ -1366,7 +1398,7 @@ class BrowseRepository {
         'detail:$id',
         () async => ItemPage([
           MediaItem({
-            ...(await api.detail(id)).data,
+            ...(await api.browsingDetail(id)).data,
             '_YingyuVideoMetadataV1': true,
             '_YingyuPeopleMetadataV1': true,
           }),

@@ -172,6 +172,7 @@ void main() {
       }
       final separate = EmbyClient(
         client: MockClient((request) async {
+          expect(request.method, 'GET');
           final id = request.url.path.split('/').last;
           return response(
             jsonEncode({
@@ -179,7 +180,9 @@ void main() {
               'Id': id,
               'UserData': {
                 'Played': id == 'ep2',
-                'PlaybackPositionTicks': ticks(const Duration(seconds: 20)),
+                'PlaybackPositionTicks': ticks(
+                  Duration(seconds: id == 'ep2' ? 0 : 20),
+                ),
                 'LastPlayedDate': '2999-01-01T00:00:00Z',
               },
             }),

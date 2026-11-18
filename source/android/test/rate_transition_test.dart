@@ -65,7 +65,6 @@ void main() {
       final higher = changedDiscOptions(plan(1).options, plan(3).options);
       expect(higher, {
         'cache-pause-wait': '24.00',
-        'cache-secs': '180.00',
         'demuxer-max-bytes': '805306368',
       });
       expect(changedDiscOptions(null, plan(1).options), plan(1).options);

@@ -133,6 +133,8 @@ void main() {
       expect(PosterDemand.loadingPaused.value, false);
       expect(homeState.timer?.isActive ?? false, true);
       await tester.pumpWidget(const SizedBox());
+      // Disposal invalidates queued work, which observes it after the pacing delay.
+      await tester.pump(const Duration(seconds: 1));
       await tester.runAsync(backend.dispose);
       api.close();
       await store.log.flush();

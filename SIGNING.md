@@ -2,26 +2,26 @@
 
 ## Android
 
-Android 2.2.4 APK SHA-256:
+Android 2.6.5 APK SHA-256:
 
 ```text
-a22d47b83a6a6b0309b1b8f3dcf25337fb115e678e7327b10ae4e21ed85d59b2
+a2f8c3314516ea6173fcedbd77828e20e22a6eea0ab7c9c56a1f2b47f2b518bf
 ```
 
 Signing-certificate SHA-256:
 
 ```text
-d7ef5ac3262acbf293df11cd0579f70b253314cd5db60167e92ee34167d06ca6
+13f64687afc61988916fb061ffa31ad88116fd62ab64404e8e1170ed2cc2fdb8
 ```
 
-The release audit confirms the certificate matches the previous published application identity. Keep the private signing key offline; it is not part of the source archive.
+The current application ID is `com.yingyu.player.release`. Its certificate is continuous from Android 2.2.5 through 2.6.5, but differs from the older 2.2.4 public package. The two lines can coexist; 2.2.4 cannot be directly cover-installed by 2.6.5. Keep the private signing key offline; it is not part of the source archive.
 
 ## Windows
 
-Windows 1.2.2 installer SHA-256:
+Windows 1.7.1 installer SHA-256:
 
 ```text
-c5b0015ac8872f2a2a87123aee5c56852483aa4c20643dac559157090dc07278
+dc36c92e16b22a075476faea9780b4fa579e0d55e7410a5879113ca54a13a22d
 ```
 
 The current Windows installer is **not Authenticode-signed**. Windows may therefore show an unknown-publisher or reputation warning. Verify the SHA-256 against the Release before running it.

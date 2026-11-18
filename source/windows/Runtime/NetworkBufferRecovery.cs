@@ -8,6 +8,8 @@ internal sealed class NetworkBufferRecovery(Func<string> read, Func<string, int>
 {
     double? baseline;
     double applied, playingSince = double.NaN, lastBuffer = double.NaN, eligibleAt = double.NaN;
+    double firstPosition = double.NaN;
+    double playedMedia;
     int level;
     bool playing, buffering, disabled;
 
@@ -19,7 +21,12 @@ internal sealed class NetworkBufferRecovery(Func<string> read, Func<string, int>
     internal void Playing(double now)
     {
         if (!double.IsFinite(eligibleAt)) eligibleAt = now + 3;
-        if (!playing) playingSince = now;
+        if (!playing)
+        {
+            playingSince = now;
+            firstPosition = double.NaN;
+            playedMedia = 0;
+        }
         playing = true; buffering = false;
     }
 
@@ -27,7 +34,10 @@ internal sealed class NetworkBufferRecovery(Func<string> read, Func<string, int>
     {
         if (disabled || buffering) return;
         buffering = true;
-        bool eligible = playing && now >= eligibleAt;
+        // Position events distinguish playback that really began from a VO
+        // restart reporting Playing before any media advanced. A short first
+        // run can already underrun before the original 3-second wall gate.
+        bool eligible = playing && (now >= eligibleAt || playedMedia >= .5);
         playing = false;
         if (!eligible) return; // Initial load, seek/restart, or a user pause.
         level = double.IsFinite(lastBuffer) && now - lastBuffer < 60 ? Math.Min(level + 1, 3) : 1;
@@ -37,15 +47,21 @@ internal sealed class NetworkBufferRecovery(Func<string> read, Func<string, int>
 
     internal void Speed(double speed) { if (level > 0) Apply(speed); }
 
-    internal void Progress(double now)
+    internal void Progress(double now, double position)
     {
-        if (!playing || level == 0 || now - playingSince < 120) return;
+        if (!playing || !double.IsFinite(position) || position < 0) return;
+        if (!double.IsFinite(firstPosition) || position < firstPosition)
+            firstPosition = position;
+        playedMedia = position - firstPosition;
+
+        if (level == 0 || now - playingSince < 120) return;
         Restore(); level = 0; lastBuffer = double.NaN;
     }
 
     internal void Interrupt()
     {
         playing = buffering = false; playingSince = lastBuffer = eligibleAt = double.NaN; level = 0;
+        firstPosition = double.NaN; playedMedia = 0;
         Restore();
     }
 

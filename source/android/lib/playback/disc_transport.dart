@@ -311,43 +311,35 @@ class DiscTransport {
   bool _outputPolling = false;
   String _outputHealth = '';
   final _persistentReaders = <String, CachedMediaReader>{};
-  int _persistentSeconds = 0;
+  int _persistentAheadBytes = 0;
   String? _persistentActive;
   void suspendPersistentReadAhead() {
-    _persistentSeconds = 0;
+    _persistentAheadBytes = 0;
     for (final reader in _persistentReaders.values) {
       reader.suspend();
     }
   }
 
-  void configurePersistentReadAhead(int seconds) {
-    _persistentSeconds = seconds;
-    for (final entry in _persistentReaders.entries) {
-      if (entry.key == _persistentActive) {
-        _updatePersistent(entry.key, entry.value);
-      }
-    }
+  void configurePersistentReadAhead(int bytes) {
+    _persistentAheadBytes = bytes;
+    final reader = _persistentReaders[_persistentActive];
+    if (reader != null) reader.configureAhead(bytes);
   }
 
   void stopPersistentReadAhead() {
-    _persistentSeconds = 0;
+    _persistentAheadBytes = 0;
     for (final reader in _persistentReaders.values) {
       reader.stopWarming();
     }
   }
 
-  void _updatePersistent(String relative, CachedMediaReader reader) {
-    final title = selected;
-    if (_persistentSeconds == 0 || title == null || reader.total <= 0) return;
-    final clip = title.clips
-        .where((clip) => relative.endsWith('${clip.id}.m2ts'))
-        .firstOrNull;
-    final ticks = clip == null ? title.duration : clip.end - clip.start;
-    if (ticks <= 0) return;
-    final bytes = (reader.total * _persistentSeconds * 90000 / ticks * 1.15)
-        .ceil();
-    reader.configureAhead(bytes.clamp(0, reader.total));
+  void configureDirectReadAhead(String? directory, int bytes) {
+    if (directInput && !_closed) {
+      _streamReader.configureForwardSpool(directory, bytes);
+    }
   }
+
+  void endOpeningDemand() => _streamReader.setOpeningDemand(false);
 
   late final _rangeCache = DiscRangeCache(
     _fetchBlock,
@@ -415,7 +407,11 @@ class DiscTransport {
       '预读=${_rangeCache.aheadBlocks} 块';
 
   double _speed = 1;
-  void setBuffering(bool value) => _streamReader.setBuffering(value);
+  void setBuffering(bool value, {bool recoverLargeInput = false}) =>
+      _streamReader.setBuffering(
+        value,
+        recoverLargeInput: directInput && recoverLargeInput,
+      );
   void setSpeed(double speed) {
     if (!speed.isFinite || speed < .5 || speed > 3) return;
     _speed = speed;
@@ -429,6 +425,7 @@ class DiscTransport {
       ? 512 * 1024
       : 256 * 1024;
   void resetReadAhead() {
+    _streamReader.cancelLargeRecovery();
     _rangeCache.resetReadAhead();
     // Keep a currently demanded input alive until MPV replaces its output
     // request. Obsolete cache jobs cancel their own producer; an actual new
@@ -582,6 +579,7 @@ class DiscTransport {
           '原盘定位索引：${seekIndex.isEmpty ? '不可用，沿用精确搜索' : '已读取 CLPI 访问点，保留精确解码'}；准备=${indexing.elapsedMilliseconds} ms',
         );
         if (_closed) throw const AppFailure('播放已退出');
+        _streamReader.setOpeningDemand(true);
         record(
           '原盘输出=原生 MPV stream callback；输入=独立读取线程直接交付；本机 HTTP 转发=0；Java 媒体数组=0；保留原分段时间线',
         );
@@ -931,7 +929,9 @@ class DiscTransport {
         ),
       );
       final bytes = await reader.read(start, length, cancellation);
-      _updatePersistent(relative, reader);
+      if (relative == _persistentActive && _persistentAheadBytes > 0) {
+        reader.configureAhead(_persistentAheadBytes);
+      }
       _recordBody(bytes.length, watch);
       return DiscRangeBlock(start, reader.total, bytes);
     }

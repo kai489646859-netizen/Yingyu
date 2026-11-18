@@ -62,6 +62,7 @@ public static class PlayerFeedback
                 || !state.Session.TryGetTarget(out var session)
                 || Access.Get<bool>(session, "_hasStartedPlayback")
                 || Access.Get<bool>(session, "_startupTerminalFailure")
+                || DolbyHdrFallback.IsFailed(session)
                 || (bool)session.GetType().GetProperty("_isClosing", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)!.GetValue(session)!
                 || Access.Get<Microsoft.UI.Xaml.Controls.Button>(overlay, "RetryPlaybackButton").Visibility == Visibility.Visible) return;
             Access.Get<ProgressRing>(overlay, "PlaybackStatusRing").IsActive = true;
@@ -98,6 +99,22 @@ public static class PlayerFeedback
             catch (Exception error) { PlaybackTransport.Write("Warning", "Playback.Feedback", "首帧提示同步未完成；异常类型=" + error.GetType().Name); }
         });
     }
+    const double MaxTimestampSeconds = (double)long.MaxValue / TimeSpan.TicksPerSecond;
+
+    public static bool CanUpdatePosition(object overlay, double position, double duration)
+        => !Access.Get<bool>(overlay, "_updateDisconnected")
+            && double.IsFinite(position) && double.IsFinite(duration)
+            && Math.Abs(position) < MaxTimestampSeconds
+            && Math.Abs(duration) < MaxTimestampSeconds;
+
+    public static bool CanUpdatePlayerState(object overlay)
+    {
+        if (Access.Get<bool>(overlay, "_updateDisconnected")) return false;
+        return !States.TryGetValue(overlay, out var state)
+            || state.Session?.TryGetTarget(out var session) != true
+            || session is null || !DolbyHdrFallback.IsFailed(session);
+    }
+
     public static bool CanIdleHide(object overlay)
     {
         if(Access.Get<bool>(overlay,"_isPlaying"))return true;

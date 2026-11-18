@@ -16,7 +16,7 @@ class Hardware {void observeHardware(String s){}}
 class NativeHarness {
   final String container,profile,gamma;
   NativeHarness(this.container,this.profile,this.gamma);
-  final options=<String,String>{'gpu-context':'android','target-prim':'bt.709','target-trc':'bt.1886','target-peak':'auto','tone-mapping':'bt.2390','dither':'fruit','dither-depth':'8','panscan':'0','vid':'auto','video-output-levels':'auto'};
+  final options=<String,String>{'gpu-context':'android','target-prim':'bt.709','target-trc':'bt.1886','target-peak':'auto','tone-mapping':'bt.2390','hdr-contrast-recovery':'0.30','dither':'fruit','dither-depth':'8','panscan':'0','vid':'auto','video-output-levels':'auto'};
   final writes=<(String,String)>[];
   bool dolby=false;String vo='gpu',wid='900';
   Future<String> getProperty(String key) async {

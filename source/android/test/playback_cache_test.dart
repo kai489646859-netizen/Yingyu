@@ -105,30 +105,20 @@ void main() {
       expect(await directory.list().toList(), isEmpty);
     },
   );
-  test(
-    'read-ahead keeps 20 minute target after temporary 3x returns to 2x or 1x',
-    () {
-      final policy = PlaybackReadAhead();
-      expect(policy.seconds, 60);
-      policy.speed(2);
-      expect(policy.seconds, 600);
-      policy.speed(3);
-      policy.speed(2);
-      policy.speed(1);
-      expect(policy.seconds, 1200);
-      expect(
-        policy.bytes(total: 100000, duration: const Duration(seconds: 1000)),
-        100000,
-      );
-    },
-  );
-  test(
-    'new media starts with normal target instead of inheriting old temporary hold',
-    () {
-      PlaybackReadAhead().speed(3);
-      expect(PlaybackReadAhead().seconds, 60);
-    },
-  );
+  test('5 GiB of video fits the default disk quota with all block digests', () {
+    expect(playbackReadAheadBytes, 5 * 1024 * 1024 * 1024);
+    final blockSizeOnDisk =
+        CachedMediaReader.blockBytes + playbackCacheHeaderBytes;
+    expect(
+      playbackDiskQuota(defaultPlaybackCacheGB) ~/
+          blockSizeOnDisk *
+          CachedMediaReader.blockBytes,
+      playbackReadAheadBytes,
+    );
+    expect(playbackDiskQuota(2), 2 * playbackGiB);
+    expect(playbackDiskQuota(0), 0);
+    expect(playbackDiskQuota(-1), -1);
+  });
   test(
     'startup reads only one small range; background window never blocks the first bytes',
     () async {

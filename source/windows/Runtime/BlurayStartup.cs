@@ -9,33 +9,48 @@ namespace Yingyu.Update;
 public static class BlurayStartup
 {
     static readonly ConditionalWeakTable<MpvClient, WeakReference<object>> Sessions = new();
-    static long Bytes(object session) => NetworkBluray.Active.TryGetValue(Access.Get<Uri>(session, "_playbackUri").ToString(), out var disc) ? disc.Received : 0;
+    static long Bytes(object session, Uri uri) => NetworkBluray.Active.TryGetValue(uri.ToString(), out var disc)
+        ? disc.Received : PlaybackTelemetry.StartupForwardBytes(session);
 
     public static Task Delay(TimeSpan original, CancellationToken token, object session)
     {
-        if (!NetworkBluray.IsFallbackSession(session)) return Task.Delay(original, token);
-        var client = Access.Get<MpvClient>(session, "_mpvClient");
-        Sessions.GetValue(client, _ => new WeakReference<object>(session)).SetTarget(session);
-        return WaitAsync(session, token);
+        var uri = Access.Get<Uri>(session, "_playbackUri");
+        bool bridged = NetworkBluray.IsFallbackSession(session);
+        if (bridged)
+        {
+            var client = Access.Get<MpvClient>(session, "_mpvClient");
+            Sessions.GetValue(client, _ => new WeakReference<object>(session)).SetTarget(session);
+        }
+        bool disc = bridged || BlurayStartupPolicy.IsDiscUri(uri)
+            || !string.IsNullOrWhiteSpace(Access.Get<string?>(session, "_nativeDiscPath"));
+        return WaitAsync(session, uri, original, disc, disc && !bridged, token);
     }
 
-    static async Task WaitAsync(object session, CancellationToken token)
+    static async Task WaitAsync(object session, Uri uri, TimeSpan original, bool disc, bool mounted, CancellationToken token)
     {
         int generation = Access.Get<int>(session, "_mediaGeneration");
-        var uri = Access.Get<Uri>(session, "_playbackUri");
+        if (!disc)
+        {
+            await Task.Delay(original, token);
+            while (DolbyHdrFallback.IsFailed(session))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), token);
+                CheckCurrent();
+            }
+            return;
+        }
         long began = Stopwatch.GetTimestamp();
-        var policy = new BlurayStartupPolicy(Bytes(session));
+        var policy = new BlurayStartupPolicy(Bytes(session, uri), mounted);
         bool reported = false;
         while (true)
         {
             await Task.Delay(TimeSpan.FromSeconds(1), token);
-            token.ThrowIfCancellationRequested();
-            if (generation != Access.Get<int>(session, "_mediaGeneration")
-                || uri != Access.Get<Uri>(session, "_playbackUri")
-                || !Access.Get<bool>(session, "_acceptPlaybackEvents"))
-                throw new OperationCanceledException(token);
+            CheckCurrent();
+            // Keep the original integrity failure onscreen until the user
+            // leaves or selects another source. A route retry cannot repair it.
+            if (DolbyHdrFallback.IsFailed(session)) continue;
             double elapsed = Stopwatch.GetElapsedTime(began).TotalSeconds;
-            long bytes = Bytes(session);
+            long bytes = Bytes(session, uri);
             if (policy.Expired(elapsed, bytes))
             {
                 PlaybackTransport.Write("Warning", "Playback.Startup",
@@ -46,8 +61,19 @@ public static class BlurayStartup
             {
                 reported = true;
                 PlaybackTransport.Write("Info", "Playback.Startup",
-                    "网络蓝光仍有读取进展，继续当前定位及缓冲；连续20秒无进展或累计120秒仍未出首帧时进入原失败处理。 ");
+                    bytes > 0
+                        ? "蓝光已有读取进展，继续等待实际首帧。 "
+                        : "挂载原盘正在初始化，尚未观察到首个前向缓存样本；初始等待上限32秒。 ");
             }
+        }
+
+        void CheckCurrent()
+        {
+            token.ThrowIfCancellationRequested();
+            if (generation != Access.Get<int>(session, "_mediaGeneration")
+                || uri != Access.Get<Uri>(session, "_playbackUri")
+                || !Access.Get<bool>(session, "_acceptPlaybackEvents"))
+                throw new OperationCanceledException(token);
         }
     }
 

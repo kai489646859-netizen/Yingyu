@@ -25,6 +25,25 @@ void main() {
       DetectedVideoRange.sdr,
     );
   });
+  test('SDR remains SDR for both settings including BT.601 PAL', () {
+    final source = detectVideoRange({
+      'video-params/primaries': 'bt.601-625',
+      'video-params/gamma': 'gamma2.8',
+    }, '0');
+    expect(source, DetectedVideoRange.sdr);
+    for (final requested in [false, true]) {
+      expect(
+        nativeHdrTransfer(
+          requested: requested,
+          disc: false,
+          source: source,
+          container: 'matroska',
+          capabilities: screen,
+        ),
+        isNull,
+      );
+    }
+  });
   test('actual Dolby profile and RPU color each take precedence over PQ', () {
     expect(detectVideoRange(pq, '5'), DetectedVideoRange.dolby);
     expect(detectVideoRange(pq, '8'), DetectedVideoRange.dolby);
@@ -66,6 +85,13 @@ void main() {
           );
       expect(plan(DetectedVideoRange.hdr10, screen), 'pq');
       expect(plan(DetectedVideoRange.hlg, screen), 'hlg');
+      expect(
+        plan(
+          DetectedVideoRange.hlg,
+          const OutputCapabilities(sdk: 34, display: 1, hdr: {2}),
+        ),
+        isNull,
+      );
       expect(plan(DetectedVideoRange.dolby, screen), isNull);
       expect(plan(DetectedVideoRange.unknown, screen), isNull);
       expect(plan(DetectedVideoRange.sdr, screen), isNull);
@@ -74,7 +100,7 @@ void main() {
           DetectedVideoRange.hdr10,
           const OutputCapabilities(sdk: 34, display: 1, hdr: {3}),
         ),
-        isNull,
+        'hlg',
       );
       expect(
         plan(
@@ -155,6 +181,45 @@ void main() {
       expect(const OutputCapabilities().audioDescription, contains('未提供'));
     },
   );
+  test('HDR10+ declaration does not open an unverified PQ surface', () {
+    const hdr10PlusOnly = OutputCapabilities(sdk: 34, display: 0, hdr: {4});
+    expect(hdr10PlusOnly.displayDescription, contains('HDR10+'));
+    expect(dolbyHdrTransfers(hdr10PlusOnly), isEmpty);
+    expect(dolbyHdrTransfers(screen), ['pq', 'hlg']);
+    for (final source in [
+      DetectedVideoRange.hdr10,
+      DetectedVideoRange.hlg,
+      DetectedVideoRange.sdr,
+    ]) {
+      expect(
+        nativeHdrTransfer(
+          requested: true,
+          disc: false,
+          source: source,
+          container: 'mkv',
+          capabilities: hdr10PlusOnly,
+        ),
+        isNull,
+      );
+    }
+  });
+  test('HDR admission distinguishes modes on the same display', () {
+    final first = OutputCapabilities.parse({
+      'display': 0,
+      'mode': 1,
+      'sdk': 34,
+      'hdrTypes': [2],
+    });
+    final second = OutputCapabilities.parse({
+      'display': 0,
+      'mode': 2,
+      'sdk': 34,
+      'hdrTypes': [2],
+    });
+    expect(first.supportsHdrSurface('pq'), isTrue);
+    expect(first.sameDisplayMode(second), isFalse);
+    expect(first.sameDisplayMode(first), isTrue);
+  });
   test(
     'HDR preference defaults off and survives an AppStore recreation',
     () async {

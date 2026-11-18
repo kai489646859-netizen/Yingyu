@@ -39,6 +39,8 @@ public class MainActivity extends FlutterActivity {
     private PlaybackNetworkBridge playbackNetwork;
     private PlaybackFrameRateBridge frameRate;
     private NativeHdrBridge nativeHdr;
+    private MediaControlBridge mediaControl;
+    private AppUpdateBridge appUpdate;
     private MethodChannel orientationChannel;
     private final OrientationController orientation = new OrientationController();
     private Integer rotationAnimationBeforeExit;
@@ -133,6 +135,8 @@ public class MainActivity extends FlutterActivity {
         playbackNetwork = new PlaybackNetworkBridge(this, engine);
         frameRate = new PlaybackFrameRateBridge(getWindow());
         nativeHdr = new NativeHdrBridge(this, engine);
+        mediaControl = new MediaControlBridge(this, engine);
+        appUpdate = new AppUpdateBridge(this, engine);
         discBridge = new DiscBridge(engine);
         logExport = new LogExportBridge(this, engine);
         subtitleImport = new SubtitleImportBridge(this, engine);
@@ -261,9 +265,11 @@ public class MainActivity extends FlutterActivity {
     }
     @Override protected void onResume() {
         super.onResume();
+        if (appUpdate != null) appUpdate.resumed();
         if (frameRate != null) frameRate.foreground(true);
     }
     @Override protected void onPause() {
+        UpdateInstallReceiver.pause(this);
         if (frameRate != null) frameRate.foreground(false);
         if (playerStatus != null) playerStatus.reset();
         interrupt("已暂停"); super.onPause();
@@ -274,6 +280,8 @@ public class MainActivity extends FlutterActivity {
         if (request == SubtitleImportBridge.REQUEST && subtitleImport != null) subtitleImport.result(result, data);
     }
     @Override protected void onDestroy() {
+        if (mediaControl != null) mediaControl.close();
+        if (appUpdate != null) appUpdate.close();
         if (frameRate != null) frameRate.close();
         if (orientationChannel != null) { orientationChannel.setMethodCallHandler(null); orientationChannel = null; }
         if (translation != null) translation.destroy();

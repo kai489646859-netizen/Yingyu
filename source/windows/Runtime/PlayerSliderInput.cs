@@ -15,6 +15,9 @@ public static class PlayerSliderInput
     static readonly ConditionalWeakTable<object, State> States = new();
     public static void Configure(object owner) => States.GetValue(owner, x => new State(x));
     internal static void ConfigureDanmaku(Slider slider) => new State.Input(null, slider, false);
+    internal static void ConfigurePicture(Slider slider) => new State.Input(null,slider,false);
+    internal static void CancelVolumeDrag(object owner)
+    { if (States.TryGetValue(owner,out var state)) state.CancelVolumeDrag(); }
     public static void Reset(object owner) { if (States.TryGetValue(owner, out var s)) s.Reset(); }
     public static bool VolumeDragging(object owner) => States.TryGetValue(owner, out var s) && s.VolumeDragging;
     public static bool HoldPosition(object owner, double position, double duration)
@@ -27,11 +30,13 @@ public static class PlayerSliderInput
         double? target;
         long expires;
         readonly Input volume; readonly Input seekInput; internal bool VolumeDragging => volume.Dragging;
+        internal void CancelVolumeDrag() => volume.Abort();
         internal void Reset() { seekInput.Abort(); volume.Abort(); target = null; Access.Set(owner, "_isSeeking", false); }
         internal State(object owner)
         {
             this.owner = owner;
             position = Access.Get<Slider>(owner, "PositionSlider");
+            position.AllowFocusOnInteraction = false;
             seekInput = new Input(this, position, true);
             volume = new Input(this, Access.Get<Slider>(owner, "VolumeSlider"), false);
             ((FrameworkElement)owner).Unloaded += (_, _) => { target = null; Access.Set(owner, "_isSeeking", false); };
@@ -44,7 +49,7 @@ public static class PlayerSliderInput
             { target = null; return false; }
             return true;
         }
-        internal void Begin() { target = null; Access.Set(owner, "_isSeeking", true); Access.Get<Microsoft.UI.Dispatching.DispatcherQueueTimer>(owner, "_autoHideTimer").Stop(); }
+        internal void Begin() { target = null; Access.Set(owner, "_isSeeking", true); }
         internal void End(bool commit)
         {
             Access.Set(owner, "_isSeeking", false);
@@ -80,9 +85,11 @@ public static class PlayerSliderInput
                 if (surface is not null)
                 {
                     Finish(false);
-                    surface.PointerPressed -= Press; surface.PointerMoved -= Move;
-                    surface.PointerReleased -= Release; surface.PointerCanceled -= Cancel;
-                    surface.PointerCaptureLost -= Lost;
+                    surface.PointerPressed -= Press;
+                    surface.RemoveHandler(UIElement.PointerMovedEvent, new PointerEventHandler(Move));
+                    surface.RemoveHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(Release));
+                    surface.RemoveHandler(UIElement.PointerCanceledEvent, new PointerEventHandler(Cancel));
+                    surface.RemoveHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler(Lost));
                 }
                 thumb = nextThumb;
                 track = nextTrack;
@@ -90,9 +97,11 @@ public static class PlayerSliderInput
                 foreach (var child in root.Children) child.IsHitTestVisible = false;
                 root.Background ??= new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0));
                 slider.IsThumbToolTipEnabled = false;
-                root.PointerPressed += Press; root.PointerMoved += Move;
-                root.PointerReleased += Release; root.PointerCanceled += Cancel;
-                root.PointerCaptureLost += Lost;
+                root.PointerPressed += Press;
+                root.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(Move), true);
+                root.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(Release), true);
+                root.AddHandler(UIElement.PointerCanceledEvent, new PointerEventHandler(Cancel), true);
+                root.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler(Lost), true);
             }
             double Axis(Point p) => slider.Orientation == Orientation.Vertical ? p.Y : p.X;
             double Length => slider.Orientation == Orientation.Vertical ? track!.ActualHeight : track!.ActualWidth;
@@ -106,10 +115,16 @@ public static class PlayerSliderInput
                 var local = point.Position;
                 if (local.X < 0 || local.Y < 0 || local.X > surface.ActualWidth || local.Y > surface.ActualHeight) return;
                 if (pointer != null || !slider.IsEnabled || !point.Properties.IsLeftButtonPressed && e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse) return;
+                // Focusing a control in the transient flyout can replace the
+                // pointer capture. Establish focus before acquiring the drag.
+                if (!seek) slider.Focus(FocusState.Pointer);
                 if (!surface.CapturePointer(e.Pointer)) return;
                 pointer = e.Pointer.PointerId;
-                slider.Focus(FocusState.Pointer);
-                if (seek) state!.Begin();
+                if (seek)
+                {
+                    state!.Begin();
+                    ((FrameworkElement)state.owner).Focus(FocusState.Programmatic);
+                }
                 var p = e.GetCurrentPoint(track).Position;
                 var onThumb = e.GetCurrentPoint(thumb).Position;
                 double a = Axis(onThumb);

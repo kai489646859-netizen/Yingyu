@@ -7,13 +7,11 @@ class StreamBufferSnapshot {
     this.bytes,
     this.gate,
     this.starved,
-    this.requestedAhead,
     this.recoveryLevel,
   );
   final int ahead, bytes;
   final String? gate;
   final bool starved;
-  final int requestedAhead;
   final int recoveryLevel;
 }
 
@@ -43,15 +41,13 @@ class StreamBuffering {
               : speed * 8)
           .toStringAsFixed(2);
 
-  int aheadSeconds = 60;
-  int _appliedAhead = 3600000;
+  int _appliedAhead = steadyPacketCacheSeconds;
   late int _appliedBytes = baseBytes;
   StreamBufferSnapshot get snapshot => StreamBufferSnapshot._(
     _appliedAhead,
     _appliedBytes,
     applied,
     _starved,
-    aheadSeconds,
     _recoveryLevel,
   );
 
@@ -124,7 +120,6 @@ class StreamBuffering {
     _appliedBytes = next.bytes;
     applied = next.gate;
     _starved = next.starved;
-    aheadSeconds = next.requestedAhead;
     _recoveryLevel = next.recoveryLevel;
   }
 
@@ -138,10 +133,7 @@ class StreamBuffering {
     required bool starved,
     int? recoveryLevel,
   }) async {
-    final requested = streamAheadSeconds(speed);
-    // Pre-reading and resuming are different controls. A larger window never
-    // becomes a ten/twenty-minute restart gate, including after a seek.
-    final ahead = fast ? 10 : requested;
+    final ahead = fast ? fastPacketCacheSeconds : steadyPacketCacheSeconds;
     final bytes = fast
         ? baseBytes
         : discForwardBufferBytes(
@@ -160,7 +152,6 @@ class StreamBuffering {
         bytes,
         cushion.toStringAsFixed(2),
         starved,
-        requested,
         level,
       ),
     );
@@ -183,7 +174,7 @@ class StreamBuffering {
   }
 
   String get description =>
-      '普通原文件；预读目标=$aheadSeconds 秒媒体时间；'
+      '普通原文件；'
       '前向包缓存上限=${_appliedBytes ~/ (1024 * 1024)} MiB；'
       '恢复播放目标=${applied ?? "尚未配置"} 秒媒体时间';
 }

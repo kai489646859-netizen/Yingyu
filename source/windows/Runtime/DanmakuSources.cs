@@ -11,12 +11,13 @@ internal static class DanmakuSources
     static readonly HttpClient Http=new(new SocketsHttpHandler{AutomaticDecompression=DecompressionMethods.All,UseCookies=false,AllowAutoRedirect=false,ConnectTimeout=TimeSpan.FromSeconds(5),MaxConnectionsPerServer=2}){Timeout=Timeout.InfiniteTimeSpan};
     static readonly ConcurrentDictionary<string,(DateTimeOffset At,JsonElement[] Rows)> Searches=new();
     static readonly ConcurrentDictionary<string,(DateTimeOffset At,JsonElement Value)> Details=new();
-    internal static bool ValidCid(string? cid)=>cid is {Length:>0 and <=20}&&ulong.TryParse(cid,out var value)&&value>0;
+    internal static bool ValidCid(string? cid)=>cid is {Length:>0 and <=20}
+        &&cid.All(char.IsAsciiDigit)&&ulong.TryParse(cid,out var value)&&value>0;
     internal static void Trace(string source,string stage,string reason,int count=0,int http=0)
     {
         // All tokens are fixed call-site literals. No titles, IDs, addresses,
         // response bodies or exception messages enter playback diagnostics.
-        PlaybackTransport.Write("Info","Playback.Danmaku",$"版本=1.3.4; source={source}; stage={stage}; result={reason}; count={count}; http={http}");
+        PlaybackTransport.Write("Info","Playback.Danmaku",$"版本=1.3.5; source={source}; stage={stage}; result={reason}; count={count}; http={http}");
     }
     internal static async Task Find(DanmakuIdentity id,DanmakuOptions options,Action<DanmakuTrack> publish,
         CancellationToken token,bool refresh,Action<IReadOnlyList<DanmakuCandidate>> choices,string? query,double position)
@@ -240,18 +241,90 @@ internal static class DanmakuSources
     {
         int last=track.Duration>0?Math.Clamp((int)Math.Ceiling(track.Duration/360),1,240):240;
         int current=Math.Clamp((int)(position/360)+1,1,last);
-        foreach(int index in new[]{current,Math.Min(current+1,last),1}.Distinct())
+        return await ConfirmBilibiliRows(FindSegment, FindXml, usable, position, token).ConfigureAwait(false);
+
+        async Task<DanmakuTrack?> FindSegment(CancellationToken ct)
         {
-            try
+            foreach (int index in new[]{current,Math.Min(current+1,last),1}.Distinct())
             {
-                var rows=await Segment(track.StreamCid!,index,token).ConfigureAwait(false);
-                if(rows.Any(usable))return track with{Comments=rows,SeedIndex=index};
+                try
+                {
+                    var rows = await Segment(track.StreamCid!, index, ct).ConfigureAwait(false);
+                    if (rows.Any(usable)) return track with { Comments=rows, SeedIndex=index };
+                }
+                catch (Exception e) when (IsSourceFailure(e) && !ct.IsCancellationRequested) { }
             }
-            catch(Exception e)when(IsSourceFailure(e)&&!token.IsCancellationRequested){}
+            return null;
         }
-        var xml=await ReadBilibiliXml(track.StreamCid!,track.Duration,token).ConfigureAwait(false);
-        token.ThrowIfCancellationRequested();
-        return xml.Any(usable)?track with{Comments=xml,SeedIndex=0,Partial=true}:null;
+        async Task<DanmakuTrack?> FindXml(CancellationToken ct)
+        {
+            var rows = await ReadBilibiliXml(track.StreamCid!, track.Duration, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            return rows.Any(usable) ? track with { Comments=rows, SeedIndex=0, Partial=true } : null;
+        }
+    }
+
+    internal static async Task<DanmakuTrack?> ConfirmBilibiliRows(
+        Func<CancellationToken,Task<DanmakuTrack?>> readSegment,
+        Func<CancellationToken,Task<DanmakuTrack?>> readXml,
+        Func<DanmakuComment,bool> usable, double position, CancellationToken token)
+    {
+        using var candidates = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var segment = readSegment(candidates.Token);
+        if (segment.IsCompletedSuccessfully && segment.Result is not null) return segment.Result;
+        var xml = readXml(candidates.Token);
+        try
+        {
+            var first = await Task.WhenAny(segment, xml).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            if (ReferenceEquals(first, segment))
+                return await segment.ConfigureAwait(false) ?? await xml.ConfigureAwait(false);
+            var rows = await xml.ConfigureAwait(false);
+            // An XML snapshot may only contain a different time range.
+            // Keep it as fallback if it cannot put comments on screen here.
+            if (rows is not null && rows.Comments.Any(row =>
+                row.Time >= position - 12 && row.Time < position + 48 && usable(row))) return rows;
+            return await segment.ConfigureAwait(false) ?? rows;
+        }
+        finally
+        {
+            candidates.Cancel();
+            try { await Task.WhenAll(segment, xml).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (candidates.IsCancellationRequested) { }
+        }
+
+    }
+
+    internal static string? CorrectionLink(string? value)
+    {
+        string? url=value?.Trim();
+        if(url is not {Length:>0 and <=320}||PublicDanmaku.DirectEpisodeId(url) is null)return null;
+        return new Uri(url).GetLeftPart(UriPartial.Path);
+    }
+
+    internal static async Task<DanmakuTrack?> Corrected(DanmakuCorrection correction,DanmakuIdentity id,
+        DanmakuOptions options,double position,CancellationToken token)
+    {
+        using var budget=CancellationTokenSource.CreateLinkedTokenSource(token);
+        budget.CancelAfter(TimeSpan.FromSeconds(5));
+        bool Usable(DanmakuComment row)=>row.Mode switch{1=>options.Scroll,4=>options.Bottom,5=>options.Top,_=>false};
+        if(!correction.IsValid||!options.Scroll&&!options.Bottom&&!options.Top)return null;
+        try
+        {
+            DanmakuTrack? selected;
+            if(correction.Cid is {} cid)
+                selected=Stream(new("手动选集",cid,id.Duration,100),id.Key);
+            else if(PublicDanmaku.DirectSite(correction.Link) is {} site&&PublicDanmaku.DirectEpisodeId(correction.Link) is {} video)
+            {
+                selected=await PublicDanmaku.Match([video],id,id.Key,site,budget.Token).ConfigureAwait(false);
+                return selected is null?null:await PublicDanmaku.Confirm(selected,position,Usable,budget.Token).ConfigureAwait(false);
+            }
+            else
+                selected=await MatchBilibili(id with{Title=correction.Link!},id.Key,budget.Token,null).ConfigureAwait(false);
+            return selected is null?null:await ConfirmBilibili(selected,position,Usable,budget.Token).ConfigureAwait(false);
+        }
+        catch(Exception e)when(IsSourceFailure(e)||e is UnauthorizedAccessException)
+        {token.ThrowIfCancellationRequested();return null;}
     }
 
     static async Task<DanmakuComment[]> ReadBilibiliXml(string cid,double duration,CancellationToken token)
@@ -332,7 +405,6 @@ internal static class DanmakuSources
     }
     static int Confidence(DanmakuIdentity id,double duration)=>duration>0&&id.Duration>0?100-(int)Math.Min(12,Math.Abs(duration-id.Duration)/10):85;
     static DanmakuTrack Stream(DanmakuCandidate choice,string identity)=>new("哔哩哔哩公开弹幕",identity,choice.Duration,[],choice.Confidence){StreamCid=choice.Cid,Partial=true};
-    internal static DanmakuTrack Select(DanmakuCandidate choice,DanmakuIdentity id)=>Stream(choice,id.Key);
     static async Task<DanmakuTrack?> MatchBilibili(DanmakuIdentity id,string identity,CancellationToken token,Action<IReadOnlyList<DanmakuCandidate>>? choices,HashSet<string>? platformSeasons=null)
     {
         // Explicit public links avoid repeating a failed keyword search. They

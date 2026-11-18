@@ -13,8 +13,8 @@ using Microsoft.UI.Xaml.Media;
 
 namespace Yingyu.Update;
 
-// Discovery uses already synchronized local metadata. Only the two selected
-// tiles join the existing viewport/cache image pipeline; no metadata fetches.
+// Initial selection uses synchronized metadata. If its artwork no longer
+// loads, re-read only the affected selections in the active account.
 internal static class HomePresentation
 {
     static readonly ConditionalWeakTable<FrameworkElement,State> States=new();
@@ -69,21 +69,21 @@ internal static class HomePresentation
         readonly Microsoft.UI.Dispatching.DispatcherQueueTimer midnight;
         DateTime day=DateTime.Today;
         readonly FrameworkElement page;
-        readonly Grid mosaic=new(){Name="HomeCinemaMosaic",ColumnSpacing=14,RowSpacing=14,Margin=new(0,4,0,28),Visibility=Visibility.Collapsed};
+        readonly Grid mosaic=new(){Name="HomeCinemaMosaic",ColumnSpacing=14,RowSpacing=14,Margin=new(0,4,0,22),Visibility=Visibility.Collapsed};
         object[] models=[];object[]? discoveries;readonly HashSet<object> owned=new(ReferenceEqualityComparer.Instance);
-        CancellationTokenSource? selection;object? selectionOwner;object? owner;DesktopThemePalette last;bool queued;
+        CancellationTokenSource? selection,freshLoad;object? selectionOwner;object? owner;DesktopThemePalette last;bool queued;
         bool bootstrapStarted,bootstrapDone,planningStarted,planningRunning,freshRunning,freshAttempted,resetScroll;volatile bool visible;
         TaskCompletionSource<bool> heroReady=new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal async Task WaitForHero(CancellationToken token){if(!visible)return;try{await heroReady.Task.WaitAsync(TimeSpan.FromSeconds(3),token);}catch(TimeoutException){}}
         void Reset(){heroReady.TrySetResult(true);heroReady=new(TaskCreationOptions.RunContinuationsAsynchronously);}
         void Select(IEnumerable<EmbyItem> items){
             if(discoveries is {Length:>0})return;
-            var selected=items.Where(AndroidCacheCards.HasLandscape).DistinctBy(i=>i.Id,StringComparer.OrdinalIgnoreCase).Take(DisplayCount).ToArray();
+            var selected=items.Where(HomeStartupDeck.HasArtwork).DistinctBy(i=>i.Id,StringComparer.OrdinalIgnoreCase).Take(DisplayCount).ToArray();
             if(selected.Length==0)return;
             discoveries=selected.Select(item=>Model(item,new Microsoft.UI.Xaml.Media.Imaging.BitmapImage())).ToArray();
             fresh=selected;freshCards=discoveries.Cast<object?>().ToArray();freshAttempted=false;Queue();
         }
-        HomeStartupDeck.Entry[] pool=[];EmbyItem[] fresh=[];object?[] freshCards=[];object? posterGeneration;readonly SemaphoreSlim saveGate=new(1,1);
+        HomeStartupDeck.Entry[] pool=[];EmbyItem[] fresh=[];object?[] freshCards=[];CancellationTokenSource? posterGeneration;EmbyApiClient? posterClient;readonly SemaphoreSlim saveGate=new(1,1);
         T? Find<T>(string name) where T:class=>Access.Get<object?>(page,name) as T;
         IEnumerable<object> Values(string name)=>(Access.Call(page,"get_"+name) as IEnumerable)?.Cast<object>()??[];
         public State(FrameworkElement page)
@@ -126,13 +126,21 @@ internal static class HomePresentation
                 selection?.Cancel();selection?.Dispose();selection=account==null?null:new();selectionOwner=account;Reset();
                 bootstrapStarted=bootstrapDone=planningStarted=planningRunning=freshRunning=freshAttempted=false;discoveries=null;owned.Clear();pool=[];fresh=[];freshCards=[];models=[];mosaic.Children.Clear();
             }
-            if(entered||!ReferenceEquals(posterGeneration,Access.Get<object?>(page,"_posterLoadCts"))){freshAttempted=false;if(home&&(discoveries==null||discoveries.Any(card=>!Ready(card))))Reset();posterGeneration=Access.Get<object?>(page,"_posterLoadCts");}
+            var generation = Access.Get<CancellationTokenSource?>(page,"_posterLoadCts");
+            var client = Access.Get<EmbyApiClient?>(page,"_client");
+            if (entered || !ReferenceEquals(posterGeneration, generation) || !ReferenceEquals(posterClient, client))
+            {
+                freshAttempted = false;
+                if (home && (discoveries == null || discoveries.Any(card => !Ready(card)))) Reset();
+                posterGeneration = generation;
+                posterClient = client;
+            }
             if(page.IsLoaded&&account is EmbySession session&&selection!=null&&!bootstrapStarted){bootstrapStarted=true;_=Bootstrap(session,selection.Token);}
             var snapshot=(LocalSearchIndexSnapshot?)Access.Call(page,"get__localSearchIndex");
             if(bootstrapDone&&!planningStarted&&!AndroidCacheRuntime.IsPaused&&account is EmbySession planning&&selection!=null&&snapshot is {} local&&local.ServerId==planning.ServerId&&local.UserId==planning.UserId&&local.Entries.Count>0){
                 planningStarted=true;_=Plan(local,planning,selection.Token);
             }
-            if(!home){carousel.Active(false);recommendation.Visibility=Visibility.Collapsed;heroReady.TrySetResult(true);mosaic.Visibility=Visibility.Collapsed;if(!ReferenceEquals(account,owner)){models=[];mosaic.Children.Clear();owner=account;}return;}
+            if(!home){freshLoad?.Cancel();carousel.Active(false);recommendation.Visibility=Visibility.Collapsed;heroReady.TrySetResult(true);mosaic.Visibility=Visibility.Collapsed;if(!ReferenceEquals(account,owner)){models=[];mosaic.Children.Clear();owner=account;}return;}
             // Content is available before WinUI establishes the first visual parent.
             // Membership also prevents duplicate insertion during that initial layout.
             if(Find<ScrollViewer>("MainContentScrollViewer") is not {Content:StackPanel host} scroll)return;
@@ -157,7 +165,12 @@ internal static class HomePresentation
             if(discoveries!=null&&discoveries.Any(card=>!owned.Contains(card))){
                 discoveries=discoveries.Where(card=>owned.Contains(card)||available.Contains(card)).ToArray();
             }
-            if(fresh.Length>0&&!freshRunning&&!freshAttempted&&account is EmbySession active&&selection!=null&&!AndroidCacheRuntime.IsPaused){freshRunning=freshAttempted=true;_=LoadFresh(active,selection.Token);}
+            if (fresh.Length > 0 && !freshRunning && !freshAttempted && account is EmbySession active &&
+                client != null && selection != null && generation?.IsCancellationRequested != true && !AndroidCacheRuntime.IsPaused)
+            {
+                freshRunning = freshAttempted = true;
+                _ = LoadFresh(active, client, generation, selection.Token);
+            }
             var cards=discoveries??[];bool rebuild=!ReferenceEquals(owner,account);owner=account;
             double height=Math.Clamp((page.ActualWidth-260)*.22,200,360);if(Math.Abs(mosaic.Height-height)>.5||double.IsNaN(mosaic.Height))mosaic.Height=height;
             if(rebuild){mosaic.Children.Clear();models=[];}
@@ -174,6 +187,11 @@ internal static class HomePresentation
             foreach(var placeholder in mosaic.Children.OfType<Border>())placeholder.Background=DesktopVisuals.Brush(p.Surface);
             foreach(var tile in UiElements.Descendants(mosaic).OfType<Button>().Where(b=>b.DataContext!=null))tile.CornerRadius=new(Math.Min(DesktopTheme.Options.Radius,14));
             mosaic.Visibility=Visibility.Visible;carousel.Active(true);
+            if(Find<StackPanel>("ResumeSection") is {} resumeSection)
+            {
+                var margin=resumeSection.Margin;
+                if(margin.Bottom>18)resumeSection.Margin=new(margin.Left,margin.Top,margin.Right,18);
+            }
             if(Find<Grid>("LibraryHeaderGrid") is {} header)header.Margin=new(32,20,32,14);
             if(Find<TextBlock>("PageTitleText") is {} title){title.Text="首页";title.FontSize=32;title.FontWeight=Microsoft.UI.Text.FontWeights.SemiBold;}
             if(Find<ScrollViewer>("MainContentScrollViewer") is {} content)content.Padding=new(32,0,32,32);
@@ -211,29 +229,79 @@ internal static class HomePresentation
             var cache=Access.Get<PosterCacheService>(page,"_posterCache");var entries=(discoveries??[]).Select(CardItem).Select(HomeStartupDeck.Candidate).OfType<HomeStartupDeck.Entry>().Concat(pool).DistinctBy(e=>e.Item.Id,StringComparer.OrdinalIgnoreCase).Take(64).ToArray();var ids=(discoveries??[]).Select(ItemKey).ToArray();
             await saveGate.WaitAsync(token);try{await HomeStartupDeck.Save(cache,session,entries,ids,token,day);}finally{saveGate.Release();}
         }
-        async Task LoadFresh(EmbySession session,CancellationToken token){
-            var generation=Access.Get<CancellationTokenSource?>(page,"_posterLoadCts");var client=Access.Get<object?>(page,"_client");
+        async Task LoadFresh(EmbySession session, EmbyApiClient client, CancellationTokenSource? generation, CancellationToken token)
+        {
             using var cancel=CancellationTokenSource.CreateLinkedTokenSource(token,generation?.Token??CancellationToken.None);
-            bool Needed()=>visible&&!cancel.IsCancellationRequested&&ReferenceEquals(session,Access.Get<object?>(page,"_session"))&&ReferenceEquals(client,Access.Get<object?>(page,"_client"))&&ReferenceEquals(generation,Access.Get<CancellationTokenSource?>(page,"_posterLoadCts"));
-            var targets=fresh.ToArray();var results=freshCards;int index=-1;
-            // Start the first visible carousel image first, then the left hero.
-            // Hidden slides remain eager queued work on the same two workers.
-            var order=Enumerable.Range(0,targets.Length).OrderBy(i=>i==1?-1:i).ToArray();
-            async Task Worker(){while(true){int next=Interlocked.Increment(ref index);if(next>=order.Length)return;int at=order[next];if(results[at] is {} loaded&&Ready(loaded))continue;
-                try{
-                    var item=targets[at];if(!Needed())return;var image=await AndroidCacheCards.CachedHomeLandscape(page,item,cancel.Token);
-                    if(image==null)foreach(var candidate in MediaArtworkPolicy.GetLandscapeCandidates(item).Where(c=>c.ImageType is "Thumb" or "Backdrop")){
-                        if(!Needed())return;
-                        image=await AndroidCacheCards.Bitmap(page,item,candidate.ImageType,1280,cancel.Token,candidate.ItemId,candidate.ImageTag,PosterFetchPriority.Interactive,PosterCacheRetention.Detail,Needed,null);
-                        if(image is {PixelWidth:>0,PixelHeight:>0}&&ResumeArtwork.IsLandscape(image.PixelWidth,image.PixelHeight))break;image=null;
-                    }
-                    if(image==null||!Needed()||!Current(session,token))continue;
-                    // Keep the same model, title, button and hit target; fill only its bitmap.
-                    if(results[at] is {} card&&(discoveries??[]).Contains(card))card.GetType().GetProperty("Poster")!.SetValue(card,image);
+            freshLoad=cancel;
+            bool Needed()=>visible&&!AndroidCacheRuntime.IsPaused&&!cancel.IsCancellationRequested&&ReferenceEquals(session,Access.Get<object?>(page,"_session"))&&ReferenceEquals(client,Access.Get<object?>(page,"_client"))&&ReferenceEquals(generation,Access.Get<CancellationTokenSource?>(page,"_posterLoadCts"));
+            var targets = fresh.ToArray();
+            var results = freshCards;
+            var checkedMetadata = new bool[targets.Length];
+            bool updatedTags = false;
+            int index = -1;
+            // Two workers give the visible slide and the left hero priority.
+            var order = Enumerable.Range(0, targets.Length).OrderBy(i => i == 1 ? -1 : i).ToArray();
+            async Task Worker()
+            {
+                while (Needed())
+                {
+                    int next = Interlocked.Increment(ref index);
+                    if (next >= order.Length) return;
+                    int at = order[next];
+                    if (results[at] is not {} card || Ready(card)) continue;
 
-                }catch(OperationCanceledException){}catch(Exception e){Warn(e);}
-            }}
-            try{await Task.WhenAll(Worker(),Worker());}finally{if(Current(session,token)){freshRunning=false;if(ReferenceEquals(generation,Access.Get<CancellationTokenSource?>(page,"_posterLoadCts")))heroReady.TrySetResult(true);Queue();}}
+                    try
+                    {
+                        var attempted = new HashSet<MediaArtworkCandidate>();
+                        var item = targets[at];
+                        var image = await AndroidCacheCards.HomeBitmap(page, item, attempted, Needed, cancel.Token);
+                        if (image == null && Needed() && !checkedMetadata[at])
+                        {
+                            checkedMetadata[at] = true;
+                            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel.Token);
+                            timeout.CancelAfter(TimeSpan.FromSeconds(6));
+                            var latest = await client.GetItemAsync(item.Id, timeout.Token);
+                            if (Needed() && HomeStartupDeck.IsSameSelection(item, latest) && HomeStartupDeck.HasArtwork(latest))
+                            {
+                                targets[at] = latest;
+                                image = await AndroidCacheCards.HomeBitmap(page, latest, attempted, Needed, cancel.Token);
+                            }
+                        }
+                        if (image == null || !Needed() || !Current(session, token) || !(discoveries ?? []).Contains(card)) continue;
+                        if (!ReferenceEquals(targets[at], fresh[at]))
+                        {
+                            fresh[at] = targets[at];
+                            Access.Call(card, "UpdateItem", targets[at]);
+                            updatedTags = true;
+                        }
+                        card.GetType().GetProperty("Poster")!.SetValue(card,image);
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception error) { Warn(error); }
+                }
+            }
+            try
+            {
+                var cache=Access.Get<PosterCacheService>(page,"_posterCache");
+                for(int retry=0;Needed();retry++)
+                {
+                    index=-1;
+                    await Task.WhenAll(Worker(),Worker());
+                    if(Needed())heroReady.TrySetResult(true);
+                    if(!Needed()||results.All(card=>card!=null&&Ready(card)))break;
+                    var delay=LandscapeRecovery.Delay(retry,cache.GetServerRetryDelay(session.ServerId));
+                    if(delay<=TimeSpan.Zero)break;
+                    await Task.Delay(delay,cancel.Token);
+                }
+                if (updatedTags && Needed()) await Save(session, cancel.Token);
+            }
+            catch(OperationCanceledException){}
+            catch(Exception error){Warn(error);}
+            finally
+            {
+                if(ReferenceEquals(freshLoad,cancel))freshLoad=null;
+                if(Current(session,token)){freshRunning=false;if(ReferenceEquals(generation,Access.Get<CancellationTokenSource?>(page,"_posterLoadCts")))heroReady.TrySetResult(true);Queue();}
+            }
         }
         async Task Open(object card,Button button)
         {
@@ -269,7 +337,9 @@ internal static class HomePresentation
             void Reveal(){
                 if(image.Source is not Microsoft.UI.Xaml.Media.Imaging.BitmapSource{PixelWidth:>0,PixelHeight:>0} source||ReferenceEquals(displayed,source))return;
                 displayed=source;
-                if(DesktopTheme.Options.ReducedMotion){image.Opacity=1;return;}
+                image.Stretch=ResumeArtwork.IsLandscape(source.PixelWidth,source.PixelHeight)?Stretch.UniformToFill:Stretch.Uniform;
+                image.Opacity=1;
+                if(DesktopTheme.Options.ReducedMotion || !image.IsLoaded) return;
                 var fade=new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation{From=0,To=1,Duration=new Duration(TimeSpan.FromMilliseconds(160))};
                 Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(fade,image);Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(fade,"Opacity");
                 var transition=new Microsoft.UI.Xaml.Media.Animation.Storyboard();transition.Children.Add(fade);transition.Begin();

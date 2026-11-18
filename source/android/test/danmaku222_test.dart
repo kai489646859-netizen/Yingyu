@@ -59,7 +59,7 @@ void main() {
         measure: (_) => 100,
       );
     }
-    expect(flights.active.map((item) => item.comment.time), [1.1, 1.5, 1.7]);
+    expect(flights.active.map((item) => item.comment.time), [1.1, 1.3, 1.5]);
   });
 
   test('legacy settings migrate and all appearance choices persist', () async {

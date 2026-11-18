@@ -57,7 +57,9 @@ void main() {
           if (r.url.path.endsWith('/Latest')) {
             return response(jsonEncode([movie.data]), 200);
           }
-          if (r.url.path.endsWith('/Resume')) {
+          if (r.url.path.endsWith('/Resume') ||
+              r.url.path.endsWith('/NextUp') ||
+              r.url.queryParameters['SortBy'] == 'DatePlayed,SortName') {
             return response('{"Items":[],"TotalRecordCount":0}', 200);
           }
           inventories++;

@@ -7,6 +7,7 @@ import '../core/catalog_filters.dart' show releaseYear;
 import '../core/emby.dart';
 import '../core/interface_preferences.dart';
 import '../core/models.dart';
+import '../core/server_resume.dart';
 import 'episode_badge.dart';
 import 'poster.dart';
 import 'poster_art.dart';
@@ -143,7 +144,7 @@ class LibraryPosterCard extends StatelessWidget {
               ),
               const SizedBox(height: 3),
               Text(
-                year,
+                item is CompletedResumeItem ? '已看完' : year,
                 maxLines: 1,
                 style: TextStyle(
                   fontSize: 12 * fontScale,

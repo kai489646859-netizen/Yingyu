@@ -199,11 +199,15 @@ void main() {
     });
   }
   test(
-    'completed caption keeps the state first and leaves partial captions intact',
+    'completed caption keeps the state first and resume captions show seconds',
     () {
       expect(
         continueWatchingCaption(
-          entry('ep', series: 'series', seconds: 0, played: true),
+          MediaItem({
+            ...entry('ep', series: 'series', seconds: 0, played: true).data,
+            'ParentIndexNumber': 1,
+            'IndexNumber': 8,
+          }),
         ),
         startsWith('已看完 · '),
       );
@@ -211,7 +215,10 @@ void main() {
         continueWatchingCaption(entry('movie', seconds: 0, played: true)),
         '已看完',
       );
-      expect(continueWatchingCaption(entry('movie', seconds: 120)), '已看 2 分钟');
+      expect(
+        continueWatchingCaption(entry('movie', seconds: 120)),
+        '继续 2:00 / 1:00:00',
+      );
     },
   );
 }

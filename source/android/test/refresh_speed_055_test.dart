@@ -91,6 +91,10 @@ void main() {
                 200,
               );
             }
+            if (r.url.path.endsWith('/NextUp') ||
+                r.url.queryParameters['SortBy'] == 'DatePlayed,SortName') {
+              return response('{"Items":[]}', 200);
+            }
             final ids = r.url.queryParameters['Ids'];
             if (ids != null) {
               lookups++;

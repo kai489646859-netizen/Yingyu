@@ -253,17 +253,23 @@ class CompletionSync extends ChangeNotifier {
     if (saved == null) return;
     var latest = current();
     if (latest == null) return;
-    if (object(saved.data['UserData'])['Played'] != true) {
+    bool matches(MediaItem item) =>
+        object(item.data['UserData'])['Played'] == true &&
+        item.resume == Duration.zero;
+    if (!matches(saved)) {
       if (latest['superseded'] == true) {
         throw const AppFailure('此已看记录后已有新的观看进度，保留待核对');
       }
       // Do not erase a newer rewatch on another device by marking an old
       // completion. Keep this receipt so the conflict remains visible.
-      final newer = DateTime.tryParse(
-        '${object(saved.data['UserData'])['LastPlayedDate']}',
-      );
+      final user = object(saved.data['UserData']);
+      final serverAt = DateTime.tryParse('${user['LastPlayedDate']}');
       final at = DateTime.parse(value['at'] as String);
-      if (saved.resume > Duration.zero && newer != null && newer.isAfter(at)) {
+      if (saved.resume > Duration.zero &&
+          (serverAt?.isAfter(at) == true ||
+              (user['Played'] == true &&
+                  serverAt == null &&
+                  progressFingerprint(saved) != value['baseline']))) {
         throw const AppFailure('Emby 有较新的观看进度，旧已看记录保留待核对');
       }
       latest = current();
@@ -278,8 +284,8 @@ class CompletionSync extends ChangeNotifier {
       if (saved == null) return;
       if (current() == null) return;
     }
-    if (object(saved.data['UserData'])['Played'] != true) {
-      throw const AppFailure('Emby 尚未确认已看完，记录保留待同步');
+    if (!matches(saved)) {
+      throw const AppFailure('Emby 尚未确认已看完及零续播位置，记录保留待同步');
     }
     // A delayed acknowledgement must not clear a later playback's receipt.
     latest = current();

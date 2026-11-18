@@ -168,7 +168,7 @@ void main() {
       ),
     );
     await tester.scrollUntilVisible(find.text('音量均衡（测试）'), 300);
-    expect(find.text('原生 HDR（测试）'), findsOneWidget);
+    expect(find.text('HDR（测试）'), findsOneWidget);
     expect(find.text('原生 HDR（试用）'), findsNothing);
     final row = find.ancestor(
       of: find.text('音量均衡（测试）'),

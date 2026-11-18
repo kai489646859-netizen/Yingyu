@@ -363,7 +363,6 @@ public static class NetworkBluray
         const int Window = 256 * 1024 * 1024;
         const int PreviousWindow = 64 * 1024 * 1024;
         const int PreparationWindow = 4 * 1024 * 1024;
-        const int MetadataFill = 4 * Chunk;
         const int MaxChunks = 32 * 1024 * 1024 / Chunk;
         readonly string? _preparationKey;
         internal void StartPreparation(CancellationToken launch)
@@ -432,7 +431,7 @@ public static class NetworkBluray
                     else
                     {
                         long start = index * Chunk;
-                        // 1.3.4 bounded media pipeline; directory preparation
+                        // 1.3.5 bounded media pipeline; directory preparation
                         // and the original validated fallback remain below.
                         if (!_preparing && !_readAheadDisabled)
                         {
@@ -460,27 +459,19 @@ public static class NetworkBluray
                         }
                         if (!_cache.TryGetValue(index, out bytes!))
                         {
-                        // Nearby forward demuxer probes can consume the current
-                        // response instead of reopening HTTP for every >64KiB
-                        // gap. The skipped bytes remain bounded/cached; distant
-                        // targets still start a validated Range at that target.
-                        int gapLimit = 1024 * 1024;
-                        if (_body == null || start < _cursor || start >= _end || start - _cursor > gapLimit)
-                            OpenWindow(start, token);
-                        // Sequential playback consumes the same Range response on demand.
-                        // Random demuxer probes read only 64 KiB, never wait for the
-                        // entire former 1 MiB block or the 4 MiB HTTP window to fill.
-                        // Bounded directory read-ahead avoids reopening for the
-                        // adjacent playlists/CLPI requested by libbluray. Media
-                        // reads remain one 64 KiB block at a time.
-                        long fillTo = _preparing ? Math.Min(start + MetadataFill, _end) : start + 1;
-                        while (_cursor < fillTo)
-                        {
-                            long block = _cursor / Chunk;
-                            bytes = ReadChunk(token);
-                            _cache.Publish(block, bytes);
-                        }
-                        if (!_cache.TryGetValue(index, out bytes!)) throw new IOException("ISO block missing after complete read");
+                            // Keep adjacent probes on the same HTTP response.
+                            // Return the requested directory block immediately;
+                            // adjacent MPLS/CLPI blocks are read if requested.
+                            int gapLimit = 1024 * 1024;
+                            if (_body == null || start < _cursor || start >= _end || start - _cursor > gapLimit)
+                                OpenWindow(start, token);
+                            while (_cursor <= start)
+                            {
+                                long block = _cursor / Chunk;
+                                bytes = ReadChunk(token);
+                                _cache.Publish(block, bytes);
+                            }
+                            if (!_cache.TryGetValue(index, out bytes!)) throw new IOException("ISO block missing after complete read");
                         }
                     }
                     // Hold ownership through the native copy: another reader must

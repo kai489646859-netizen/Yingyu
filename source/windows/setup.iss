@@ -1,6 +1,8 @@
-#define AppVersion "1.3.4"
+﻿#define AppVersion "1.5.8"
+#undef AppVersion
+#define AppVersion "1.7.1"
 #ifndef PayloadRoot
-  #define PayloadRoot "payload"
+  #define PayloadRoot "..\release"
 #endif
 #ifndef InstallerOutput
   #define InstallerOutput "out"
@@ -26,7 +28,7 @@ OutputBaseFilename=Yingyu-Setup-x64-{#AppVersion}
 SetupIconFile={#PayloadRoot}\Assets\YingyuAppIcon.ico
 UninstallDisplayIcon={app}\Yingyu.exe
 UninstallDisplayName=映屿 测试版 {#AppVersion}
-VersionInfoVersion=1.3.4.0
+VersionInfoVersion=1.7.1.0
 VersionInfoProductVersion={#AppVersion}
 VersionInfoDescription=映屿 测试版 {#AppVersion} 安装程序
 Compression=lzma2/normal
@@ -290,9 +292,12 @@ begin
   DeletePersonalFile(DataRoot, 'image-policy.json');
   DeletePersonalFile(DataRoot, 'browse-refresh.txt');
   DeletePersonalFile(DataRoot, 'desktop-theme.json');
+  DeletePersonalFile(DataRoot, 'danmaku-cloud.json');
   DeletePersonalFile(DataRoot, 'actor-cache-settings.json');
   DeletePersonalFile(DataRoot, 'profile-order.json');
   DeleteExactTree(DataRoot, 'home-discovery');
+  DeleteExactTree(DataRoot, 'DanmakuCorrections');
+  DeleteExactTree(DataRoot, 'Shaders');
   { Interrupted writes from the actual stores; no arbitrary *.tmp cleanup. }
   DeletePersonalFile(DataRoot, 'server-profiles.json.tmp');
   DeletePersonalFile(DataRoot, 'server-profiles.backup.json.tmp');
@@ -304,6 +309,7 @@ begin
   DeleteGuidPersonalStaging(DataRoot, 'desktop-library.json');
   DeleteGuidPersonalStaging(DataRoot, 'video-cache-settings-v1.json');
   DeleteGuidPersonalStaging(DataRoot, 'desktop-theme.json');
+  DeleteGuidPersonalStaging(DataRoot, 'danmaku-cloud.json');
   DeleteGuidPersonalStaging(DataRoot, 'actor-cache-settings.json');
   DeleteExactTree(DataRoot, '日志');
   { PlaybackSync is personal progress despite its historical Cache parent. }

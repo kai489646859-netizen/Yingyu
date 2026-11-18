@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Reflection;
 using EmbyDesktop.Core.Models;
 using EmbyDesktop.Core.Services;
 
@@ -7,6 +9,8 @@ public static class PlaybackRouteIdentity
 {
     sealed record Scope(EmbyApiClient Client, string? SessionId);
     static readonly AsyncLocal<Scope?> Preparation = new();
+    static readonly string BuildVersion = typeof(PlaybackRouteIdentity).Assembly
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "未知";
 
     // Each caller supplies the same PlaybackInfoResponse used by playback
     // reports and source selection. Do not generate another session identity.
@@ -33,7 +37,14 @@ public static class PlaybackRouteIdentity
     {
         var previous = Preparation.Value;
         Preparation.Value = new Scope(client, playbackInfo?.PlaySessionId);
-        try { return await client.PreparePlaybackUriAsync(itemId, source, cancellationToken, maximumWait).ConfigureAwait(false); }
+        long started = Stopwatch.GetTimestamp();
+        try
+        {
+            var uri = await client.PreparePlaybackUriAsync(itemId, source, cancellationToken, maximumWait).ConfigureAwait(false);
+            PlaybackTransport.Write("Info", "Playback.Timing",
+                $"阶段=MediaRouteReady，耗时={(long)Stopwatch.GetElapsedTime(started).TotalMilliseconds}ms，桌面构建={BuildVersion}。");
+            return uri;
+        }
         finally { Preparation.Value = previous; }
     }
 

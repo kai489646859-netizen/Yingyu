@@ -266,12 +266,15 @@ internal static class DesktopCardSurface
             title.TextAlignment=subtitle.TextAlignment=landscape?TextAlignment.Center:TextAlignment.Left;
             ToolTipService.SetToolTip(title,title.Text);ToolTipService.SetToolTip(subtitle,subtitle.Text);
             var progressItem=landscape||history?item:ResumeFor(Owner,item);
-            percentage=progressItem is not null?DesktopReadability.Percentage(progressItem,0,true)
+            bool completed=(landscape||history)&&!ResumeServerHistory.Show(item);
+            percentage=completed?100:progressItem is not null?DesktopReadability.Percentage(progressItem,0,true)
                 :item.Type is "Series" or "Season"?0:DesktopReadability.Percentage(item,(double?)card.GetType().GetProperty("Progress")?.GetValue(card)??0,false);
-            track.Visibility=(!(landscape||history)||!ResumeServerHistory.Waiting(item)&&ResumeServerHistory.Show(item))&&(progressItem?.UserData?.PlaybackPositionTicks>0||progressItem?.RunTimeTicks is >0||percentage>0&&percentage<100)?Visibility.Visible:Visibility.Collapsed;
-            track.Background=DesktopVisuals.Brush(0xEE101018);track.BorderBrush=DesktopVisuals.Brush(0);track.BorderThickness=new Thickness(0);fill.Background=DesktopVisuals.Brush(DesktopReadability.Progress(palette));
+            track.Visibility=completed||(!(landscape||history)||!ResumeServerHistory.Waiting(item))&&(progressItem?.UserData?.PlaybackPositionTicks>0||progressItem?.RunTimeTicks is >0||percentage>0&&percentage<100)?Visibility.Visible:Visibility.Collapsed;
+            bool unknownRatio = !completed && progressItem?.UserData?.PlaybackPositionTicks > 0 && percentage == 0;
+            track.Background=DesktopVisuals.Brush(unknownRatio?0xAA92929E:0xEE101018);track.BorderBrush=DesktopVisuals.Brush(0);track.BorderThickness=new Thickness(0);fill.Background=DesktopVisuals.Brush(DesktopReadability.Progress(palette));
             string progressLabel=(landscape||history)&&ResumeServerHistory.Waiting(item)?"待播放"
-                :(landscape||history)&&!ResumeServerHistory.Show(item)?"已看完":$"已观看 {percentage:0}%";
+                :completed?"已看完"
+                :unknownRatio?subtitle.Text:$"已观看 {percentage:0}%";
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(frame,$"{title.Text}，{progressLabel}");
             rating.Visibility=!landscape&&item.CommunityRating is >=0 and <=10?Visibility.Visible:Visibility.Collapsed;
             if(themeChanged)rating.Background=DesktopVisuals.Brush(palette.Selection);

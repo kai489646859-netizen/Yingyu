@@ -26,6 +26,30 @@ public static class DetailResourceBadges
         return selected;
     }
     public static void Refresh(object page){if(Access.Get<TextBlock?>(page,"DetailMetadataText") is null)return;States.GetValue(page,p=>new State((FrameworkElement)p)).Refresh();}
+    public static async Task<PlaybackInfoResponse> VersionInfo(EmbyApiClient client,string itemId,long? maximumStreamingBitrate,
+        long? startTimeTicks,TimeSpan? timeout,CancellationToken token,Action<string,TimeSpan>? timing,object page)
+    {
+        bool Current()=>ReferenceEquals(client,Access.Get<EmbyApiClient?>(page,"_client"))
+            &&Access.Get<EmbyItem?>(page,"_detailPlayableItem")?.Id==itemId
+            &&Access.Get<Grid?>(page,"DetailView")?.Visibility==Visibility.Visible;
+        token.ThrowIfCancellationRequested();
+        if(!Current())throw new OperationCanceledException();
+        States.TryGetValue(page,out var state);
+        List<MediaSourceInfo> DialogChoices(IEnumerable<MediaSourceInfo> choices) =>
+            choices.Select((source,index)=>ResourceSourceInfo.DialogSource(source,
+                state?.MetadataFor(itemId,client,source.Id),index+1)).ToList();
+        if(state?.VersionChoices(itemId,client) is {Length:>1} choices)
+            return new PlaybackInfoResponse{MediaSources=DialogChoices(choices)};
+
+        var response=await client.GetDirectPlaybackInfoAsync(itemId,timeout,token,timing);
+        if(!Current())throw new OperationCanceledException();
+        return new PlaybackInfoResponse{PlaySessionId=response.PlaySessionId,MediaSources=DialogChoices(DistinctVersions(response.MediaSources,[]))};
+    }
+
+    internal static MediaSourceInfo[] DistinctVersions(IEnumerable<MediaSourceInfo> playback,IEnumerable<MediaSourceInfo> metadata)
+        =>playback.Concat(metadata).Where(source=>source!=null&&!string.IsNullOrWhiteSpace(source.Id))
+            .DistinctBy(source=>source.Id,StringComparer.Ordinal).ToArray();
+
     public static Task<ContentDialogResult> ShowVersions(ContentDialog dialog)
     {
         if(dialog.Content is ListView list)
@@ -58,6 +82,14 @@ public static class DetailResourceBadges
             page.Unloaded+=(_,_)=>{pending?.Cancel();pending=null;metadata=[];metadataItem=null;metadataClient=null;metadataSession=null;Sources=[];Selected=null;Item=null;Client=null;root.Visibility=Visibility.Collapsed;};
             if(Access.Get<Grid?>(page,"DetailView") is {} detail)detail.RegisterPropertyChangedCallback(UIElement.VisibilityProperty,(_,_)=>Refresh());
         }
+        internal MediaSourceInfo[] VersionChoices(string item,EmbyApiClient client)
+            =>DistinctVersions(Item==item&&ReferenceEquals(Client,client)?Sources:[],
+                metadataItem==item&&ReferenceEquals(metadataClient,client)
+                    &&ReferenceEquals(metadataSession,Access.Get<EmbySession?>(page,"_session"))?metadata:[]);
+        internal MediaSourceInfo? MetadataFor(string item,EmbyApiClient client,string source)
+            =>metadataItem==item&&ReferenceEquals(metadataClient,client)
+                &&ReferenceEquals(metadataSession,Access.Get<EmbySession?>(page,"_session"))
+                ?metadata.FirstOrDefault(entry=>entry.Id==source):null;
         internal void Refresh()
         {
             var item=Access.Get<EmbyItem?>(page,"_detailPlayableItem");
@@ -84,6 +116,9 @@ public static class DetailResourceBadges
             }
             badges.Clear();rows.Children.Clear();
             root.Visibility=item==null||!visible?Visibility.Collapsed:Visibility.Visible;
+            var choices=item is not null&&client is not null&&visible?VersionChoices(item.Id,client):[];
+            var versionButton=Access.Get<Button?>(page,"DetailSourceButton");
+            if(versionButton!=null)versionButton.Visibility=choices.Length>1?Visibility.Visible:Visibility.Collapsed;
             if(item==null)return;
             MediaSourceInfo? source=null;
             if(item.Id==Item&&ReferenceEquals(Client,Access.Get<EmbyApiClient?>(page,"_client")))
@@ -99,28 +134,21 @@ public static class DetailResourceBadges
             var supplement=wanted!=null?metadata.FirstOrDefault(s=>s.Id==wanted):metadata.Length==1?metadata[0]:PlaybackSourcePolicy.SelectBestOriginal(metadata.Where(s=>s.MediaStreams!=null&&s.MediaStreams.All(v=>v!=null)));
             // Never borrow metadata from another edition when a particular ID was selected.
             if(source==null)source=supplement;
-            var video=source==null?null:ResourceSourceInfo.Video(source);
-            var extra=supplement==null?null:ResourceSourceInfo.Video(supplement);
-            caption.Text=Sources.Length>1&&source!=null?"当前选用资源 · 服务器资料":"资源信息 · 服务器资料";
-            if(source!=null)
+            var labels=ResourceSourceInfo.Describe(source,supplement,choices.Length==1?item:null);
+            caption.Text=choices.Length>1&&source!=null?"当前选用资源":"资源信息";
+            if(versionButton!=null&&choices.Length>1)
             {
-                var dimensions=video;
-                string resolution=ResourceSourceInfo.Resolution(dimensions?.Width,dimensions?.Height);
-                if(resolution=="分辨率未知"&&extra!=null)
+                var picked=wanted==null?source:choices.FirstOrDefault(entry=>entry.Id==wanted);
+                if(picked==null)versionButton.Content="选择版本";
+                else
                 {
-                    dimensions=extra;
-                    resolution=ResourceSourceInfo.Resolution(extra.Width,extra.Height);
+                    var pickedLabels=ResourceSourceInfo.Describe(picked,MetadataFor(item.Id,client!,picked.Id));
+                    versionButton.Content=pickedLabels.Title($"版本 {Array.FindIndex(choices,entry=>entry.Id==picked.Id)+1}");
                 }
-                if(resolution=="1440p" && dimensions is {Width:>0,Height:>0}
-                    && (dimensions.Width!=2560 || dimensions.Height!=1440))
-                    resolution=$"{dimensions.Width}×{dimensions.Height}";
-                string format=ResourceSourceInfo.ServerFormat(source);
-                if(format=="格式未知"&&supplement!=null)format=ResourceSourceInfo.ServerFormat(supplement);
-                if(resolution!="分辨率未知")Add("分辨率",resolution,0xFF19719B);
-                if(format!="格式未知")Add("格式",format,format=="杜比视界"?0xFF6850A4u:0xFF178066u);
-                string? codec=video?.Codec??extra?.Codec;
-                if(!string.IsNullOrWhiteSpace(codec))Add("编码",codec.ToUpperInvariant(),0xFF526372);
             }
+            if(labels.Resolution.Length>0)Add("分辨率",labels.Resolution,0xFF19719B);
+            if(labels.Range.Length>0)Add("格式",labels.Range,labels.Range=="杜比视界"?0xFF6850A4u:0xFF178066u);
+            if(labels.Codec.Length>0)Add("编码",labels.Codec,0xFF526372);
             if(badges.Count==0)rows.Children.Add(new TextBlock{Text=pending!=null?"正在读取资源资料…":metadataFailed?"资源资料暂不可用":"服务器未提供资源规格",FontSize=12,Opacity=.7});
             else Arrange();
         }
@@ -138,7 +166,13 @@ public static class DetailResourceBadges
                 {
                     var tracks=streams.Deserialize<List<MediaStreamInfo>>(options)??[];
                     if(sources.Length==0)sources=[new MediaSourceInfo{Id=item,MediaStreams=tracks}];
-                    else if(sources.Length==1&&(sources[0].MediaStreams==null||sources[0].MediaStreams.Count==0))sources[0]=new MediaSourceInfo{Id=sources[0].Id,MediaStreams=tracks};
+                    else if(sources.Length==1)
+                    {
+                        var source=sources[0];
+                        if(source.MediaStreams is {Count:0})source.MediaStreams.AddRange(tracks);
+                        else if(source.MediaStreams==null)
+                            sources[0]=new MediaSourceInfo{Id=source.Id,Name=source.Name,Path=source.Path,Container=source.Container,MediaStreams=tracks};
+                    }
                 }
                 if(ReferenceEquals(pending,cancellation))metadata=sources;
             }

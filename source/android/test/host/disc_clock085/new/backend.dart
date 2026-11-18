@@ -90,7 +90,7 @@ class BackendHarness {
   final _networkFile=true;
   DiscBufferPlan? _appliedDiscPlan;
   Future<DiscBufferPlan> _discPlan(double value,{required bool fast}) async => DiscBufferPlan(speed:value,fast:fast,baseBytes:64*1024*1024,memoryMiB:32);
-  Future<void> _setDiscPlan(DiscBufferPlan value) async { _appliedDiscPlan=value; }
+  Future<void> _setDiscPlan(DiscBufferPlan value, {double? speed}) async { _appliedDiscPlan=value; }
   void _retainDiscCache() {}
   void _updatePersistentReadAhead() {}
   String get _cacheDescription=>'synthetic cache IO';
@@ -731,7 +731,6 @@ void expectVideo() => _videoLoss.reset(expectedVideo:true);
       _retainDiscCache();
       return;
     }
-    if (_disc != null) _readAhead.speed(value);
     _rateProbe.cancel();
     final previousSpeed = _speed;
     _observation.invalidate();
@@ -750,7 +749,7 @@ void expectVideo() => _videoLoss.reset(expectedVideo:true);
                 previous.tier >= discBufferTier(value)
             ? previous.withPlaybackSpeed(value)
             : await _discPlan(value, fast: _bufferPhase.fast);
-        await _setDiscPlan(plan);
+        await _setDiscPlan(plan, speed: value);
       }
       if (_disposed) return;
       await player.setRate(value);
@@ -765,7 +764,7 @@ void expectVideo() => _videoLoss.reset(expectedVideo:true);
       }
       if (!_disposed && previous != null) {
         try {
-          await _setDiscPlan(previous);
+          await _setDiscPlan(previous, speed: previousSpeed);
         } catch (_) {
           log?.add(
             LogArea.player,
@@ -780,8 +779,6 @@ void expectVideo() => _videoLoss.reset(expectedVideo:true);
     _speed = value;
     _dolbyRecovery.observeSpeed(value);
     _runtimeWatch.observeSpeed(value);
-    _readAhead.speed(value, retainPeak: _disc != null);
-    _updatePersistentReadAhead();
     _retainDiscCache();
     _observation.invalidate();
     if (_bufferPhase.promotionFailed) {

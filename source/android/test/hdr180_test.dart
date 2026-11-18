@@ -330,6 +330,97 @@ void main() {
       },
     );
   }
+  for (final (first, stillCurrent) in [
+    ('pq', true),
+    ('pq', false),
+    ('hlg', true),
+  ]) {
+    test(
+      'ordinary HDR fallback descends; first=$first, current=$stillCurrent',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        var current = true;
+        final operations = <(int, String)>[];
+        binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel('yingyu/native_hdr'),
+          (call) async => switch (call.method) {
+            'watch' => {
+              'sdk': 37,
+              'display': 0,
+              'hdrTypes': [2, 3],
+            },
+            'probe' => {'status': 'ready'},
+            _ => null,
+          },
+        );
+        final adapter = NativeHdrAdapter(
+          write:
+              ({
+                required token,
+                required width,
+                required height,
+                required transfer,
+                required fill,
+              }) async {
+                operations.add((token, transfer));
+                if (token == 7) {
+                  current = stillCurrent;
+                  return false;
+                }
+                return token != 0;
+              },
+          active: () => true,
+          message: (_) {},
+          failure: fail,
+          detach: () async {},
+        );
+        Future<void> deliver(String transfer, int token) async {
+          for (var i = 0; i < 100 && adapter.request.value != transfer; i++) {
+            await Future<void>.delayed(const Duration(milliseconds: 5));
+          }
+          expect(adapter.request.value, transfer);
+          final sent = Completer<void>();
+          // ignore: deprecated_member_use
+          binding.defaultBinaryMessenger.handlePlatformMessage(
+            'yingyu/native_hdr',
+            const StandardMethodCodec().encodeMethodCall(
+              MethodCall('surface', {
+                'owner': adapter.owner,
+                'sdk': 37,
+                'display': 0,
+                'hdrTypes': [2, 3],
+                'token': token,
+                'width': 1920,
+                'height': 1080,
+              }),
+            ),
+            (_) => sent.complete(),
+          );
+          await sent.future;
+        }
+
+        try {
+          await adapter.start();
+          final job = adapter.prepareWithHlgFallback(
+            first,
+            current: () async => current,
+          );
+          await deliver(first, 7);
+          final retry = first == 'pq' && stillCurrent;
+          if (retry) await deliver('hlg', 8);
+          expect(await job, retry);
+          expect(operations, [(7, first), (0, first), if (retry) (8, 'hlg')]);
+        } finally {
+          await adapter.close();
+          binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            const MethodChannel('yingyu/native_hdr'),
+            null,
+          );
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+  }
   for (final failing in [false, true]) {
     test(
       'decoded Dolby keeps gpu-next and verifies HDR output; PQ renderer fails=$failing',

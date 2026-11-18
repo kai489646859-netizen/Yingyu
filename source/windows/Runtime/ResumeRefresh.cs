@@ -3,6 +3,8 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using EmbyDesktop.Core.Models;
+using EmbyDesktop.Core.Services;
 
 namespace Yingyu.Update;
 
@@ -29,7 +31,7 @@ public static class ResumeRefresh
             this.page=page;timer=page.DispatcherQueue.CreateTimer();timer.Interval=TimeSpan.FromSeconds(2);
             timer.Tick+=(_,_)=>Check();page.Loaded+=(_,_)=>Start();page.Unloaded+=(_,_)=>{timer.Stop();wasVisible=false;};
         }
-        bool Foreground()=>page.XamlRoot is {} root&&GetForegroundWindow()==Microsoft.UI.Win32Interop.GetWindowFromWindowId(root.ContentIslandEnvironment.AppWindowId);
+        bool Foreground()=>page.XamlRoot?.ContentIslandEnvironment is {} island&&GetForegroundWindow()==Microsoft.UI.Win32Interop.GetWindowFromWindowId(island.AppWindowId);
         bool Flag(string name)=>page.GetType().GetField(name,Flags)?.GetValue(page) is true;
         bool Visible()=>page.IsLoaded&&Access.Get<string?>(page,"_activeSnapshotKey")=="home"
             &&Access.Get<Grid>(page,"LibraryView").Visibility==Visibility.Visible
@@ -37,7 +39,7 @@ public static class ResumeRefresh
             &&page.GetType().GetProperty("IsPlaybackActive",Flags)?.GetValue(page) is not true
             &&!Flag("_profileSwitchInProgress")&&!Flag("_libraryLoadInProgress")&&!Flag("_authenticationNeedsAttention");
         internal void Start(){if(page.IsLoaded){timer.Start();Check();}}
-        void Check(){try{Pulse(Foreground());}catch(Exception e){timer.Stop();if(!reported){reported=true;PlaybackTransport.Write("Warning","Library.Resume","窗口状态核对暂不可用，保留继续观看与原界面；"+e.GetType().Name);}}}
+        void Check(){try{Pulse(Foreground());}catch(Exception e){wasVisible=false;if(e is not NullReferenceException)timer.Stop();if(!reported){reported=true;PlaybackTransport.Write("Warning","Library.Resume","窗口状态核对暂不可用，保留继续观看与原界面；"+e.GetType().Name);}}}
         internal void Pulse(bool foreground)
         {
             var currentSession=Access.Get<object?>(page,"_session");var currentClient=Access.Get<object?>(page,"_client");
@@ -53,10 +55,17 @@ public static class ResumeRefresh
         }
         async void Run(bool fresh)
         {
-            var expectedSession=Access.Get<object?>(page,"_session");var expectedClient=Access.Get<object?>(page,"_client");
+            var expectedSession=Access.Get<EmbySession?>(page,"_session");var expectedClient=Access.Get<object?>(page,"_client");
+            bool Current()=>ReferenceEquals(expectedSession,Access.Get<object?>(page,"_session"))
+                &&ReferenceEquals(expectedClient,Access.Get<object?>(page,"_client"));
             try{
-                await (Task)Access.Call(page,"RefreshResumeItemsAsync",fresh)!;
-                if(ReferenceEquals(expectedSession,Access.Get<object?>(page,"_session"))&&ReferenceEquals(expectedClient,Access.Get<object?>(page,"_client"))&&Flag("_playbackSyncRequested"))await ResumeDeviceSync.Drain(page);
+                if(expectedSession is null || expectedClient is null)return;
+                var store=Access.Get<PendingPlaybackSyncStore>(page,"_pendingPlaybackSyncStore");
+                var entries=await store.LoadAsync(expectedSession.ServerId,expectedSession.UserId);
+                if(!Current())return;
+                ResumeSync.RequestPending(page,expectedSession,entries);
+                if(Flag("_playbackSyncRequested"))await ResumeDeviceSync.Drain(page);
+                else await (Task)Access.Call(page,"RefreshResumeItemsAsync",fresh)!;
             }
             catch(OperationCanceledException){}
             catch(Exception e){PlaybackTransport.Write("Warning","Library.Resume","继续观看自动核对未完成，保留当前内容；"+e.GetType().Name);}

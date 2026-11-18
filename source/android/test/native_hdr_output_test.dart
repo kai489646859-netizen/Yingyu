@@ -11,6 +11,7 @@ class OutputHarness {
     'tone-mapping': 'bt.2390',
     'dither': 'fruit',
     'dither-depth': '8',
+    'hdr-contrast-recovery': '0.30',
     'panscan': '0',
     'vid': 'auto',
   };
@@ -86,9 +87,11 @@ void main() {
         expect(h.options['target-peak'], 'auto');
         expect(h.options['target-trc'], transfer);
         expect(h.options['target-prim'], 'bt.2020');
+        expect(h.options['hdr-contrast-recovery'], '0.0');
         await h.apply(token: 0);
         expect(h.options['target-peak'], '750');
         expect(h.options['target-trc'], 'bt.1886');
+        expect(h.options['hdr-contrast-recovery'], '0.30');
       },
     );
   }

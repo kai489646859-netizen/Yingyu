@@ -269,26 +269,34 @@ void main() {
           capture,
           'shadow-controls104-${size.width.toInt()}',
         );
-        await tester.scrollUntilVisible(
-          find.text('中度'),
-          80,
-          scrollable: find.byType(Scrollable).last,
-        );
+        final dark = find.byKey(const Key('picture-shadows'));
+        final bright = find.byKey(const Key('picture-brightness'));
+        expect(tester.widget<Slider>(dark).divisions, isNull);
+        expect(tester.widget<Slider>(bright).divisions, isNull);
+        await tester.ensureVisible(dark);
         await tester.pumpAndSettle();
-        await tester.tap(find.text('中度'));
-        await tester.pumpAndSettle();
-        expect(backend.shadowEnhancement, .5);
+        final hand = await tester.startGesture(tester.getCenter(dark));
+        await hand.moveBy(const Offset(25, 0));
+        await tester.pump(const Duration(milliseconds: 120));
+        await tester.pump(const Duration(milliseconds: 120));
+        final first = backend.shadowEnhancement;
+        expect(first, greaterThan(0));
+        await hand.moveBy(const Offset(22, 0));
+        await tester.pump(const Duration(milliseconds: 120));
+        await tester.pump(const Duration(milliseconds: 120));
+        expect(backend.shadowEnhancement, greaterThan(first));
         expect(backend.gamma, 0);
-        await tester.scrollUntilVisible(
-          find.text('轻度提亮'),
-          -80,
-          scrollable: find.byType(Scrollable).last,
-        );
+        final shadow = backend.shadowEnhancement;
+        await hand.up();
         await tester.pumpAndSettle();
-        await tester.tap(find.text('轻度提亮'));
+        tester.widget<Slider>(bright).onChanged!(5.3);
         await tester.pumpAndSettle();
-        expect(backend.gamma, 5);
-        expect(backend.shadowEnhancement, .5);
+        expect(backend.gamma, 5.3);
+        expect(backend.shadowEnhancement, shadow);
+        await tester.tap(find.text('恢复原画'));
+        await tester.pumpAndSettle();
+        expect(backend.gamma, 0);
+        expect(backend.shadowEnhancement, 0);
         expect(tester.takeException(), isNull);
       },
     );

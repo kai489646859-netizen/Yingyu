@@ -1,7 +1,7 @@
 name: yingyu
 description: 映屿 Android Emby 播放器
 publish_to: none
-version: 2.2.4+253
+version: 2.6.5+294
 environment:
   sdk: '>=3.12.0 <4.0.0'
 dependencies:

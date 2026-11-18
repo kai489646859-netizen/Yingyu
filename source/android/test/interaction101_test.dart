@@ -290,11 +290,13 @@ void main() {
     (tester) async {
       await mount(tester, 'pictureBrightness');
       expect(backend.pictureWrites, 0);
-      expect(find.text('原始画面'), findsOneWidget);
-      await tester.tap(find.text('轻度提亮'));
+      expect(find.text('恢复原画'), findsOneWidget);
+      tester
+          .widget<Slider>(find.byKey(const Key('picture-brightness')))
+          .onChanged!(5.3);
       await tester.pumpAndSettle();
-      expect(backend.gamma, 5);
-      await tester.tap(find.text('原始画面'));
+      expect(backend.gamma, 5.3);
+      await tester.tap(find.text('恢复原画'));
       await tester.pumpAndSettle();
       expect(backend.gamma, 0);
       expect(backend.writes, isEmpty);

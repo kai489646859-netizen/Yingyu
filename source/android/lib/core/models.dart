@@ -14,6 +14,48 @@ Duration fromTicks(dynamic value) =>
     Duration(microseconds: integer(value) ~/ 10);
 int ticks(Duration value) => value.inMicroseconds * 10;
 
+final _episodeOrdinal = RegExp(
+  r'(?:^|[\s._-])S\d{1,3}E(\d{1,4})(?!\d)|第\s*(\d{1,4})\s*[集话話]',
+  caseSensitive: false,
+);
+final _seasonOrdinal = RegExp(
+  r'(?:^|[\s._-])S(\d{1,3})E\d{1,4}(?!\d)|第\s*(\d{1,3})\s*季',
+  caseSensitive: false,
+);
+final _pathSeparator = RegExp(r'[/\\]');
+final _urlSuffix = RegExp(r'[?#]');
+final _episodeFileExtension = RegExp(
+  r'\.(?:strm|mkv|mp4|m2ts|avi|mov|ts|webm)$',
+  caseSensitive: false,
+);
+
+Set<int> episodeOrdinalsIn(String label) => _ordinalMatches(
+  _episodeOrdinal,
+  label,
+).where((number) => number > 0).toSet();
+
+Iterable<int> _ordinalMatches(RegExp pattern, String label) => pattern
+    .allMatches(label)
+    .map((match) => int.parse((match.group(1) ?? match.group(2))!));
+
+String? _mediaBasename(Object? path) => path is String
+    ? path.split(_urlSuffix).first.split(_pathSeparator).last
+    : null;
+
+typedef EpisodeDisplay = ({int? season, int? episode});
+const episodeDisplayHintsKey = '_YingyuEpisodeDisplayHintsV1';
+
+String episodeDisplayLabel(
+  EpisodeDisplay numbers, {
+  bool showSeason = true,
+  bool compact = false,
+}) => [
+  if (numbers.season case final int season when showSeason)
+    compact ? '${season}季' : '第 $season 季',
+  if (numbers.episode case final int episode)
+    compact ? '${episode}集' : '第 $episode 集',
+].join(compact ? '' : ' · ');
+
 class Session {
   const Session({
     required this.base,
@@ -70,10 +112,95 @@ class MediaItem {
       ? data['BackdropImageTags'][0].toString()
       : '';
   Duration get duration => fromTicks(data['RunTimeTicks']);
+
+  /// Display-only fallback for a title with a single advertised version.
+  Duration get watchDuration {
+    final runtime = duration;
+    if (runtime > Duration.zero) return runtime;
+    final sources = data['MediaSources'];
+    if (sources is! List || sources.length != 1) return Duration.zero;
+    return fromTicks(object(sources.single)['RunTimeTicks']);
+  }
+
   Duration get resume =>
       fromTicks(object(data['UserData'])['PlaybackPositionTicks']);
+
+  /// Read-only display inference. Never replace the server's episode identity.
+  EpisodeDisplay episodeDisplay({MediaItem? catalogue}) {
+    if (type != 'Episode') return (season: null, episode: null);
+    final entries = [
+      this,
+      if (catalogue != null && id.isNotEmpty && catalogue.id == id) catalogue,
+    ];
+    final structured = entries.map((entry) => entry.data);
+    final labels = [
+      for (final entry in entries) ...[
+        if (entry.data['Name'] case final String name) name,
+        if (entry.data['OriginalTitle'] case final String name) name,
+        ?_mediaBasename(entry.data['Path']),
+      ],
+    ];
+    final sources = [
+      for (final entry in entries)
+        for (final source in objects(entry.data['MediaSources'])) ...[
+          if (source['Name'] case final String name) name,
+          ?_mediaBasename(source['Path']),
+        ],
+    ];
+    int? read(String key, int minimum, Iterable<int> Function(String) parse) {
+      for (final data in structured) {
+        final value = int.tryParse('${data[key]}');
+        if (value != null && value >= minimum) return value;
+      }
+      for (final label in labels) {
+        final numbers = parse(label).toSet();
+        if (numbers.isNotEmpty) {
+          return numbers.length == 1 ? numbers.single : null;
+        }
+      }
+      final numbers = {
+        ...sources.expand(parse),
+        for (final entry in entries)
+          if (object(entry.data[episodeDisplayHintsKey])[key]
+              case final int number when number >= minimum)
+            number,
+      };
+      return numbers.length == 1 ? numbers.single : null;
+    }
+
+    return (
+      season: read(
+        'ParentIndexNumber',
+        0,
+        (label) => _ordinalMatches(_seasonOrdinal, label),
+      ),
+      episode: read('IndexNumber', 1, episodeOrdinalsIn),
+    );
+  }
+
+  String episodeDisplayTitle(EpisodeDisplay numbers) {
+    final name = title.trim();
+    final series = data['SeriesName']?.toString().trim() ?? '';
+    final fileStyle =
+        episodeOrdinalsIn(name).isNotEmpty ||
+        (series.isNotEmpty && name.startsWith(series)) ||
+        _episodeFileExtension.hasMatch(name);
+    if (!fileStyle && name.isNotEmpty && name != '未命名') return name;
+    final label = episodeDisplayLabel(numbers, showSeason: false);
+    return label.isEmpty ? '分集' : label;
+  }
+
+  String get resumeDisplayTitle {
+    if (type != 'Episode') return title;
+    final series = data['SeriesName']?.toString().trim() ?? '';
+    return series.isEmpty ? episodeDisplayTitle(episodeDisplay()) : series;
+  }
+
   String get subtitle => type == 'Episode'
-      ? '${data['SeriesName'] ?? ''} · 第 ${data['ParentIndexNumber'] ?? '?'} 季 第 ${data['IndexNumber'] ?? '?'} 集'
+      ? [
+          '${data['SeriesName'] ?? ''}',
+          episodeDisplayLabel(episodeDisplay()),
+        ].where((part) => part.isNotEmpty).join(' · ')
       : [
           year,
           if (duration.inMinutes > 0) '${duration.inMinutes} 分钟',
@@ -141,6 +268,7 @@ class PlaybackRoute {
     this.discFolderUrl,
     this.defaultAudioIndex,
     this.defaultSubtitleIndex,
+    this.sourceDuration = Duration.zero,
   });
   final String url, sourceId, sessionId;
   final Map<String, String> headers;
@@ -155,6 +283,7 @@ class PlaybackRoute {
   final DiscKind discKind;
   final String? discFolderUrl;
   final int? defaultAudioIndex, defaultSubtitleIndex;
+  final Duration sourceDuration;
 }
 
 class AppFailure implements Exception {

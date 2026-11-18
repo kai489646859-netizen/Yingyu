@@ -29,10 +29,18 @@ internal static class DesktopSubtitles
         WinRT.Interop.InitializeWithWindow.Initialize(picker,hwnd);
         var file=await picker.PickSingleFileAsync();if(file!=null&&state.Current&&generation==state.Generation)await state.Load(file);
     }
+    internal static Task Search(object session)
+    {
+        var overlay=Access.Get<FrameworkElement>(session,"_overlay");
+        if(!States.TryGetValue(overlay,out var state)||overlay.XamlRoot is not {} root||!state.Current)
+            throw new InvalidOperationException("等待播放就绪后再搜索字幕。");
+        return state.Search(root);
+    }
     sealed class State
     {
         readonly object session;readonly FrameworkElement overlay;readonly MpvClient client;
         internal readonly int Generation;bool detached,busy;readonly bool oldAllowDrop;
+        readonly CancellationTokenSource lifetime=new();
         internal bool Current=>!detached&&!NativeDolby.IsClosing(session)&&Generation==Access.Get<int>(session,"_mediaGeneration")&&ReferenceEquals(client,Access.Get<MpvClient?>(session,"_mpvClient"));
         internal State(object session,FrameworkElement overlay)
         {
@@ -93,6 +101,7 @@ internal static class DesktopSubtitles
             return false;
         }
         void Unload(object sender,RoutedEventArgs e)=>Detach();
-        internal void Detach(){detached=true;overlay.DragOver-=Over;overlay.Drop-=Drop;overlay.Unloaded-=Unload;overlay.AllowDrop=oldAllowDrop;}
+        internal Task Search(XamlRoot root)=>OnlineSubtitles.Show(session,root,()=>Current,Load,lifetime.Token);
+        internal void Detach(){if(detached)return;detached=true;lifetime.Cancel();lifetime.Dispose();overlay.DragOver-=Over;overlay.Drop-=Drop;overlay.Unloaded-=Unload;overlay.AllowDrop=oldAllowDrop;}
     }
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -34,6 +35,124 @@ MediaItem ep(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() => SharedPreferences.setMockInitialValues({}));
+  testWidgets('positive checkpoint shows a ratio only with a known duration', (
+    tester,
+  ) async {
+    final episode = ep(200, seconds: 60);
+    final data = {
+      ...episode.data,
+      'RunTimeTicks': null,
+      'UserData': {'PlaybackPositionTicks': ticks(const Duration(seconds: 60))},
+    };
+    Future<void> show(MediaItem item) => tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: WatchProgress(item: item, account: null)),
+      ),
+    );
+    final bar = find.byKey(const ValueKey('watch-progress-e200'));
+    await show(MediaItem(data));
+    expect(find.text('看到 01:00'), findsOneWidget);
+    expect(bar, findsNothing);
+    final source = {
+      'Id': 'single',
+      'RunTimeTicks': ticks(const Duration(seconds: 120)),
+    };
+    final versioned = MediaItem({
+      ...data,
+      'MediaSources': [source],
+    });
+    await show(versioned);
+    expect(find.text('看到 01:00 / 02:00'), findsOneWidget);
+    expect(tester.widget<LinearProgressIndicator>(bar).value, .5);
+    expect(
+      continueWatchingCaption(versioned, showEpisode: false),
+      '继续 1:00 / 2:00',
+    );
+    await show(
+      MediaItem({
+        ...data,
+        'MediaSources': [
+          source,
+          {'Id': 'second'},
+        ],
+      }),
+    );
+    expect(bar, findsNothing);
+  });
+  testWidgets(
+    'played episode with a rewatch position and no duration shows completion',
+    (tester) async {
+      final watched = ep(196, seconds: 1206);
+      final noDuration = MediaItem({...watched.data, 'RunTimeTicks': null});
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: WatchProgress(item: noDuration, account: null)),
+        ),
+      );
+      expect(find.text('已看完 · 重看至 20:06'), findsOneWidget);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              find.byKey(const ValueKey('watch-progress-e196')),
+            )
+            .value,
+        1,
+      );
+      final progress = WatchProgressState.resolve(
+        noDuration,
+        null,
+        null,
+        showCompletionWithoutDuration: true,
+      );
+      expect(progress.label, '已看完 · 重看至 20:06');
+      expect(progress.fraction, 1);
+      expect(progress.known, isTrue);
+      expect(progress.position, const Duration(seconds: 1206));
+      expect(progress.completed, isFalse);
+      final completed = WatchProgressState.resolve(
+        MediaItem({
+          ...noDuration.data,
+          'UserData': {
+            ...object(watched.data['UserData']),
+            'PlaybackPositionTicks': 0,
+          },
+        }),
+        null,
+        null,
+        showCompletionWithoutDuration: true,
+      );
+      expect(completed.label, '已看完');
+      expect(completed.fraction, 1);
+      final rewatch = MediaItem({
+        ...noDuration.data,
+        'UserData': {
+          ...object(watched.data['UserData']),
+          'PlayedPercentage': 35,
+        },
+      });
+      expect(
+        WatchProgressState.resolve(
+          rewatch,
+          null,
+          null,
+          showCompletionWithoutDuration: true,
+        ).fraction,
+        .35,
+      );
+      final unwatched = MediaItem({
+        ...noDuration.data,
+        'UserData': {...object(watched.data['UserData']), 'Played': false},
+      });
+      final unknown = WatchProgressState.resolve(
+        unwatched,
+        null,
+        null,
+        showCompletionWithoutDuration: true,
+      );
+      expect(unknown.fraction, 0);
+      expect(unknown.known, isFalse);
+    },
+  );
   for (final same in [false, true]) {
     test(
       'home and detail retain each server endpoint checkpoint without mixing positions, same=$same',
@@ -244,7 +363,7 @@ void main() {
         expect(progress.fraction, closeTo(900 / 3318, 1e-9));
         expect(
           continueWatchingCaption(item, progress: progress),
-          contains('已看 15 分钟'),
+          contains('继续 15:00'),
         );
       } finally {
         store.dispose();

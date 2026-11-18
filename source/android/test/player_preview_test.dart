@@ -457,7 +457,9 @@ void main() {
           await tester.tap(find.text('画面明暗'));
           await tester.pumpAndSettle();
           await shot('picture-brightness-original');
-          await tester.tap(find.text('轻度提亮'));
+          tester
+              .widget<Slider>(find.byKey(const Key('picture-brightness')))
+              .onChanged!(5);
           await tester.pumpAndSettle();
           expect(backend.pictureBrightness, 5);
           await shot('picture-brightness-light');

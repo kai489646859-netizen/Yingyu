@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -34,6 +35,67 @@ void main() {
     () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(Device.channel, null),
   );
+
+  testWidgets('opening reaches playback while the device HUD read is pending', (
+    tester,
+  ) async {
+    final levels = Completer<Map<String, double>>();
+    var levelReads = 0;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      Device.channel,
+      (call) async {
+        if (call.method == 'focus') return true;
+        if (call.method == 'levels') {
+          levelReads++;
+          return levels.future;
+        }
+        return null;
+      },
+    );
+    final store = AppStore(await SharedPreferences.getInstance());
+    await store.log.setEnabled(false);
+    final api = EmbyClient(
+      client: MockClient(
+        (r) async => r.url.path.endsWith('PlaybackInfo')
+            ? response(jsonEncode(playbackData()), 200)
+            : r.url.path.contains('Sessions/Playing')
+            ? response('', 204)
+            : response('{"Id":"movie","Type":"Movie"}', 200),
+      ),
+    )..session = syntheticSession();
+    final backend = FakeBackend()..gate.complete();
+    final session = PlaybackSession(
+      api: api,
+      store: store,
+      item: MediaItem({'Id': 'movie'}),
+      backend: backend,
+    );
+    addTearDown(() async {
+      if (!levels.isCompleted) {
+        levels.complete({'brightness': .4, 'volume': .6});
+      }
+      await tester.runAsync(() async {
+        await session.close().timeout(const Duration(seconds: 5));
+        await store.log.flush();
+      });
+      await tester.pumpWidget(const SizedBox());
+      await settleOffline(tester);
+      api.close();
+      store.log.dispose();
+      store.dispose();
+    });
+    await tester.pumpWidget(
+      MaterialApp(home: PlayerPage(createSession: () => session)),
+    );
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(levelReads, 1);
+    expect(levels.isCompleted, false);
+    expect(backend.plays, 1);
+    expect(session.ready, true);
+    levels.complete({'brightness': .4, 'volume': .6});
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('battery is a small unnumbered theme-colored indicator', (
     tester,

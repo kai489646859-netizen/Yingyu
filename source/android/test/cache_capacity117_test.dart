@@ -1,24 +1,26 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:yingyu/playback/cache_policy.dart';
 import 'package:yingyu/playback/disc_buffer_phase.dart';
 import 'package:yingyu/playback/stream_buffering.dart';
 
 void main() {
   const mib = 1024 * 1024;
   test(
-    '2x and 3x enlarge both media window and actual ordinary packet limit',
+    '2x and 3x enlarge only the ordinary packet budget and recovery gate',
     () async {
-      final actual = <String, String>{'demuxer-max-bytes': '${64 * mib}'};
+      final actual = <String, String>{
+        'cache-secs': '3600000',
+        'demuxer-max-bytes': '${64 * mib}',
+      };
       final buffer = StreamBuffering(
         write: (k, v) async => actual[k] = v,
         onRestoreFailure: () => fail('restore'),
       );
       await buffer.configure(2, fast: false);
-      expect(actual['cache-secs'], '120');
+      expect(actual['cache-secs'], '3600000');
       expect(actual['demuxer-max-bytes'], '${192 * mib}');
       expect(actual['cache-pause-wait'], '8.00');
       await buffer.configure(3, fast: false);
-      expect(actual['cache-secs'], '180');
+      expect(actual['cache-secs'], '3600000');
       expect(actual['demuxer-max-bytes'], '${384 * mib}');
       expect(actual['cache-pause-wait'], '24.00');
       await buffer.configure(1, fast: true);
@@ -37,10 +39,6 @@ void main() {
     expect(plan(2).bytes, 384 * mib);
     expect(plan(3).bytes, 768 * mib);
     expect(plan(3, fast: true).bytes, 128 * mib);
-    final ahead = PlaybackReadAhead()..speed(2);
-    expect(ahead.seconds, 600);
-    ahead.speed(3);
-    expect(ahead.seconds, 1200);
   });
   for (final key in ['cache-secs', 'demuxer-max-bytes', 'cache-pause-wait']) {
     test(

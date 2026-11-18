@@ -309,7 +309,11 @@ void main() {
           if (request.url.path.endsWith('/Users/synthetic-user')) {
             return response('{"Id":"synthetic-user"}', 200);
           }
-          calls++;
+          if (request.url.path.endsWith('/Views') ||
+              request.url.path.endsWith('/Latest') ||
+              request.url.path.endsWith('/Resume')) {
+            calls++;
+          }
           return response(
             request.url.path.endsWith('/Latest')
                 ? '[{"Id":"movie"}]'

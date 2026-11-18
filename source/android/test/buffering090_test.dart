@@ -105,6 +105,27 @@ void main() {
       contains('暂不可确认'),
     );
   });
+  for (final speed in [1.0, 2.0, 3.0]) {
+    test('already paused by mpv cache at ${speed}x', () async {
+      var rounds = 0;
+      final result = await waitForDiscCushion(
+        read: (key) async {
+          if (key == 'demuxer-cache-duration') ++rounds;
+          return switch (key) {
+            'paused-for-cache' => 'yes',
+            'demuxer-cache-duration' => rounds < 2 ? '0.1' : '24',
+            'cache-pause-wait' => '2',
+            _ => 'no',
+          };
+        },
+        active: () => true,
+        speed: speed,
+        timeout: const Duration(seconds: 1),
+      );
+      expect(rounds, speed == 1 ? 1 : 2);
+      expect(result, speed == 1 ? '内核已在等待缓存，直接请求播放' : contains('已达到内核恢复门槛'));
+    });
+  }
   test(
     'cold cushion is bounded even when native read never completes',
     () async {

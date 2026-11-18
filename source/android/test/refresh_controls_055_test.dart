@@ -16,7 +16,8 @@ class WarmupTransport extends http.BaseClient {
   int catalogues = 0;
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    final catalogue = request.url.path.endsWith('/Items');
+    final catalogue = request.url.path.endsWith('/Items') &&
+        request.url.queryParameters['SortBy'] != 'DatePlayed,SortName';
     if (catalogue) {
       catalogues++;
       if (holdCatalogue) {

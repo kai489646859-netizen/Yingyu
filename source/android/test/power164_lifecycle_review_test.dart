@@ -113,6 +113,8 @@ void main() {
       Future<void> cleanup() async {
         resumeApp();
         await tester.pumpWidget(const SizedBox());
+        // Allow a queued browse pacing delay to wake and observe disposal.
+        await tester.pump(const Duration(seconds: 1));
         await settleOffline(tester);
         for (final backend in backends) {
           await tester.runAsync(backend.dispose);
@@ -150,7 +152,7 @@ void main() {
         if (scenario == 'decline mobile network') {
           await tester.tap(find.text('取消'));
           await settleOffline(tester);
-          await play;
+          await settleAction(tester, play);
           expect(backends, isEmpty);
         } else {
           final dynamic player = tester.state(find.byType(PlayerPage));
@@ -259,7 +261,7 @@ void main() {
             await settleOffline(tester);
           }
           expect(find.byType(PlayerPage), findsNothing);
-          await play;
+          await settleAction(tester, play);
         }
         expect(home.playing, false);
         expect(home.browse.paused, false);
@@ -269,9 +271,10 @@ void main() {
         expect(dashboard.timer?.isActive ?? false, true);
         expect(home.connectionTimer?.isActive ?? false, true);
         paths.clear();
-        final refresh = dashboard.refresh(force: true) as Future<void>;
-        await settleOffline(tester);
-        await refresh;
+        await settleAction(
+          tester,
+          dashboard.refresh(force: true) as Future<void>,
+        );
         expect(
           paths.any((p) => p.endsWith('/Resume')),
           true,

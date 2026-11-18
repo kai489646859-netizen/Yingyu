@@ -79,6 +79,7 @@ void main() {
     'dither': 'ordered',
     'dither-depth': 'auto',
     'hdr-compute-peak': 'no',
+    'hdr-contrast-recovery': '0.30',
   };
   const mapped = {
     'hwdec': 'auto',
@@ -91,6 +92,7 @@ void main() {
     'dither': 'fruit',
     'dither-depth': '8',
     'hdr-compute-peak': 'auto',
+    'hdr-contrast-recovery': '0.0',
   };
   setUp(() {
     setup = DolbyOutputSetup();
@@ -103,6 +105,7 @@ void main() {
     String? reject,
     String? ignore,
     String? unreadable,
+    bool formatContrastAsFloat = false,
   }) => setup.apply(
     requested: enabled,
     originalOutput: 'gpu',
@@ -110,7 +113,10 @@ void main() {
       expect(key, startsWith('options/'));
       reads.add(key);
       if (key == unreadable) throw StateError('synthetic read failure');
-      return values[key.substring('options/'.length)]!;
+      final value = values[key.substring('options/'.length)]!;
+      return formatContrastAsFloat && key == 'options/hdr-contrast-recovery'
+          ? double.parse(value).toStringAsFixed(6)
+          : value;
     },
     write: (key, value) async {
       // Every original value must be captured before the first mutation.
@@ -185,6 +191,21 @@ void main() {
     expect(operations, isEmpty);
     expect(reads, isEmpty);
   });
+  test(
+    'Dolby accepts MPV float readback when enabling and restoring',
+    () async {
+      expect(await apply(true, formatContrastAsFloat: true), isTrue);
+      expect(values, mapped);
+      expect(await apply(false, formatContrastAsFloat: true), isTrue);
+      for (final option in ordinary.keys.where(
+        (k) => k != 'hdr-contrast-recovery',
+      )) {
+        expect(values[option], ordinary[option], reason: option);
+      }
+      expect(double.parse(values['hdr-contrast-recovery']!), .30);
+      expect(setup.enabled, isFalse);
+    },
+  );
   test('explicit software mode is retained', () async {
     values['hwdec'] = 'no';
     await apply(true);

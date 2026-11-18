@@ -4,7 +4,7 @@ import '../core/background_work.dart';
 
 typedef _MetadataResult = ({MediaItem? item, Object? error, StackTrace? stack});
 
-/// One fresh detail request for an already accepted playback intent. This does
+/// Fresh detail for an already accepted playback intent. This does
 /// not prepare a playback URL, probe a source, open media or retain a cache.
 class OpeningMetadata {
   OpeningMetadata.begin(this.api, this.id) : account = api.session {
@@ -44,7 +44,7 @@ class OpeningMetadata {
       return (
         item: await (_optional
             ? api.prepareEpisodeMetadata(id)
-            : api.detail(id)),
+            : api.openingDetail(id)),
         error: null,
         stack: null,
       );

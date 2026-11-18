@@ -20,8 +20,10 @@ import 'core/models.dart';
 import 'core/store.dart';
 import 'playback/backend.dart';
 import 'playback/network_permission.dart';
+import 'playback/opening_metadata.dart';
 import 'playback/page.dart';
 import 'playback/danmaku_sources.dart';
+import 'playback/danmaku_storage.dart';
 import 'playback/session.dart';
 import 'ui/detail.dart';
 import 'ui/library.dart';
@@ -404,12 +406,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       .whenComplete(() => completionJob = null);
   Future<void> runCompletionRetry() async {
     if (personalSync.busy) return;
-    await widget.store.retryPendingProgress(
+    await widget.store.completions.retry(
       widget.api,
       completionAccount,
       allowed: () => mounted && !playing && foreground && !personalSync.busy,
     );
-    await widget.store.completions.retry(
+    await widget.store.retryPendingProgress(
       widget.api,
       completionAccount,
       allowed: () => mounted && !playing && foreground && !personalSync.busy,
@@ -741,7 +743,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> play(MediaItem entry, String? source, bool beginning) async {
-    if (!widget.store.homeOrder.allows(widget.api.session!, entry)) return;
+    final account = widget.api.session;
+    if (account == null || !widget.store.homeOrder.allows(account, entry)) {
+      return;
+    }
     if (playing) return;
     if (personalSync.busy) {
       ScaffoldMessenger.of(
@@ -761,10 +766,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
     // No media preparation or player fetch can run before this decision.
     final permitted = await networkPermission.authorize(context);
-    if (!mounted || !permitted) {
+    if (!mounted || !permitted || widget.api.session != account) {
       setPlaying(false);
       return;
     }
+    // The accepted click can fetch fresh details while Flutter builds the
+    // player route. Only the player session can negotiate and open media.
+    final initialMetadata = OpeningMetadata.begin(widget.api, entry.id);
     connectionTimer?.cancel();
     PosterDemand.pause(this, true);
     homeFeed.suspend();
@@ -797,7 +805,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         context,
         MaterialPageRoute(
           builder: (_) => PlayerPage(
+            initialMetadata: initialMetadata,
             createDanmakuSource: () => DanmakuSources(
+              storage: DanmakuStorage.local,
               onBilibiliSearchStatus: (status) => widget.store.log.add(
                 LogArea.player,
                 '弹幕：哔哩哔哩搜索 HTTP $status，尝试公开目录',
@@ -812,6 +822,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
       );
     } finally {
+      initialMetadata.cancel();
       setPlaying(false);
       if (mounted && foreground) {
         browse.activate();
@@ -1282,8 +1293,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 ),
               ],
             ),
-            onTap: () =>
-                showSurface<void>(context, (_) => const ReleaseNotesPage()),
+            onTap: () => showSurface<void>(
+              context,
+              (_) => ReleaseNotesPage(log: widget.store.log),
+            ),
           ),
         ],
       ),

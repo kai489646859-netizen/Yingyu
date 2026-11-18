@@ -118,6 +118,11 @@ void main() {
             expect(target.hitTestable(), findsOneWidget);
             await tester.tap(target);
             await tester.pumpAndSettle();
+            expect(played, null);
+            await tester.tap(
+              find.byKey(ValueKey('detail-episode-play-ep$number')),
+            );
+            await tester.pumpAndSettle();
             expect(played, 'ep$number');
             expect(tester.takeException(), null);
             await tester.pumpWidget(const SizedBox());

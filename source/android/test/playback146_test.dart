@@ -75,7 +75,7 @@ void main() {
       buffer.endStarvation();
       await buffer.markStarved(1, fast: false);
       expect(buffer.applied, '4.00');
-      expect(values['cache-secs'], '60');
+      expect(values['cache-secs'], '3600000');
       expect(buffer.snapshot.bytes, 64 * 1024 * 1024);
       for (var i = 0; i < 10; i++) {
         buffer.endStarvation();

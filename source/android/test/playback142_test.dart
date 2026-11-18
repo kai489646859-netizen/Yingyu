@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yingyu/playback/stream_buffering.dart';
-import 'package:yingyu/playback/cache_policy.dart';
 import 'package:yingyu/playback/pipeline_metrics.dart';
 import 'dart:async';
 import 'host/playback142/rebuffer.dart' as actual;
@@ -10,7 +9,8 @@ void main() {
   test(
     'same hold/release sequence against complete delivered141 class',
     () async {
-      final before = <String, String>{}, after = <String, String>{};
+      final before = <String, String>{};
+      final after = <String, String>{'cache-secs': '3600000'};
       final previous = old.StreamBuffering(
         baseBytes: 128 * 1024 * 1024,
         memoryMiB: 128,
@@ -32,7 +32,7 @@ void main() {
         await current.configure(value, fast: false);
       }
       expect(before['cache-secs'], '1200');
-      expect(after['cache-secs'], '120');
+      expect(after['cache-secs'], '3600000');
       expect(before['demuxer-max-bytes'], '${768 * 1024 * 1024}');
       expect(after['demuxer-max-bytes'], '${384 * 1024 * 1024}');
     },
@@ -67,7 +67,7 @@ void main() {
     },
   );
   test(
-    'brief held 3x releases the ordinary prefetch budget on return',
+    'brief held 3x releases the ordinary packet byte budget on return',
     () async {
       final values = <String, String>{};
       final buffer = StreamBuffering(
@@ -82,10 +82,10 @@ void main() {
       await buffer.configure(1, fast: false);
       await buffer.configure(3, fast: false);
       await buffer.configure(1, fast: false);
-      expect(values['cache-secs'], '60');
+      expect(values['cache-secs'], '3600000');
       expect(values['demuxer-max-bytes'], '${128 * 1024 * 1024}');
       await buffer.configure(2, fast: false);
-      expect(values['cache-secs'], '120');
+      expect(values['cache-secs'], '3600000');
       expect(values['demuxer-max-bytes'], '${384 * 1024 * 1024}');
     },
   );
@@ -111,15 +111,6 @@ void main() {
       expect(buffer.applied, '1.00');
     },
   );
-  test('ordinary prefetch follows actual rate while disc retains its peak', () {
-    final ordinary = PlaybackReadAhead(), disc = PlaybackReadAhead();
-    for (final speed in [1.0, 3.0, 1.0, 2.0]) {
-      ordinary.speed(speed, retainPeak: false);
-      disc.speed(speed);
-    }
-    expect(ordinary.seconds, 120);
-    expect(disc.seconds, 1200);
-  });
   test('starvation write failure restores original buffer state', () async {
     final values = <String, String>{};
     var reject = false;

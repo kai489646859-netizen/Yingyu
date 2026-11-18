@@ -21,6 +21,7 @@ class RefillFixture {
     'target-trc': 'bt.1886',
     'target-peak': 'auto',
     'tone-mapping': 'bt.2390',
+    'hdr-contrast-recovery': '0.30',
     'dither': 'fruit',
     'dither-depth': '8',
     'panscan': '0',

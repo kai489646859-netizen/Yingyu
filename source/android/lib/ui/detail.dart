@@ -56,6 +56,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
   List<MediaItem> seasons = [], episodes = [];
   String? error, episodeError, seasonError, season;
   final selectedSources = <String, String>{};
+  final inspectedVideos = <(String, String), Json>{};
   bool busy = true, episodeBusy = false;
   bool episodesPaused = false;
   bool metadataBusy = true;
@@ -64,6 +65,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
   int detailGeneration = 0;
   int focusRevision = 0;
   late MediaItem? focusEpisode = widget.resumeEpisode;
+  MediaItem? selectedEpisode;
   String? historyError;
   bool historyLoaded = false;
   late bool focusResume = widget.resumeEpisode != null;
@@ -93,6 +95,14 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
 
   double get episodeHeight =>
       92 * (MediaQuery.textScalerOf(context).scale(14) / 14).clamp(1, 2);
+
+  EpisodeDisplay? get focusDisplay {
+    final focus = focusEpisode;
+    if (focus == null) return null;
+    final match = episodes.where((item) => item.id == focus.id).firstOrNull;
+    return focus.episodeDisplay(catalogue: match);
+  }
+
   String? preferredSeason(List<MediaItem> values) {
     final target = focusEpisode;
     if (!focusResume || target == null) return null;
@@ -150,6 +160,31 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
+  MediaItem episodeProgress(MediaItem entry) {
+    final history = focusEpisode;
+    if (history == null || history.id != entry.id) return entry;
+    final latest = object(history.data['UserData']);
+    if (!latest.containsKey('Played') &&
+        !latest.containsKey('PlaybackPositionTicks')) {
+      return entry;
+    }
+    final previous = object(entry.data['UserData']);
+    final latestAt = DateTime.tryParse('${latest['LastPlayedDate']}');
+    final previousAt = DateTime.tryParse('${previous['LastPlayedDate']}');
+    if (latestAt != null &&
+        previousAt != null &&
+        previousAt.isAfter(latestAt)) {
+      return entry;
+    }
+    return MediaItem({
+      ...entry.data,
+      'UserData': latest,
+      if (entry.watchDuration <= Duration.zero &&
+          history.watchDuration > Duration.zero)
+        'RunTimeTicks': ticks(history.watchDuration),
+    });
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed &&
@@ -189,7 +224,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
 
       final detailWork =
           widget.browse?.detail(widget.item.id, force: force) ??
-          widget.api.detail(widget.item.id);
+          widget.api.browsingDetail(widget.item.id);
       final seasonWork = widget.item.series ? readSeasons() : null;
       Future<(MediaItem?, String?)> history() async {
         if (!widget.item.series) return (null, null);
@@ -237,6 +272,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
         }
         final move =
             target != null &&
+            selectedEpisode == null &&
             focusIntent == focusRevision &&
             (force ||
                 target.id != focusEpisode?.id ||
@@ -346,6 +382,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
       final moveFocus =
           detail.series &&
           target != null &&
+          selectedEpisode == null &&
           focusIntent == focusRevision &&
           ((force && earlyFocusId != target.id) ||
               target.id != focusEpisode?.id ||
@@ -582,6 +619,19 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
     });
   }
 
+  Json versionVideo(MediaItem entry) {
+    final source =
+        selectedSources[entry.id] ??
+        playableVersions(entry).firstOrNull?['Id']?.toString();
+    return inspectedVideos[(entry.id, source ?? '')] ??
+        resourceVideo(entry, sourceId: source);
+  }
+
+  void rememberInspectedVideo(MediaItem entry, String source, Json video) {
+    if (!mounted || widget.api.session != personalAccount) return;
+    setState(() => inspectedVideos[(entry.id, source)] = video);
+  }
+
   Future<void> chooseEpisodeVersion(MediaItem entry) async {
     if (openingEntry != null || widget.api.session != personalAccount) return;
     final choice = await showSurface<String>(
@@ -592,8 +642,12 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: MediaVersions(
+            item: entry,
             sources: playableVersions(entry),
             selected: selectedSources[entry.id],
+            onInspect: (id) => widget.api.inspectMediaSource(entry.id, id),
+            onInspected: (id, video) =>
+                rememberInspectedVideo(entry, id, video),
             onSelected: (id) {
               if (mounted && widget.api.session == personalAccount) {
                 Navigator.pop(context, id);
@@ -609,6 +663,41 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
   }
 
   String rangeLabel(int index) => bands.labelAt(index);
+
+  bool get canChooseEpisode =>
+      openingEntry == null && widget.api.session == personalAccount;
+
+  void selectEpisode(MediaItem entry) {
+    if (!canChooseEpisode) return;
+    setState(() {
+      selectedEpisode = entry;
+      focusRevision++;
+      focusResume = false;
+      pendingEpisodeIndex = null;
+      locatingEpisode = false;
+    });
+  }
+
+  Widget episodePlayButton(MediaItem entry, String title) => Semantics(
+    label: '播放$title',
+    child: CupertinoButton(
+      key: ValueKey('detail-episode-play-${entry.id}'),
+      padding: EdgeInsets.zero,
+      minimumSize: const Size.square(44),
+      onPressed: canChooseEpisode
+          ? () {
+              selectEpisode(entry);
+              unawaited(play(entry));
+            }
+          : null,
+      child: Icon(
+        CupertinoIcons.play_circle,
+        size: 24,
+        color: secondaryColor(context),
+      ),
+    ),
+  );
+
   Future<void> play(MediaItem entry, {bool fromBeginning = false}) async {
     if (openingEntry != null || widget.api.session != personalAccount) return;
     setState(() => openingEntry = entry);
@@ -621,7 +710,10 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
       await widget.play(entry, sourceId, fromBeginning);
     } finally {
       if (mounted) {
-        setState(() => openingEntry = null);
+        setState(() {
+          openingEntry = null;
+          selectedEpisode = null;
+        });
         unawaited(load(force: true));
       }
     }
@@ -714,6 +806,22 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                         style: TextStyle(
                           fontSize: 12,
                           color: secondaryColor(context),
+                        ),
+                      ),
+                      CupertinoButton(
+                        key: const Key('refresh-watch-progress'),
+                        padding: const EdgeInsets.symmetric(horizontal: 7),
+                        minimumSize: const Size(36, 36),
+                        onPressed:
+                            busy ||
+                                episodeBusy ||
+                                openingEntry != null ||
+                                widget.api.session != personalAccount
+                            ? null
+                            : () => load(force: true),
+                        child: const Tooltip(
+                          message: '刷新 Emby 观看进度',
+                          child: Icon(CupertinoIcons.refresh, size: 18),
                         ),
                       ),
                       if (wide) const SizedBox(width: 28),
@@ -834,10 +942,13 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
             entry.overview.isEmpty ? '暂无简介' : entry.overview,
             style: valueStyle,
           );
-    // This is the same verified history target as the episode highlight. Do
-    // not offer the first episode while a newer viewing record is still read.
+    // An explicit selection belongs to this detail view. Otherwise wait for
+    // the verified history before offering the first episode.
+    final selection = selectedEpisode;
     final target = entry.playable
         ? entry
+        : selection != null
+        ? episodes.where((e) => e.id == selection.id).firstOrNull ?? selection
         : historyLoaded
         ? focusEpisode ?? episodes.firstOrNull
         : null;
@@ -845,7 +956,9 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
     final continuing =
         target != null &&
         (target.id == focusEpisode?.id || resumeOf(target) > Duration.zero);
-    final episodeNumber = target?.data['IndexNumber'];
+    final episodeNumber = target?.id == focusEpisode?.id
+        ? focusDisplay?.episode
+        : target?.episodeDisplay().episode;
     final playLabel = openingEntry != null
         ? '正在打开'
         : target == null
@@ -854,6 +967,8 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
         ? target.type == 'Episode' && episodeNumber != null
               ? '继续观看第 $episodeNumber 集'
               : '继续观看'
+        : selection != null && episodeNumber != null
+        ? '播放第 $episodeNumber 集'
         : '播放';
     final buttonColor = Theme.of(context).colorScheme;
     Widget playButton() => Padding(
@@ -988,7 +1103,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
           key: const Key('detail-resource-tags'),
           video: resource == null || widget.api.session != personalAccount
               ? {}
-              : resourceVideo(resource, sourceId: selectedSources[resource.id]),
+              : versionVideo(resource),
         ),
         const SizedBox(height: 6),
         playButton(),
@@ -1074,8 +1189,13 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
           ),
           if (resource != null && playableVersions(resource).isNotEmpty)
             MediaVersions(
+              key: ValueKey(resource.id),
+              item: resource,
               sources: playableVersions(resource),
               selected: selectedSources[resource.id],
+              onInspect: (id) => widget.api.inspectMediaSource(resource.id, id),
+              onInspected: (id, video) =>
+                  rememberInspectedVideo(resource, id, video),
               enabled:
                   openingEntry == null && widget.api.session == personalAccount,
               onSelected: (id) {
@@ -1183,6 +1303,13 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
     },
     child: LayoutBuilder(
       builder: (context, bounds) {
+        final focus = focusEpisode;
+        final highlight = selectedEpisode ?? focus;
+        final narrowEpisodeList = bounds.maxWidth < 360;
+        final focusNumbers = focusDisplay;
+        final focusLabel = focusNumbers == null
+            ? ''
+            : episodeDisplayLabel(focusNumbers);
         final headerLimit = bounds.maxHeight > 300
             ? (bounds.maxHeight - episodeHeight).clamp(0.0, bounds.maxHeight)
             : bounds.maxHeight * .55;
@@ -1210,7 +1337,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              '上次观看：第 ${focusEpisode!.data['ParentIndexNumber'] ?? "?"} 季 · 第 ${focusEpisode!.data['IndexNumber'] ?? "?"} 集',
+                              focusLabel.isEmpty ? '上次观看' : '上次观看：$focusLabel',
                               style: TextStyle(
                                 fontSize: 13,
                                 color: labelColor(context),
@@ -1218,11 +1345,12 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                             ),
                             const SizedBox(height: 4),
                             WatchProgress(
-                              item:
-                                  episodes
-                                      .where((e) => e.id == focusEpisode!.id)
-                                      .firstOrNull ??
-                                  focusEpisode!,
+                              item: episodeProgress(
+                                episodes
+                                        .where((e) => e.id == focusEpisode!.id)
+                                        .firstOrNull ??
+                                    focusEpisode!,
+                              ),
                               account: personalAccount,
                               store: widget.store,
                             ),
@@ -1363,9 +1491,15 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                                 focusEpisode!.data['ParentIndexNumber']))
                       SettingsRow(
                         '上次观看',
-                        subtitle: focusEpisode!.title,
-                        icon: CupertinoIcons.play_circle,
-                        onTap: () => play(focusEpisode!),
+                        subtitle: focusLabel.isEmpty ? null : focusLabel,
+                        selected: highlight?.id == focusEpisode!.id,
+                        onTap: canChooseEpisode
+                            ? () => selectEpisode(focusEpisode!)
+                            : null,
+                        trailing: episodePlayButton(
+                          focusEpisode!,
+                          focusLabel.isEmpty ? '上次观看的剧集' : focusLabel,
+                        ),
                       ),
                   ],
                 ),
@@ -1406,16 +1540,30 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                         itemCount: episodes.length,
                         itemBuilder: (context, index) {
                           final entry = episodes[index];
-                          return CupertinoButton(
+                          final focused = entry.id == focus?.id;
+                          final numbers = focused
+                              ? focusNumbers ?? entry.episodeDisplay()
+                              : entry.episodeDisplay();
+                          final title = entry.episodeDisplayTitle(numbers);
+                          final ordinal = episodeDisplayLabel(
+                            numbers,
+                            showSeason: false,
+                          );
+                          final caption = focused
+                              ? (ordinal.isEmpty || ordinal == title
+                                    ? '上次观看'
+                                    : '上次观看 · $ordinal')
+                              : (ordinal == title ? '' : ordinal);
+                          final selected = entry.id == highlight?.id;
+                          final row = CupertinoButton(
                             key: ValueKey('detail-episode-${entry.id}'),
-                            color: entry.id == focusEpisode?.id
+                            color: selected
                                 ? accentColor(context).withValues(alpha: .14)
                                 : null,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 8,
-                            ),
-                            onPressed: () => play(entry),
+                            padding: const EdgeInsets.fromLTRB(16, 8, 52, 8),
+                            onPressed: canChooseEpisode
+                                ? () => selectEpisode(entry)
+                                : null,
                             child: Row(
                               children: [
                                 ClipRRect(
@@ -1449,7 +1597,7 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                                           CrossAxisAlignment.start,
                                       children: [
                                         Text(
-                                          entry.title,
+                                          title,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
@@ -1460,40 +1608,39 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                                         const SizedBox(height: 4),
                                         Row(
                                           children: [
-                                            Expanded(
-                                              child: Text(
-                                                entry.id == focusEpisode?.id
-                                                    ? '上次观看 · 第 ${entry.data['IndexNumber'] ?? "?"} 集'
-                                                    : '第 ${entry.data['IndexNumber'] ?? index + 1} 集',
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: secondaryColor(
-                                                    context,
+                                            if (caption.isNotEmpty ||
+                                                !narrowEpisodeList) ...[
+                                              Expanded(
+                                                child: Text(
+                                                  caption,
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    color: secondaryColor(
+                                                      context,
+                                                    ),
                                                   ),
                                                 ),
                                               ),
-                                            ),
-                                            const SizedBox(width: 4),
+                                              const SizedBox(width: 4),
+                                            ],
                                             Flexible(
+                                              flex: narrowEpisodeList ? 2 : 1,
                                               child: ResourceTags(
                                                 compact: true,
                                                 key: ValueKey(
                                                   'episode-resource-${entry.id}',
                                                 ),
-                                                video: resourceVideo(
-                                                  entry,
-                                                  sourceId:
-                                                      selectedSources[entry.id],
-                                                ),
+                                                video: versionVideo(entry),
                                               ),
                                             ),
                                           ],
                                         ),
                                         const SizedBox(height: 4),
                                         WatchProgress(
-                                          item: entry,
+                                          item: episodeProgress(entry),
                                           account: personalAccount,
                                           store: widget.store,
                                         ),
@@ -1518,15 +1665,24 @@ class _DetailPageState extends State<DetailPage> with WidgetsBindingObserver {
                                       '版本',
                                       style: TextStyle(fontSize: 12),
                                     ),
-                                  )
-                                else
-                                  Icon(
-                                    CupertinoIcons.play_circle,
-                                    size: 24,
-                                    color: secondaryColor(context),
                                   ),
                               ],
                             ),
+                          );
+                          return Stack(
+                            alignment: Alignment.centerRight,
+                            children: [
+                              Positioned.fill(
+                                child: Semantics(
+                                  selected: selected,
+                                  child: row,
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: episodePlayButton(entry, title),
+                              ),
+                            ],
                           );
                         },
                       ),

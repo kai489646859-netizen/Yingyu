@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 // ignore: depend_on_referenced_packages
 import 'package:path_provider/path_provider.dart';
 import '../core/models.dart';
+import 'cache_policy.dart';
 
 String playbackCacheHash(Object value) =>
     sha256.convert(utf8.encode(jsonEncode(value))).toString();
@@ -120,10 +121,10 @@ class PlaybackByteCache {
           entry.start = start;
           try {
             final bytes = await entry.file.readAsBytes();
-            if (bytes.length != length + 32 ||
+            if (bytes.length != length + playbackCacheHeaderBytes ||
                 !const _DigestEquality().matches(
-                  bytes.sublist(0, 32),
-                  sha256.convert(bytes.sublist(32)).bytes,
+                  bytes.sublist(0, playbackCacheHeaderBytes),
+                  sha256.convert(bytes.sublist(playbackCacheHeaderBytes)).bytes,
                 )) {
               await entry.file.delete();
               _entries.remove(name);
@@ -139,7 +140,7 @@ class PlaybackByteCache {
               await entry.file.setLastModified(entry.used);
               entry.savedUse = entry.used;
             }
-            return Uint8List.sublistView(bytes, 32);
+            return Uint8List.sublistView(bytes, playbackCacheHeaderBytes);
           } on FileSystemException {
             warning = '播放缓存读取失败，已改为读取片源';
             // Never undercount an unreadable file that still occupies disk space.
@@ -156,7 +157,7 @@ class PlaybackByteCache {
           if (limitBytes == 0) return false;
           final root = await _open(), name = _name(identity, start);
           if (_entries.containsKey(name)) return true;
-          final size = bytes.length + 32;
+          final size = bytes.length + playbackCacheHeaderBytes;
           if (!await _trim(size)) return false;
           final file = File('${root.path}/$name'),
               partial = File(
@@ -164,8 +165,12 @@ class PlaybackByteCache {
               );
           try {
             final content = Uint8List(size)
-              ..setRange(0, 32, sha256.convert(bytes).bytes)
-              ..setRange(32, size, bytes);
+              ..setRange(
+                0,
+                playbackCacheHeaderBytes,
+                sha256.convert(bytes).bytes,
+              )
+              ..setRange(playbackCacheHeaderBytes, size, bytes);
             // File.writeAsBytes closes the descriptor even after a failed
             // write; an IOSink.done error must not escape the playback fallback.
             await partial.writeAsBytes(content);

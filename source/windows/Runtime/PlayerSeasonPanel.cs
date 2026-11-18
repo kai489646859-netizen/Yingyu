@@ -385,10 +385,10 @@ public static class PlayerSeasonPanel
             // Use the standard grid when it has the correct item and numbering.
             // A missing index or explicit season/episode in the metadata title
             // must never be interpreted as the item's last position in the list.
-            bool corrected=visible.Any(i=>EpisodeLabels.Index(i)!=i.IndexNumber);
+            bool corrected=visible.Any(i=>EpisodeLabels.DisplayIndex(i)!=i.IndexNumber);
             bool stale=!Same(Access.Get<string?>(overlay,"_currentPlaylistItemId"),current.Id);
             if(corrected||stale||visible.Count!=queue.Count)
-                Show(visible.OrderBy(i=>EpisodeLabels.Index(i)??int.MaxValue).ToArray());
+                Show(visible.OrderBy(i=>EpisodeLabels.DisplayIndex(i)??int.MaxValue).ToArray());
             else if(flyout.IsOpen)QueueCurrentEpisode();
         }
         async Task Select(string id)
@@ -410,7 +410,7 @@ public static class PlayerSeasonPanel
                     var rows=result.Items.Where(i=>i.Type=="Episode"&&!string.IsNullOrWhiteSpace(i.Id)
                         &&(string.IsNullOrEmpty(i.SeriesId)||Same(i.SeriesId,item.SeriesId))
                         &&(string.IsNullOrEmpty(i.SeasonId)||Same(i.SeasonId,id)))
-                        .DistinctBy(i=>i.Id,StringComparer.OrdinalIgnoreCase).OrderBy(i=>EpisodeLabels.Index(i)??int.MaxValue).ToArray();
+                        .DistinctBy(i=>i.Id,StringComparer.OrdinalIgnoreCase).OrderBy(i=>EpisodeLabels.DisplayIndex(i)??int.MaxValue).ToArray();
                     if(episodes.Count>=6)episodes.Clear();episodes[id]=rows;
                     PlayerMenus.KeepEpisodePanelAtPointer(overlay);
                     Show(rows);

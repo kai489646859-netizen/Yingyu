@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:yingyu/core/models.dart';
 import 'package:yingyu/playback/disc_cache.dart';
 import 'package:yingyu/playback/disc_ordered_reader.dart';
+import 'package:yingyu/playback/disc_stream.dart';
 import 'disc_speed_reader_test.dart' show SourceFixture, mib;
 
 Future<void> drain(DiscOrderedReader reader, int total) async {
@@ -33,6 +34,125 @@ Future<void> drain(DiscOrderedReader reader, int total) async {
 }
 
 void main() {
+  test(
+    'large slow opening qualifies before eight MiB have been delivered',
+    () async {
+      const start = 9728 * mib;
+      const chunk = DiscOrderedReader.chunkBytes;
+      final source = SourceFixture(total: 82 * 1024 * mib);
+      final reader = DiscOrderedReader(
+        (path, first, token) async {
+          final upstream = await source.single(path, first, token);
+          Stream<List<int>> slowBody() async* {
+            var at = first;
+            await for (final bytes in upstream.bytes) {
+              if (at >= start + mib) {
+                await Future<void>.delayed(const Duration(milliseconds: 125));
+              }
+              token.check();
+              yield bytes;
+              at += bytes.length;
+            }
+          }
+
+          return DiscStreamSource(
+            start: upstream.start,
+            total: upstream.total,
+            bytes: slowBody(),
+            identity: upstream.identity,
+            canResume: upstream.canResume,
+            close: upstream.close,
+          );
+        },
+        openPart: source.part,
+        maxBytes: 48 * mib,
+      )..setOpeningDemand(true);
+      try {
+        for (
+          var at = start;
+          at < start + 6 * mib && source.partNumber == 0;
+          at += chunk
+        ) {
+          final block = await reader.read(
+            '',
+            at,
+            chunk,
+            DiscReadCancellation(),
+          );
+          expect(block.bytes, everyElement((at ~/ (256 * 1024)) % 251));
+        }
+        expect(source.partNumber, 1);
+        expect(source.peak, lessThanOrEqualTo(2));
+      } finally {
+        await reader.close();
+      }
+      expect(source.active, 0);
+    },
+  );
+  for (final (opening, qualified) in [
+    (true, true),
+    (false, true),
+    (true, false),
+  ]) {
+    test(
+      'slow original stops blocking after handoff, opening=$opening identity=$qualified',
+      () async {
+        const start = 9728 * mib;
+        const total = 82 * 1024 * mib;
+        const chunk = DiscOrderedReader.chunkBytes;
+        final source = SourceFixture(total: total, qualified: qualified);
+        var slowChunks = 0;
+        final reader = DiscOrderedReader(
+          (path, first, token) async {
+            final stream = await source.single(path, first, token);
+            Stream<List<int>> slowBody() async* {
+              var at = first;
+              await for (final bytes in stream.bytes) {
+                if (at >= start + 8 * mib && at < start + 15 * mib) {
+                  slowChunks++;
+                  await Future<void>.delayed(const Duration(milliseconds: 125));
+                }
+                token.check();
+                yield bytes;
+                at += bytes.length;
+              }
+            }
+
+            return DiscStreamSource(
+              start: stream.start,
+              total: stream.total,
+              bytes: slowBody(),
+              identity: stream.identity,
+              canResume: stream.canResume,
+              close: stream.close,
+            );
+          },
+          openPart: source.part,
+          maxBytes: 48 * mib,
+        )..setOpeningDemand(opening);
+        try {
+          for (var at = start; at < start + 15 * mib; at += chunk) {
+            final block = await reader.read(
+              '',
+              at,
+              chunk,
+              DiscReadCancellation(),
+            );
+            expect(block.start, at);
+            expect(block.bytes, everyElement((at ~/ (256 * 1024)) % 251));
+            expect(source.peak, lessThanOrEqualTo(2));
+          }
+          final handoff = opening && qualified;
+          expect(source.partNumber > 0, handoff);
+          expect(slowChunks, handoff ? lessThan(28) : 28);
+        } finally {
+          await reader.close();
+        }
+        expect(source.active, 0);
+      },
+    );
+  }
+
   test(
     'small configured queue keeps single input without negative capacity',
     () async {

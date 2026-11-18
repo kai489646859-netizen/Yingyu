@@ -139,10 +139,24 @@ int64_t remote_read(Session *s, const char *path, int64_t at, uint8_t *out, int6
             // so nearby UDF/CLPI reads reuse them instead of fetching overlapping
             // 1 MiB ranges. Streaming keeps its small progressive prefix.
             const int64_t alignment = s->ready ? 65536 : PAGE;
-            const int64_t aligned = pos / alignment * alignment;
-            auto r = request(s, 1, path, aligned, PAGE);
+            int64_t aligned = pos / alignment * alignment;
+            int length = PAGE;
+            // libudfread tries the last sector and (last - 256) if
+            // its primary anchor is invalid. These probes only need
+            // one sector. Any other metadata read keeps the full page.
+            constexpr int sector = 2048;
+            if (!s->ready && !*path && count - done == sector &&
+                !s->pages.empty() && s->pages.front().path.empty()) {
+                const int64_t size = s->pages.front().total;
+                if (size % sector == 0 && size >= 258 * sector &&
+                    (pos == size - sector || pos == size - 257 * sector)) {
+                    aligned = pos;
+                    length = sector;
+                }
+            }
+            auto r = request(s, 1, path, aligned, length);
             if (!r || r->total <= pos || r->bytes.empty() ||
-                static_cast<int64_t>(r->bytes.size()) > std::min<int64_t>(PAGE, r->total - aligned)) return done ? done : -1;
+                static_cast<int64_t>(r->bytes.size()) > std::min<int64_t>(length, r->total - aligned)) return done ? done : -1;
             while (!s->pages.empty() && s->page_bytes + r->bytes.size() > 8 * PAGE) {
                 s->page_bytes -= s->pages.back().bytes.size(); s->pages.pop_back();
             }
@@ -296,6 +310,22 @@ int open_stream(void *, char *uri, StreamInfo *info) {
 }
 void quiet(const char *) {}
 } // namespace
+
+extern "C" bool yd_owns_iso_block_reader(int (*read_blocks)(void *, void *, int, int)) {
+    return read_blocks == blocks;
+}
+
+extern "C" uint32_t yd_iso_block_count(void *handle) {
+    auto *session = static_cast<Session *>(handle);
+    // The UDF parser has already fetched the volume recognition sectors.
+    // The HTTP reader validated Content-Range before storing this length.
+    if (!session || session->cancelled() || session->pages.empty() ||
+        !session->pages.front().path.empty()) return 0;
+    constexpr int64_t sector = 2048;
+    const int64_t bytes = session->pages.front().total;
+    if (bytes < 258 * sector || bytes % sector || bytes / sector > INT32_MAX) return 0;
+    return static_cast<uint32_t>(bytes / sector);
+}
 
 EXPORT int yd_register(void *mpv) {
 #if defined(_WIN32)

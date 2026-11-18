@@ -101,10 +101,7 @@ void main() {
           speed > 2 ? 8 : 2,
         );
         expect(options['cache-pause-initial'], 'yes');
-        expect(
-          double.parse(options['cache-secs']!),
-          speed > 2 ? 180 : 20 * speed,
-        );
+        expect(double.parse(options['cache-secs']!), 3600000);
         for (var at = 0; at < 40 * mib; at += mib) {
           await cache.read('clip', at, mib);
           expect(cache.cachedBytes, lessThanOrEqualTo(16 * mib));

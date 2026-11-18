@@ -545,8 +545,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(sessions.length, 1);
       expect(events.where((e) => e.startsWith('stopped:')), isEmpty);
-      await tester.tap(find.byTooltip('选集'));
-      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('player-episode-panel')), findsOneWidget);
       await tester.tap(find.byKey(const Key('player-episode-range')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('51–100'));

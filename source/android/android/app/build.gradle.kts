@@ -1,3 +1,6 @@
+import java.security.KeyStore
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -18,7 +21,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.yingyu.player"
+        applicationId = "com.yingyu.player.release"
         minSdk = 26
         targetSdk = 36
         versionCode = flutter.versionCode
@@ -29,10 +32,22 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file(System.getenv("YINGYU_KEYSTORE") ?: "../../.signing/yingyu-release.jks")
-            storePassword = System.getenv("YINGYU_SIGN_PASSWORD")
+            val path = System.getenv("YINGYU_KEYSTORE")
+            val password = System.getenv("YINGYU_SIGN_PASSWORD")
+            if (path != null && password != null) {
+                val signingFile = file(path)
+                val certificate = KeyStore.getInstance(signingFile, password.toCharArray())
+                    .getCertificate("yingyu") ?: error("Missing Yingyu release certificate")
+                val fingerprint = MessageDigest.getInstance("SHA-256")
+                    .digest(certificate.encoded).joinToString("") { "%02x".format(it) }
+                check(fingerprint == "13f64687afc61988916fb061ffa31ad88116fd62ab64404e8e1170ed2cc2fdb8") {
+                    "The keystore does not match the Yingyu coexist release certificate"
+                }
+                storeFile = signingFile
+            }
+            storePassword = password
             keyAlias = "yingyu"
-            keyPassword = System.getenv("YINGYU_SIGN_PASSWORD")
+            keyPassword = password
         }
     }
     buildTypes {

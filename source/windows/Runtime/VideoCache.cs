@@ -30,12 +30,19 @@ public static class VideoCache
 
     public static Task PlayAsync(MpvClient client, string address, MpvPlayOptions options, object session)
     {
-        PlayerSkipCountdown.PrepareStart(session,options);
-        return EpisodePlaybackIntent.Play(session,()=>DolbyHdrFallback.Play(session,()=>PlayWithCache(client,address,options,session)));
+        PlaybackRecovery.Bind(session);
+        double? intro = PlayerSkipCountdown.PrepareStart(session,options);
+        PlaybackRecovery.Prepare(session,options);
+        if (NetworkBluray.ConsumeMenuStart(session))
+        {
+            options.StartPosition = 0;
+            intro = null;
+        }
+        return EpisodePlaybackIntent.Play(session,client,intro,
+            ()=>DolbyHdrFallback.Play(session,()=>PlayWithCache(client,address,options,session)));
     }
     static Task PlayWithCache(MpvClient client, string address, MpvPlayOptions options, object session)
     {
-        if(NetworkBluray.ConsumeMenuStart(session))options.StartPosition=0;
         Stop(session);
         var source = Access.Get<MediaSourceInfo>(session, "_source");
         if (VideoCacheSettings.LimitGB == 0 || source.IsInfiniteStream == true ||

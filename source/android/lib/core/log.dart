@@ -386,7 +386,7 @@ class DiagnosticLog extends ChangeNotifier {
     return _writes;
   }
 
-  Future<void> setEnabled(bool value) async {
+  Future<void> setEnabled(bool value, {bool requireSaved = false}) async {
     enabled = value;
     notifyListeners();
     await flush();
@@ -396,6 +396,7 @@ class DiagnosticLog extends ChangeNotifier {
       }
     } catch (_) {
       storageError = '日志开关未能保存，重启后可能恢复';
+      if (requireSaved) rethrow;
     }
     if (!_disposed) notifyListeners();
   }

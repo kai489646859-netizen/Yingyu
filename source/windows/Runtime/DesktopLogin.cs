@@ -52,7 +52,20 @@ internal static class DesktopLogin
             detachStatus();detachAdd();detachSaved();
             mark.Child=icon;identity.Children.Add(mark);identity.Children.Add(name);brand.Children.Add(identity);brand.Children.Add(intro);brand.Children.Add(description);
             var fields=new StackPanel{Spacing=18};fields.Children.Add(heading);fields.Children.Add(hint);
+            var offline=new Button{Content="离线下载",HorizontalAlignment=HorizontalAlignment.Left};
+            offline.Click+=async(_,_)=>
+            {
+                offline.IsEnabled=false;
+                try{await OfflineViewing.OpenSaved(page);}
+                catch(Exception error)
+                {
+                    PlaybackTransport.Write("Warning","Downloads.Offline","离线播放未启动："+error.GetType().Name);
+                    await (Task)Access.Call(page,"ShowErrorDialogAsync","离线下载","暂时无法打开下载文件，请检查本机文件。")!;
+                }
+                finally{offline.IsEnabled=true;}
+            };
             fields.Children.Add(status);fields.Children.Add(saved);fields.Children.Add(add);fields.Children.Add(footer);form.Child=fields;
+            fields.Children.Add(offline);
             add.Header="添加其他账号";add.HorizontalAlignment=HorizontalAlignment.Stretch;
             if(Find<TextBox>(page,"ServerUrlBox") is {} address&&Find<TextBox>(page,"UsernameBox") is {} username&&Find<PasswordBox>(page,"PasswordBox") is {} password&&Find<Button>(page,"LoginButton") is {} loginButton
                 &&Removal(add,address) is {} removeAddress&&Removal(add,username) is {} removeUsername&&Removal(add,password) is {} removePassword&&Removal(add,loginButton) is {} removeLogin)

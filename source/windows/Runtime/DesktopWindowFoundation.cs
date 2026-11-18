@@ -29,6 +29,8 @@ internal static class DesktopWindowFoundation
         bool highContrast,materialWanted,chromeReady,closed,setupQueued;
         [DllImport("user32.dll")]
         static extern bool IsWindow(nint hwnd);
+        [DllImport("user32.dll")]
+        static extern bool IsIconic(nint hwnd);
         internal State(Window window,Grid root)
         {
             this.window=window;this.root=root;
@@ -57,8 +59,12 @@ internal static class DesktopWindowFoundation
             materialWanted=!reducedTransparency;
             QueueChrome();
         }
-        bool CanApplyChrome()=>!closed&&root.IsLoaded&&title.IsLoaded&&title.XamlRoot is not null
-            &&IsWindow(WinRT.Interop.WindowNative.GetWindowHandle(window));
+        bool CanApplyChrome()
+        {
+            if(closed||!root.IsLoaded||!title.IsLoaded||title.XamlRoot is null)return false;
+            var hwnd=WinRT.Interop.WindowNative.GetWindowHandle(window);
+            return IsWindow(hwnd)&&!IsIconic(hwnd);
+        }
         void QueueChrome()
         {
             if(closed||setupQueued||!title.IsLoaded)return;

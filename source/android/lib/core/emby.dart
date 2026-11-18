@@ -34,14 +34,22 @@ String metadataOperation(Uri uri) {
   }
   if (path.endsWith('/views')) return '媒体库入口';
   if (path.endsWith('/items/resume')) return '继续观看列表';
+  if (path.endsWith('/shows/nextup')) return '继续观看下一集';
   if (path.endsWith('/items/latest')) return '最新影片列表';
   if (RegExp(r'/items/[^/]+/remotesearch/subtitles/[^/]+$').hasMatch(path)) {
     return '在线字幕搜索';
   }
   if (RegExp(r'/items/[^/]+$').hasMatch(path)) return '影片详情';
   if (path.endsWith('/items')) {
+    if (uri.queryParameters['SortBy'] == 'DatePlayed,SortName') {
+      return '继续观看近期记录';
+    }
     if (uri.queryParameters.containsKey('SearchTerm')) return '影片搜索';
     if (uri.queryParameters.containsKey('Ids')) return '资源批量核对';
+    if (uri.queryParameters['Filters'] == 'IsPlayed' &&
+        uri.queryParameters['SortBy'] == 'DatePlayed') {
+      return '最近已看记录';
+    }
     if (uri.queryParameters.containsKey('Filters')) return '个人影片列表';
     return '媒体目录';
   }
@@ -382,12 +390,15 @@ class EmbyClient {
   final connection = ServerConnection();
   Future<void>? _connectionTest;
   Session? _session;
+  ({MediaItem item, Stopwatch age})? _openingDetail;
+  int _openingDetailEpoch = 0;
   final _personNames = PersonQuerySearch();
   // null means metadata has not been checked; empty means no server avatar.
   String? primaryImageTag;
   Session? get session => _session;
   set session(Session? value) {
     if (!identical(value, _session)) {
+      _invalidateOpeningDetail();
       _personNames.reset();
       connection.reset();
       primaryImageTag = null;
@@ -419,6 +430,7 @@ class EmbyClient {
         ..session = account;
 
   void retireBrowsing() {
+    _invalidateOpeningDetail();
     onUnauthorized = null;
     backgroundWork.pause(this, true);
   }
@@ -741,6 +753,7 @@ class EmbyClient {
   }) {
     final s = session;
     if (s == null) throw const AppFailure('请先登录 Emby');
+    if (method != 'GET') _invalidateOpeningDetail();
     return request(
       endpoint(s.base, path, query),
       method: method,
@@ -858,27 +871,84 @@ class EmbyClient {
     return page;
   }
 
+  static const _resumeFields =
+      'ProviderIds,Overview,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,Genres,OfficialRating,ProductionYear,RunTimeTicks,CommunityRating';
+
   /// Homepage queries mirror the read-only PC 0.6.5 presentation contract.
   /// Preserve server order; never open media or invent local "latest" sorting.
-  Future<ItemPage> resumeItems({
-    int start = 0,
-    int limit = 18,
-  }) async => ItemPage.fromJson(
-    await api(
-      'Users/${session!.userId}/Items/Resume',
+  Future<ItemPage> resumeItems({int start = 0, int limit = 18}) async =>
+      ItemPage.fromJson(
+        await api(
+          'Users/${session!.userId}/Items/Resume',
+          query: {
+            'Limit': '$limit',
+            if (start > 0) 'StartIndex': '$start',
+            'EnableTotalRecordCount': 'true',
+            'MediaTypes': 'Video',
+            'Fields': _resumeFields,
+            'EnableUserData': 'true',
+            'EnableImageTypes': 'Primary,Thumb,Backdrop',
+            'ImageTypeLimit': '1',
+          },
+        ),
+      );
+
+  Future<ItemPage> recentViewingItems() async {
+    const limit = 48;
+    final data = await api(
+      'Users/${session!.userId}/Items',
       query: {
-        'Limit': '$limit',
-        if (start > 0) 'StartIndex': '$start',
-        'EnableTotalRecordCount': 'true',
+        'Recursive': 'true',
+        'IncludeItemTypes': 'Movie,Episode',
         'MediaTypes': 'Video',
-        'Fields':
-            'ProviderIds,Overview,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,Genres,OfficialRating,ProductionYear,RunTimeTicks,CommunityRating',
+        'SortBy': 'DatePlayed,SortName',
+        'SortOrder': 'Descending',
+        'GroupItemsIntoCollections': 'false',
+        'Limit': '$limit',
+        'EnableTotalRecordCount': 'false',
         'EnableUserData': 'true',
+        'Fields': _resumeFields,
         'EnableImageTypes': 'Primary,Thumb,Backdrop',
         'ImageTypeLimit': '1',
       },
-    ),
-  );
+      requestTimeout: const Duration(seconds: 4),
+      updateServerOnFailure: false,
+    );
+    if (data['Items'] is! List ||
+        (data['Items'] as List).any((entry) => entry is! Map)) {
+      throw const AppFailure('Emby 近期观看记录返回不完整');
+    }
+    final items = objects(
+      data['Items'],
+    ).take(limit).map(MediaItem.new).toList();
+    return ItemPage(items, items.length);
+  }
+
+  Future<ItemPage> resumeNextEpisodes() async {
+    const limit = 18;
+    final data = await api(
+      'Shows/NextUp',
+      query: {
+        'UserId': session!.userId,
+        'Limit': '$limit',
+        'EnableUserData': 'true',
+        'Fields': _resumeFields,
+        'EnableImageTypes': 'Primary,Thumb,Backdrop',
+        'ImageTypeLimit': '1',
+      },
+      requestTimeout: const Duration(seconds: 4),
+      updateServerOnFailure: false,
+    );
+    if (data['Items'] is! List ||
+        (data['Items'] as List).any((entry) => entry is! Map)) {
+      throw const AppFailure('Emby 继续观看下一集返回不完整');
+    }
+    final items = objects(
+      data['Items'],
+    ).take(limit).map(MediaItem.new).toList();
+    return ItemPage(items, items.length);
+  }
+
   Future<List<MediaItem>> latestItems(
     String parentId,
   ) async => ItemPage.fromJson(
@@ -1108,6 +1178,37 @@ class EmbyClient {
       },
     ),
   );
+
+  void _invalidateOpeningDetail() {
+    _openingDetailEpoch++;
+    _openingDetail = null;
+  }
+
+  Future<MediaItem> openingDetail(String id) async {
+    final recent = _openingDetail;
+    _openingDetail = null;
+    if (recent != null &&
+        recent.item.id == id &&
+        recent.age.elapsed < const Duration(seconds: 5)) {
+      log?.add(LogArea.player, '开播资料：复用刚读完的同条目详情；未预取媒体');
+      return recent.item;
+    }
+    return detail(id);
+  }
+
+  Future<MediaItem> browsingDetail(String id) async {
+    final epoch = _openingDetailEpoch;
+    final age = Stopwatch()..start();
+    final item = await detail(id);
+    if (epoch == _openingDetailEpoch &&
+        item.id == id &&
+        age.elapsed < const Duration(seconds: 5) &&
+        object(item.data['UserData'])['PlaybackPositionTicks'] is int &&
+        objects(item.data['MediaSources']).isNotEmpty) {
+      _openingDetail = (item: item, age: age);
+    }
+    return item;
+  }
 
   Future<MediaItem> detail(String id, {Duration? requestTimeout}) async {
     final item = MediaItem(
@@ -1540,6 +1641,29 @@ class EmbyClient {
     return playback(detail, sourceId: sourceId, start: start);
   }
 
+  /// User-triggered display lookup. Never opens the returned media address.
+  Future<Json?> inspectMediaSource(String itemId, String sourceId) async {
+    final owner = session;
+    if (owner == null) return null;
+    final data = await api(
+      'Items/$itemId/PlaybackInfo',
+      method: 'POST',
+      requestTimeout: const Duration(seconds: 5),
+      updateServerOnFailure: false,
+      body: {
+        'UserId': owner.userId,
+        'MediaSourceId': sourceId,
+        'IsPlayback': false,
+        'AutoOpenLiveStream': false,
+        'EnableTranscoding': false,
+      },
+    );
+    if (!identical(session, owner)) return null;
+    return objects(
+      data['MediaSources'],
+    ).where((source) => source['Id'] == sourceId).firstOrNull;
+  }
+
   Future<PlaybackRoute> playback(
     MediaItem item, {
     String? sourceId,
@@ -1742,6 +1866,7 @@ class EmbyClient {
       sessionId: playId,
       headers: mediaHeaders,
       streams: objects(selected['MediaStreams']),
+      sourceDuration: fromTicks(selected['RunTimeTicks']),
       defaultAudioIndex: selected['DefaultAudioStreamIndex'] is num
           ? integer(selected['DefaultAudioStreamIndex'])
           : null,
@@ -1816,12 +1941,13 @@ class EmbyClient {
     );
   }
 
-  /// Repair a verified mismatch for stopped playback or a durable checkpoint. Preserve the existing
-  /// favorite/play-count/played fields; never change server resume settings.
+  /// Repair a stopped checkpoint. A verified spurious stop completion can
+  /// restore the previously observed played flag in the same write.
   Future<void> saveResume(
     MediaItem saved,
     Duration position, {
     Duration? requestTimeout,
+    bool restoreUnplayed = false,
   }) async {
     final user = object(saved.data['UserData']);
     if (saved.id.isEmpty ||
@@ -1848,7 +1974,10 @@ class EmbyClient {
           'Played',
           'Key',
         ])
-          if (user.containsKey(name)) name: user[name],
+          if (user.containsKey(name) &&
+              (!restoreUnplayed || name != 'PlayedPercentage'))
+            name: user[name],
+        if (restoreUnplayed) 'Played': false,
         'PlaybackPositionTicks': ticks(position),
       },
     );
@@ -1860,10 +1989,12 @@ class EmbyClient {
 
   Future<void> markCompleted(String id, DateTime watchedAt) async {
     if (id.isEmpty) throw const AppFailure('缺少影片编号，无法同步已看记录');
+    // Emby's PlayedItems API expects yyyyMMddHHmmss in UTC.
+    final date = watchedAt.toUtc().toIso8601String().split('.').first;
     await api(
       'Users/${session!.userId}/PlayedItems/${Uri.encodeComponent(id)}',
       method: 'POST',
-      query: {'DatePlayed': watchedAt.toUtc().toIso8601String()},
+      query: {'DatePlayed': date.replaceAll(RegExp(r'[-T:]'), '')},
       requestTimeout: const Duration(seconds: 3),
     );
   }

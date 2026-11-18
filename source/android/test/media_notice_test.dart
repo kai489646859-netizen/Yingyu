@@ -4,6 +4,18 @@ import 'package:yingyu/playback/diagnostics.dart';
 import 'package:yingyu/playback/disc_transport.dart';
 
 void main() {
+  test('current HDR output label follows the established transfer', () {
+    expect(
+      mediaNotice(
+        bluray: false,
+        streams: const [],
+        decoded: const {'video-params/gamma': 'pq'},
+        nativeHdr: true,
+        outputTransfer: 'hlg',
+      ),
+      'HLG · 高动态范围',
+    );
+  });
   test(
     'Emby structured HDR/Dolby fields survive unavailable native profile',
     () {

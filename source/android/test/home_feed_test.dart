@@ -388,8 +388,8 @@ void main() {
     'resume refresh is throttled, explicit retry bypasses only time throttle',
     () async {
       var calls = 0;
-      final api = client((_) async {
-        calls++;
+      final api = client((request) async {
+        if (request.url.path.endsWith('/Resume')) calls++;
         return response('{"Items":[]}', 200);
       });
       final feed = HomeFeed(api, store);

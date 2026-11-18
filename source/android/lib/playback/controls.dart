@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../core/models.dart';
 import '../ui/style.dart';
 import 'player_status.dart';
+import 'episode_number.dart';
 
 String clockText(Duration d) =>
     '${d.inHours > 0 ? '${d.inHours}:' : ''}'
@@ -19,8 +20,8 @@ String playbackTitle(MediaItem item) {
   if (item.type != 'Episode') return item.title;
   final series = item.data['SeriesName']?.toString().trim() ?? '';
   var episodeName = item.title.trim();
-  final index = item.data['IndexNumber'];
-  if (index != null) {
+  final index = playbackEpisodeNumber(item);
+  if (index > 0) {
     // Only strip an ordinal that agrees with the structured episode identity.
     // Keep a genuine name (including any text following the ordinal).
     final ordinal = RegExp(
@@ -34,7 +35,7 @@ String playbackTitle(MediaItem item) {
     if (series.isNotEmpty) series,
     if (item.data['ParentIndexNumber'] != null)
       '第 ${item.data['ParentIndexNumber']} 季',
-    if (item.data['IndexNumber'] != null) '第 ${item.data['IndexNumber']} 集',
+    if (index > 0) '第 $index 集',
     if (episodeName.isNotEmpty) episodeName,
   ].join(' · ');
 }

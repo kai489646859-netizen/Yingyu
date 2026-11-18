@@ -3,8 +3,10 @@ package com.yingyu.player;
 import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -21,6 +23,7 @@ final class LogExportBridge {
     private MethodChannel.Result pending;
     private boolean destroyed;
     private boolean copying;
+    private boolean importing;
 
     LogExportBridge(Activity activity, FlutterEngine engine) {
         this.activity = activity;
@@ -28,6 +31,15 @@ final class LogExportBridge {
         channel.setMethodCallHandler((call, result) -> {
             try {
                 switch (call.method) {
+                    case "openSettings":
+                        if (pending != null || staged != null) {
+                            result.error("busy", "已有文件操作正在进行", null); return;
+                        }
+                        Intent open = new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+                        importing = true;
+                        pending = result;
+                        activity.startActivityForResult(open, REQUEST); return;
                     case "prepare":
                         if (staged != null || pending != null) {
                             result.error("busy", "已有日志正在导出", null); return;
@@ -35,15 +47,19 @@ final class LogExportBridge {
                         staged = File.createTempFile("yingyu-log-", ".txt", activity.getCacheDir());
                         result.success(staged.getAbsolutePath()); return;
                     case "save":
+                    case "saveSettings":
                         if (pending != null || staged == null || !staged.isFile()) {
                             result.error("unavailable", "日志文件尚未准备好", null); return;
                         }
                         String name = (String) call.arguments;
-                        if (name == null || name.contains("/") || name.contains("\\") || !name.endsWith(".txt")) {
+                        boolean settings = call.method.equals("saveSettings");
+                        String extension = settings ? ".json" : ".txt";
+                        if (name == null || name.contains("/") || name.contains("\\") || !name.endsWith(extension)) {
                             result.error("name", "日志文件名无效", null); return;
                         }
                         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT)
-                            .addCategory(Intent.CATEGORY_OPENABLE).setType("text/plain")
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType(settings ? "application/json" : "text/plain")
                             .putExtra(Intent.EXTRA_TITLE, name);
                         pending = result;
                         activity.startActivityForResult(intent, REQUEST); return;
@@ -53,9 +69,12 @@ final class LogExportBridge {
                     default: result.notImplemented();
                 }
             } catch (Exception error) {
+                boolean opening = importing;
+                importing = false;
                 pending = null;
                 cleanup();
-                result.error("export", "无法打开保存窗口，请使用分段复制", null);
+                result.error(opening ? "read" : "export",
+                    opening ? "无法打开文件选择窗口" : "无法打开保存窗口，请使用分段复制", null);
             }
         });
     }
@@ -64,7 +83,11 @@ final class LogExportBridge {
         if (pending == null) return;
         Uri destination = data == null ? null : data.getData();
         if (resultCode != Activity.RESULT_OK || destination == null) {
-            finish(false, null); return;
+            finish(importing ? null : false, null); return;
+        }
+        if (importing) {
+            readSettings(destination);
+            return;
         }
         final File source = staged;
         copying = true;
@@ -85,14 +108,40 @@ final class LogExportBridge {
         });
     }
 
-    private void finish(boolean saved, String error) {
+    private void readSettings(Uri uri) {
+        copying = true;
+        worker.execute(() -> {
+            byte[] bytes = null;
+            try (InputStream in = activity.getContentResolver().openInputStream(uri)) {
+                if (in != null) {
+                    ByteArrayOutputStream output = new ByteArrayOutputStream();
+                    byte[] buffer = new byte[4096];
+                    int count;
+                    while ((count = in.read(buffer)) != -1) {
+                        if (output.size() + count > 64 * 1024) break;
+                        output.write(buffer, 0, count);
+                    }
+                    if (count == -1) bytes = output.toByteArray();
+                }
+            } catch (Exception ignored) {
+                // The provider may have revoked access while the picker was open.
+            }
+            final byte[] result = bytes;
+            activity.runOnUiThread(() -> finish(result,
+                result == null ? "无法读取设置文件，文件上限为 64 KiB" : null));
+        });
+    }
+
+    private void finish(Object saved, String error) {
         copying = false;
+        boolean opening = importing;
+        importing = false;
         MethodChannel.Result reply = pending;
         pending = null;
         cleanup();
         if (destroyed || reply == null) return;
         if (error == null) reply.success(saved);
-        else reply.error("write", error, null);
+        else reply.error(opening ? "read" : "write", error, null);
     }
     private void cleanup() {
         if (staged != null) { staged.delete(); staged = null; }

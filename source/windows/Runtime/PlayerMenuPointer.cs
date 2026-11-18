@@ -15,16 +15,21 @@ internal static class PlayerMenuPointer
         => GetCursorPos(out var point) ? new Point(point.X, point.Y) : null;
 
     internal static bool Contains(FrameworkElement? element)
+        => element != null && PositionIn(element) is { } local
+            && local.X >= 0 && local.Y >= 0 && local.X <= element.ActualWidth && local.Y <= element.ActualHeight;
+
+    internal static Point? PositionIn(FrameworkElement element)
     {
         try
         {
-            if(element is not {IsLoaded:true,Visibility:Visibility.Visible} || element.ActualWidth<=0 || element.ActualHeight<=0 || element.XamlRoot is not {} root || root.RasterizationScale<=0 || !GetCursorPos(out var p))return false;
-            var window=Microsoft.UI.Win32Interop.GetWindowFromWindowId(root.ContentIslandEnvironment.AppWindowId);
-            if(!ScreenToClient(window,ref p))return false;
-            var local=root.Content.TransformToVisual(element).TransformPoint(new Point(p.X/root.RasterizationScale,p.Y/root.RasterizationScale));
-            return local.X>=0&&local.Y>=0&&local.X<=element.ActualWidth&&local.Y<=element.ActualHeight;
+            if (!element.IsLoaded || element.Visibility != Visibility.Visible || element.ActualWidth <= 0 || element.ActualHeight <= 0
+                || element.XamlRoot is not { } root || root.RasterizationScale <= 0 || !GetCursorPos(out var point)) return null;
+            var window = Microsoft.UI.Win32Interop.GetWindowFromWindowId(root.ContentIslandEnvironment.AppWindowId);
+            if (!ScreenToClient(window, ref point)) return null;
+            return root.Content.TransformToVisual(element).TransformPoint(
+                new Point(point.X / root.RasterizationScale, point.Y / root.RasterizationScale));
         }
-        catch(InvalidOperationException){return false;}
-        catch(COMException){return false;}
+        catch (InvalidOperationException) { return null; }
+        catch (COMException) { return null; }
     }
 }

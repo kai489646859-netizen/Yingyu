@@ -71,7 +71,7 @@ public static class DesktopTheme
         }
         public WeakReference<FrameworkElement> Element;
         public double NativeLandscapeWidth;
-        
+
         public INotifyPropertyChanged? Source;
         public PropertyChangedEventHandler? Changed;
         public bool PaintQueued,FullPaint;
@@ -450,15 +450,42 @@ public static class DesktopTheme
             {
                 var controls=new StackPanel{Name="DesktopPlaybackPreferences",Spacing=16};
                 var hdr=new ToggleSwitch{Header="HDR（测试）",IsOn=Options.HdrExperimental,OnContent="开启",OffContent="关闭"};
+                var autoHdr=new ToggleSwitch{Header="自动切换 Windows HDR",IsOn=Options.HdrAutoSwitchWindows,
+                    IsEnabled=hdr.IsOn,OnContent="开启",OffContent="关闭"};
                 bool revertingHdr=false;
-                hdr.Toggled+=(_,_)=>
+                void SaveHdr()
                 {
                     if(revertingHdr)return;
-                    if(!Save(Options with{HdrExperimental=hdr.IsOn}))
-                    {revertingHdr=true;hdr.IsOn=Options.HdrExperimental;revertingHdr=false;}
-                };
+                    if(!Save(Options with{HdrExperimental=hdr.IsOn,HdrAutoSwitchWindows=autoHdr.IsOn}))
+                    {
+                        revertingHdr=true;
+                        hdr.IsOn=Options.HdrExperimental;
+                        autoHdr.IsOn=Options.HdrAutoSwitchWindows;
+                        revertingHdr=false;
+                    }
+                    autoHdr.IsEnabled=hdr.IsOn;
+                }
+                hdr.Toggled+=(_,_)=>SaveHdr();
+                autoHdr.Toggled+=(_,_)=>SaveHdr();
                 controls.Children.Add(hdr);
-                controls.Children.Add(new TextBlock{Text="默认关闭：杜比、HDR、HLG 转换为 SDR。开启后请求 HDR 输出，杜比转换为 HDR10。需要系统与显示器支持 HDR；下次播放生效。",TextWrapping=TextWrapping.Wrap,FontSize=13});
+                controls.Children.Add(new TextBlock{Text="开启后按播放器所在显示器的 Windows HDR 状态选择输出。系统 HDR 关闭时使用 SDR 映射，普通 SDR 片源保持 SDR。下次播放生效。",TextWrapping=TextWrapping.Wrap,FontSize=13});
+                controls.Children.Add(autoHdr);
+                controls.Children.Add(new TextBlock{Text="默认关闭。开启后，HDR 影片可临时打开当前显示器的 Windows HDR，切到 SDR、离开显示器或退出播放时恢复映屿开启的设置。",TextWrapping=TextWrapping.Wrap,FontSize=13});
+                Choice(controls,"视频渲染",["GPU-Next（默认）","D3D11 兼容模式"],Options.CompatibilityRenderer?1:0,
+                    index=>Options with{CompatibilityRenderer=index==1});
+                controls.Children.Add(new TextBlock{Text="下次打开影片或切集生效。SDR 保持 SDR。HDR 优先匹配片源格式，杜比和原盘转换优先使用 HDR10。",TextWrapping=TextWrapping.Wrap,FontSize=13});
+                var quality=Choice(controls,"画质预设",VideoQuality.Labels,Options.VideoQualityPreset,index=>Options with{VideoQualityPreset=index});
+                controls.Children.Add(new TextBlock{Text="画质预设在下次开片或切集时生效。开启 HDR（测试）时使用原画。",TextWrapping=TextWrapping.Wrap,FontSize=13});
+                controls.Children.Add(ShaderSettings.Create(()=>Options,Save,out var refreshShaders));
+                controls.Children.Add(QualityConfiguration.Create(()=>Options,next=>
+                {
+                    if(!Save(next))return false;
+                    quality.SelectedIndex=Options.VideoQualityPreset;
+                    refreshShaders();
+                    return true;
+                }));
+                Choice(controls,"音频输出",HomeCinemaAudio.Labels,Options.AudioOutputMode,index=>Options with{AudioOutputMode=index});
+                controls.Children.Add(new TextBlock{Text="使用 Windows 当前音频设备，下次开片或切集生效。设备无法开启独占或直通时尝试共享 PCM。",TextWrapping=TextWrapping.Wrap,FontSize=13});
                 var click=new ToggleSwitch{Header="画面单击暂停／继续",IsOn=Options.VideoClickPause};
                 click.Toggled+=(_,_)=>Save(Options with{VideoClickPause=click.IsOn});controls.Children.Add(click);
                 Choice(controls,"方向键定位步长",new[]{"5 秒","10 秒","30 秒"},Array.IndexOf(new[]{5,10,30},Options.SeekStepSeconds),i=>Options with{SeekStepSeconds=new[]{5,10,30}[i]});
@@ -468,7 +495,9 @@ public static class DesktopTheme
             var reset = new Button { Content = "恢复默认外观" };
             reset.Click += (_, _) => system.Run("reset-click", () =>
             {
-                if (!Save(new DesktopThemeOptions{HdrExperimental=Options.HdrExperimental,VideoClickPause=Options.VideoClickPause,SeekStepSeconds=Options.SeekStepSeconds,KeyboardVolumeKeys=Options.KeyboardVolumeKeys,RightHoldBoost=Options.RightHoldBoost,PauseKey=Options.PauseKey,FullScreenKey=Options.FullScreenKey,MuteKey=Options.MuteKey,VolumeUpKey=Options.VolumeUpKey,VolumeDownKey=Options.VolumeDownKey,ShortcutVersion=Options.ShortcutVersion,CustomShortcutMask=Options.CustomShortcutMask})) return;
+                var defaults = new DesktopThemeOptions();
+                if (!Save(Options with { Mode=defaults.Mode, Preset=defaults.Preset, Accent=defaults.Accent,
+                    Density=defaults.Density, Corners=defaults.Corners, ReducedMotion=defaults.ReducedMotion })) return;
                 // Recreate only the appearance controls, preserving the original
                 // window-size preference UI and unrelated playback preferences.
                 if (oldContent is FrameworkElement original && original.Parent is Panel parent) parent.Children.Remove(oldContent);
@@ -503,7 +532,7 @@ public static class DesktopTheme
                 throw;
             }
         }
-        void Choice(StackPanel panel, string title, string[] labels, int selected, Func<int, DesktopThemeOptions> update)
+        ComboBox Choice(StackPanel panel, string title, string[] labels, int selected, Func<int, DesktopThemeOptions> update)
         {
             var combo = new ComboBox { MinWidth = 180, MaxWidth = double.PositiveInfinity, HorizontalAlignment = HorizontalAlignment.Stretch };
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(combo, title);
@@ -513,7 +542,8 @@ public static class DesktopTheme
             combo.SelectionChanged += (_, _) => system.Run("choice-selection", () =>
             {
                 if (reverting || combo.SelectedIndex < 0) return;
-                if (Save(update(combo.SelectedIndex))) selected = combo.SelectedIndex;
+                var next=update(combo.SelectedIndex);
+                if (next==Options||Save(next)) selected = combo.SelectedIndex;
                 else { reverting = true; combo.SelectedIndex = selected; reverting = false; }
             });
             var row = new Grid { ColumnSpacing = 20, RowSpacing = 8 };
@@ -528,6 +558,7 @@ public static class DesktopTheme
                 Grid.SetColumn(combo, narrow ? 0 : 1); Grid.SetRow(combo, narrow ? 1 : 0);
             });
             panel.Children.Add(row);
+            return combo;
         }
         bool Save(DesktopThemeOptions next)
         {

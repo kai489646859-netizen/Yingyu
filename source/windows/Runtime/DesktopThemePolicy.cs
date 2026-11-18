@@ -12,6 +12,14 @@ public sealed record DesktopThemeOptions
     public int Corners { get; init; } // soft, crisp, square
     public bool ReducedMotion { get; init; }
     public bool HdrExperimental { get; init; } // Missing in older settings => false (SDR).
+    public bool HdrAutoSwitchWindows { get; init; }
+    public bool CompatibilityRenderer { get; init; }
+    public int AudioOutputMode { get; init; }
+    public int VideoQualityPreset { get; init; }
+    public bool CustomShadersEnabled { get; init; }
+    public string[] ShaderFiles { get; init; } = [];
+    public string QualityMpvOptions { get; init; } = "";
+    public bool QualityAutoReduce { get; init; }
     public bool VideoClickPause { get; init; } = true;
     public int SeekStepSeconds { get; init; } = 5;
     public bool KeyboardVolumeKeys { get; init; } = true;
@@ -31,6 +39,10 @@ public sealed record DesktopThemeOptions
         Density = 1,
         Corners = Corners is >= 0 and <= 2 ? Corners : 0,
         SeekStepSeconds = SeekStepSeconds is 5 or 10 or 30 ? SeekStepSeconds : 5,
+        VideoQualityPreset = VideoQuality.NormalizePreset(VideoQualityPreset),
+        AudioOutputMode = AudioOutputMode is >=0 and <=2 ? AudioOutputMode : 0,
+        ShaderFiles = VideoQuality.NormalizeShaders(ShaderFiles),
+        QualityMpvOptions = QualityConfiguration.Sanitize(QualityMpvOptions),
     });
     public double Radius => Corners switch { 1 => 8, 2 => 0, _ => 16 };
     public double PosterWidth => 200;

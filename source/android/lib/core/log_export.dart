@@ -128,17 +128,21 @@ Map<LogEntry, int?> _resolveBuildCodes(List<LogEntry> entries) {
 class LogFileExport {
   static const channel = MethodChannel('yingyu/log-export');
 
-  static Future<bool> save(LogExportSnapshot snapshot) async {
+  static Future<bool> save(LogExportSnapshot snapshot) =>
+      saveText(snapshot.text, snapshot.fileName);
+
+  static Future<bool> saveText(
+    String text,
+    String fileName, {
+    String method = 'save',
+  }) async {
     // Only a small path/name crosses Binder. The full UTF-8 file is written
     // directly to the private temp file supplied by our Android bridge.
     final path = await channel.invokeMethod<String>('prepare');
     if (path == null) throw StateError('没有可写入的日志文件');
     try {
-      await File(
-        path,
-      ).writeAsString(snapshot.text, encoding: utf8, flush: true);
-      return await channel.invokeMethod<bool>('save', snapshot.fileName) ??
-          false;
+      await File(path).writeAsString(text, encoding: utf8, flush: true);
+      return await channel.invokeMethod<bool>(method, fileName) ?? false;
     } finally {
       await channel.invokeMethod<void>('discard');
     }

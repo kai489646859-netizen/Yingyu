@@ -25,8 +25,37 @@ public static class EpisodeLabels
 
     internal static int? Index(EmbyItem item)=>ExplicitNumber(item)?.Episode??item.IndexNumber;
 
+    static readonly Regex DisplayOrdinal = new(
+        @"(?:^|[^a-z0-9])S(?<season>[0-9]{1,3})[\s._-]*E(?<episode>[0-9]{1,5})(?![0-9])|第\s*(?<season>[0-9]{1,3})\s*季|第\s*(?<episode>[0-9]{1,5})\s*[集话話]|(?:^|[\s._-])(?:Episode|Ep\.?)[\s._-]*(?<episode>[0-9]{1,5})(?![0-9])",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+    static readonly Regex FileExtension = new(
+        @"\.(?:strm|mkv|mp4|m2ts|avi|mov|ts|webm)$", RegexOptions.IgnoreCase,
+        TimeSpan.FromMilliseconds(50));
+
+    internal static (int? Season, int? Episode) DisplayNumbers(EmbyItem item)
+    {
+        if (!string.Equals(item.Type,"Episode",StringComparison.OrdinalIgnoreCase)) return (null,null);
+        var matches = new[]{item.Name,item.OriginalTitle,ResourceSourceInfo.Basename(item.Path)}
+            .Where(name=>name is {Length:>0 and <=4096})
+            .Select(name=>DisplayOrdinal.Matches(name!).Cast<Match>()).ToArray();
+        int? Read(string group,int minimum)
+        {
+            foreach (var label in matches)
+            {
+                var numbers = label.Select(match=>int.TryParse(match.Groups[group].Value,out int value) ? value : -1)
+                    .Where(number=>number>=minimum).Distinct().Take(2).ToArray();
+                if (numbers.Length>0) return numbers.Length==1?numbers[0]:null;
+            }
+            return null;
+        }
+        return (item.ParentIndexNumber is >=0 ? item.ParentIndexNumber : Read("season",0),
+            item.IndexNumber is >0 ? item.IndexNumber : Read("episode",1));
+    }
+
+    internal static int? DisplayIndex(EmbyItem item) => DisplayNumbers(item).Episode;
+
     public static string Number(EmbyItem item, int ordinal)
-        => (Index(item) is >=0 and int number?number:ordinal).ToString();
+        => DisplayIndex(item)?.ToString() ?? "—";
 
     public static string Range(string first, string last, int start, int count)
     {
@@ -39,15 +68,19 @@ public static class EpisodeLabels
     {
         ArgumentNullException.ThrowIfNull(item);
         if (!string.Equals(item.Type, "Episode", StringComparison.OrdinalIgnoreCase)) return item.Name;
-        if(ExplicitNumber(item) is {} numbered)return $"第 {numbered.Episode} 集 · {item.SeriesName!.Trim()}";
         string name = item.Name?.Trim() ?? "";
-        if (item.IndexNumber is > 0)
-            name = Regex.Replace(name, $@"^(?:第\s*{item.IndexNumber}\s*[集话話]|(?:Episode|Ep\.?|E)\s*{item.IndexNumber}(?!\d))\s*[·:：\-—]*\s*", "", RegexOptions.IgnoreCase);
-        if (Generic(name)) name = !Generic(item.OriginalTitle) ? item.OriginalTitle!.Trim() : item.SeriesName?.Trim() ?? "";
-        if (item.IndexNumber is not > 0) return name;
-        string prefix = $"第 {item.IndexNumber} 集";
-        return string.IsNullOrWhiteSpace(name) ? prefix : $"{prefix} · {name}";
+        int? episode = DisplayIndex(item);
+        if (episode is >0)
+            name = Regex.Replace(name, $@"^(?:第\s*0*{episode}\s*[集话話]|(?:Episode|Ep\.?|E)\s*0*{episode}(?!\d))\s*[·:：\-—]*\s*", "", RegexOptions.IgnoreCase);
+        if (Generic(name) || FileStyle(name,item.SeriesName))
+            name = !Generic(item.OriginalTitle) && !FileStyle(item.OriginalTitle!,item.SeriesName) ? item.OriginalTitle!.Trim() : "";
+        if (episode is not >0) return name.Length>0?name:"分集";
+        string prefix = $"第 {episode} 集";
+        return name.Length==0 ? prefix : $"{prefix} · {name}";
     }
+    static bool FileStyle(string name,string? series)
+        => name.Length<=4096 && (DisplayOrdinal.IsMatch(name) || FileExtension.IsMatch(name)
+            || (!string.IsNullOrWhiteSpace(series) && name.StartsWith(series.Trim(),StringComparison.OrdinalIgnoreCase)));
     static bool Generic(string? text) => string.IsNullOrWhiteSpace(text) || Regex.IsMatch(text.Trim(),
         @"^(?:第\s*[\d零一二三四五六七八九十百]+\s*[集话話]|(?:Episode|Ep\.?|E)\s*\d+|S\d+\s*E\d+|\d+)$", RegexOptions.IgnoreCase);
     public static void ConfigureVolume(object overlay)

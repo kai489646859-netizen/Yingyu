@@ -87,6 +87,20 @@ class HomeFeed extends ChangeNotifier {
       _serverResumeRaw = savedResume.items;
       _serverSnapshotAt = savedResume.at;
     }
+    final savedHistory = browse?.peek(BrowseRepository.viewingResumeKey);
+    _orderedServerHistory = savedHistory != null;
+    _serverHistory =
+        savedHistory?.items ??
+        browse?.peek('resume:completed:v3')?.items ??
+        browse
+            ?.peek('resume:completed:v2')
+            ?.items
+            .where((item) => item.type == 'Movie' || item.type == 'Episode')
+            .take(36)
+            .toList() ??
+        const [];
+    _serverNext =
+        browse?.peek(BrowseRepository.nextResumeKey)?.items ?? const [];
     _rememberResumeServer(_serverResumeRaw ?? const []);
     // Migrate only durable evidence of actual rewatching, never a generic cache read.
     for (final entry in cached) {
@@ -98,7 +112,7 @@ class HomeFeed extends ChangeNotifier {
             _rawResumeObservations['${entry.item.data['SeriesId'] ?? ''}'];
       }
     }
-    resume = mergeResume(_serverResumeRaw ?? const []);
+    resume = projectResume(_serverResumeRaw ?? const []);
     sections = [
       for (final library in browse?.peek('views')?.items ?? <MediaItem>[])
         HomeSection(
@@ -133,6 +147,8 @@ class HomeFeed extends ChangeNotifier {
     bool allows(MediaItem item) =>
         store.homeOrder.removals.allows(account, item);
     _recent.removeWhere((_, entry) => !allows(entry.item));
+    _serverHistory = _serverHistory.where(allows).toList();
+    _serverNext = _serverNext.where(allows).toList();
     resume = resume.where(allows).toList();
     sections = sections.where((s) => allows(s.library)).toList();
     for (final section in sections) {
@@ -216,6 +232,9 @@ class HomeFeed extends ChangeNotifier {
   int generation = 0;
   bool _reloadAfterPause = false;
   DateTime? lastResumeRefresh;
+  List<MediaItem> _serverHistory = const [], _serverNext = const [];
+  bool _orderedServerHistory = false;
+  DateTime? _lastCompletionReadback;
   bool _resumeCheckedThisVisit = false;
   final _recent = <String, ({MediaItem item, DateTime at})>{};
   final _waiting = Queue<Completer<void>>();
@@ -459,6 +478,12 @@ class HomeFeed extends ChangeNotifier {
         if (!current || paused || revision != generation) return;
         if (missing.isNotEmpty) {
           _recent.removeWhere((id, _) => missing.contains(id));
+          _serverHistory = _serverHistory
+              .where((item) => !missing.contains(item.id))
+              .toList();
+          _serverNext = _serverNext
+              .where((item) => !missing.contains(item.id))
+              .toList();
           resume.removeWhere((item) => missing.contains(item.id));
           for (final section in sections) {
             section.items = section.items
@@ -614,7 +639,7 @@ class HomeFeed extends ChangeNotifier {
           mutation != _resumeMutation) {
         return;
       }
-      final projection = mergeResume(page.items);
+      final projection = projectResume(page.items);
       final firstRaw = page.items.firstOrNull;
       final firstType = const {'Episode', 'Movie'}.contains(firstRaw?.type)
           ? firstRaw!.type
@@ -623,17 +648,18 @@ class HomeFeed extends ChangeNotifier {
           .take(4)
           .map((row) => page.items.indexWhere((raw) => raw.id == row.id))
           .join(',');
-      final extraLocalRows = projection
+      final extraRows = projection
           .where((row) => !page.items.any((raw) => raw.id == row.id))
           .length;
       store.log.add(
         LogArea.app,
-        '[HOME175] 继续观看服务器投影：原始=${page.items.length}；显示=${projection.length}；额外本机卡片=$extraLocalRows；显示前项源序号=$sourceIndices；原始首项类型=$firstType；季=${integer(firstRaw?.data['ParentIndexNumber'])}；集=${integer(firstRaw?.data['IndexNumber'])}；位置=${firstRaw?.resume.inMilliseconds ?? 0} ms；未写观看进度',
+        '[HOME175] 继续观看服务器投影：原始=${page.items.length}；显示=${projection.length}；补充卡片=$extraRows；显示前项源序号=$sourceIndices；原始首项类型=$firstType；季=${integer(firstRaw?.data['ParentIndexNumber'])}；集=${integer(firstRaw?.data['IndexNumber'])}；位置=${firstRaw?.resume.inMilliseconds ?? 0} ms；未写观看进度',
       );
       if (store.homeOrder.serverHandlesHidden(account)) {
-        final pending = projection
+        final pending = mergeResume(page.items)
             .where(
               (item) =>
+                  item is ServerResumeItem &&
                   store.homeOrder.needsServerConfirmation(account, [item]),
             )
             .map((item) => item.id);
@@ -649,6 +675,12 @@ class HomeFeed extends ChangeNotifier {
       }
       resume = projection;
       lastResumeRefresh = DateTime.now();
+      changed();
+      await _refreshResumeHistory(
+        revision,
+        mutation,
+        force: force && !useCache,
+      );
     } catch (e) {
       if (!_deferPaused(e, revision) &&
           current &&
@@ -660,6 +692,116 @@ class HomeFeed extends ChangeNotifier {
       if (current && revision == generation) {
         resumeLoading = false;
         changed();
+      }
+    }
+  }
+
+  Future<void> _refreshResumeHistory(
+    int revision,
+    int mutation, {
+    required bool force,
+  }) async {
+    bool valid() =>
+        current &&
+        !paused &&
+        revision == generation &&
+        mutation == _resumeMutation;
+    Future<List<MediaItem>?> read(
+      String label,
+      Future<ItemPage> Function() fetch,
+    ) async {
+      try {
+        return (await _request(fetch, revision)).items;
+      } catch (error) {
+        if (valid() && !_deferPaused(error, revision)) {
+          store.log.add(
+            LogArea.app,
+            '继续观看$label读取失败，保留原记录：${safeError(error)}',
+            level: LogLevel.warning,
+          );
+        }
+        return null;
+      }
+    }
+
+    final history = await read(
+      '近期记录',
+      () => browse?.viewingResume(force: force) ?? api.recentViewingItems(),
+    );
+    if (!valid()) return;
+    if (force && history != null) await visibility.observeServer(history);
+    if (!valid()) return;
+    if (history != null) {
+      _serverHistory = history;
+      _orderedServerHistory = true;
+    }
+    final next = await read(
+      '下一集',
+      () => browse?.nextResume(force: force) ?? api.resumeNextEpisodes(),
+    );
+    if (!valid()) return;
+    if (next != null) _serverNext = next;
+    resume = projectResume(_serverResumeRaw ?? const []);
+    store.log.add(
+      LogArea.app,
+      '继续观看合并：已看列表=${_serverHistory.length}；带时间=${_serverHistory.where((item) => _playedAt(item) != null).length}；下一集候选=${_serverNext.length}；显示完成=${resume.whereType<CompletedResumeItem>().length}；显示待播放=${resume.whereType<NextResumeItem>().length}；只读',
+    );
+    if (force && history != null) {
+      unawaited(_checkLatestCompletion(history, revision));
+    }
+  }
+
+  Future<void> _checkLatestCompletion(
+    List<MediaItem> history,
+    int revision,
+  ) async {
+    final now = DateTime.now();
+    final previous = _lastCompletionReadback;
+    if (previous != null &&
+        now.difference(previous) < const Duration(minutes: 1))
+      return;
+    final recent = _recent.values.toList()
+      ..sort((a, b) => b.at.compareTo(a.at));
+    final latest = recent
+        .where(
+          (entry) =>
+              _recentCompletionAt(entry.item, entry.at) != null &&
+              _allowsCompleted(entry.item),
+        )
+        .firstOrNull;
+    if (latest == null) return;
+    final id = latest.item.id;
+    final match = history
+        .where(
+          (item) =>
+              item.id == id &&
+              item.resume == Duration.zero &&
+              object(item.data['UserData'])['Played'] == true,
+        )
+        .firstOrNull;
+    _lastCompletionReadback = now;
+    if (match != null) {
+      store.log.add(LogArea.progress, '本机最近完成：已在 Emby 近期记录中核对为已看、零续播位置');
+      return;
+    }
+    try {
+      final item = await _request(
+        () => api.detail(id, requestTimeout: const Duration(seconds: 3)),
+        revision,
+      );
+      if (!current || paused || revision != generation || item.id != id) return;
+      final played = object(item.data['UserData'])['Played'] == true;
+      store.log.add(
+        LogArea.progress,
+        '本机最近完成：Emby 列表未确认；单项回读已看=$played；位置=${item.resume.inMilliseconds} ms；只读',
+      );
+    } catch (error) {
+      if (current && !paused && revision == generation) {
+        store.log.add(
+          LogArea.progress,
+          '本机最近完成单项回读未完成：${safeError(error)}',
+          level: LogLevel.warning,
+        );
       }
     }
   }
@@ -935,7 +1077,9 @@ class HomeFeed extends ChangeNotifier {
         resume
             .where(
               (entry) =>
-                  entry.type == 'Episode' && entry.data['SeriesId'] == seriesId,
+                  entry is! NextResumeItem &&
+                  entry.type == 'Episode' &&
+                  entry.data['SeriesId'] == seriesId,
             )
             .firstOrNull;
   }
@@ -943,7 +1087,11 @@ class HomeFeed extends ChangeNotifier {
   Future<MediaItem?> lastWatchedEpisode(String seriesId) async {
     final before = resume
         .where(
-          (item) => item.type == 'Episode' && item.data['SeriesId'] == seriesId,
+          (item) =>
+              item is! CompletedResumeItem &&
+              item is! NextResumeItem &&
+              item.type == 'Episode' &&
+              item.data['SeriesId'] == seriesId,
         )
         .firstOrNull;
     final previous = _detailHistory[seriesId];
@@ -999,7 +1147,11 @@ class HomeFeed extends ChangeNotifier {
     );
     final shown = resume
         .where(
-          (item) => item.type == 'Episode' && item.data['SeriesId'] == seriesId,
+          (item) =>
+              item is! CompletedResumeItem &&
+              item is! NextResumeItem &&
+              item.type == 'Episode' &&
+              item.data['SeriesId'] == seriesId,
         )
         .firstOrNull;
     final shownAt = DateTime.tryParse(
@@ -1065,7 +1217,7 @@ class HomeFeed extends ChangeNotifier {
         _detailResumeBaseline.remove(oldest);
       }
       if (before != null) {
-        resume = mergeResume(resume);
+        resume = projectResume(_serverResumeRaw ?? resume);
         changed();
       }
       try {
@@ -1081,21 +1233,165 @@ class HomeFeed extends ChangeNotifier {
     return selected;
   }
 
-  /// Preserve server order and the first server row of each title. Local
-  /// pending/EOF/history records are synchronization state, not extra cards.
+  /// Preserve server order and the first server row of each title.
   List<MediaItem> mergeResume(Iterable<MediaItem> entries, {int limit = 18}) =>
       collapseResume(
-        entries.where(allowsResume),
+        entries.where(
+          (item) =>
+              item is! CompletedResumeItem &&
+              item is! NextResumeItem &&
+              allowsResume(item),
+        ),
         limit: limit,
       ).map(_resumeDisplayRow).toList();
+
+  List<MediaItem> projectResume(Iterable<MediaItem> entries, {int limit = 18}) {
+    final serverOrder = <String, int>{};
+    if (_orderedServerHistory) {
+      for (final item in _serverHistory.where(_hasViewingHistory)) {
+        serverOrder.putIfAbsent(item.id, () => serverOrder.length);
+      }
+    }
+    final rows = <String, ({MediaItem item, DateTime? at})>{
+      for (final item in mergeResume(
+        entries.where(
+          (item) =>
+              object(item.data['UserData'])['Played'] != true ||
+              _isRewatch(item),
+        ),
+        limit: limit,
+      ))
+        resumeTitleKey(item): (item: item, at: _playedAt(item)),
+    };
+    void offer(MediaItem item, DateTime? at, {bool local = false}) {
+      final key = resumeTitleKey(item);
+      final current = rows[key];
+      if (current != null) {
+        if (local &&
+            current.item is CompletedResumeItem &&
+            current.item.id == item.id)
+          return;
+        final before = current.at;
+        final rank = serverOrder[item.id],
+            previousRank = serverOrder[current.item.id];
+        final newer = at != null && before != null
+            ? at.isAfter(before)
+            : rank != null && previousRank != null && rank < previousRank;
+        final sameLocal =
+            local &&
+            current.item.id == item.id &&
+            (before == null || at != null && !at.isBefore(before));
+        if (!newer && !sameLocal) return;
+      }
+      rows[key] = (item: item, at: at);
+    }
+
+    final historyTitles = <String>{};
+    for (final item in _serverHistory) {
+      if (!_hasViewingHistory(item) ||
+          !allowsResume(item) ||
+          !historyTitles.add(resumeTitleKey(item))) {
+        continue;
+      }
+      if (_isRewatch(item)) {
+        offer(_resumeDisplayRow(item), _playedAt(item));
+      } else if (_allowsCompleted(item)) {
+        offer(CompletedResumeItem(item), _playedAt(item));
+      }
+    }
+    for (final entry in _recent.values) {
+      final at = _recentCompletionAt(entry.item, entry.at);
+      if (at != null && _allowsCompleted(entry.item)) {
+        offer(CompletedResumeItem(entry.item), at, local: true);
+      }
+    }
+    for (final item in _serverNext) {
+      final key = resumeTitleKey(item);
+      if (item.id.isNotEmpty &&
+          item.type == 'Episode' &&
+          key.startsWith('series:') &&
+          item.resume == Duration.zero &&
+          object(item.data['UserData'])['Played'] == false &&
+          allowsResume(item) &&
+          (historyTitles.contains(key) ||
+              integer(item.data['IndexNumber']) > 1 ||
+              integer(item.data['ParentIndexNumber']) > 1)) {
+        rows.putIfAbsent(key, () => (item: NextResumeItem(item), at: null));
+      }
+    }
+    final ranked = rows.values.indexed.toList()
+      ..sort((a, b) {
+        final leftRank = serverOrder[a.$2.item.id];
+        final rightRank = serverOrder[b.$2.item.id];
+        if (leftRank != null || rightRank != null) {
+          if (leftRank == null) return 1;
+          if (rightRank == null) return -1;
+          return leftRank.compareTo(rightRank);
+        }
+        final left = a.$2.at, right = b.$2.at;
+        if (left == null) return right == null ? a.$1.compareTo(b.$1) : 1;
+        if (right == null) return -1;
+        final byDate = right.compareTo(left);
+        return byDate == 0 ? a.$1.compareTo(b.$1) : byDate;
+      });
+    return ranked.take(limit).map((row) => row.$2.item).toList();
+  }
+
+  DateTime? _playedAt(MediaItem item) =>
+      DateTime.tryParse('${object(item.data['UserData'])['LastPlayedDate']}');
+
+  bool _isRewatch(MediaItem item) =>
+      item.resume > Duration.zero &&
+      (item.duration <= Duration.zero || item.resume < item.duration);
+
+  bool _hasViewingHistory(MediaItem item) =>
+      item.id.isNotEmpty &&
+      item.playable &&
+      (_isRewatch(item) ||
+          item.resume == Duration.zero &&
+              object(item.data['UserData'])['Played'] == true);
+
+  bool _allowsCompleted(MediaItem item) {
+    if (!allowsResume(item)) return false;
+    try {
+      return (store.localProgress(account, item.id) ?? Duration.zero) <=
+              Duration.zero &&
+          !store.restartObserved(account, item);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  DateTime? _recentCompletionAt(MediaItem item, DateTime observedAt) {
+    if (!item.playable ||
+        item.resume != Duration.zero ||
+        object(item.data['UserData'])['Played'] != true) {
+      return null;
+    }
+    try {
+      final receipt = store.completions.receipt(account, item.id);
+      if (receipt == null || receipt['superseded'] == true) {
+        return null;
+      }
+      final completedAt = DateTime.tryParse('${receipt['at']}');
+      // A bounded history query can omit an item even after its individual
+      // read-back succeeded. The latest local observation still owns the row.
+      return completedAt != null && !completedAt.isAfter(observedAt)
+          ? completedAt
+          : null;
+    } catch (_) {
+      // An unreadable optional history record must not hide the server list.
+      return null;
+    }
+  }
 
   ServerResumeItem _resumeDisplayRow(MediaItem item) {
     final position = item.resume;
     final percent = object(item.data['UserData'])['PlayedPercentage'];
     if (item.id.isEmpty ||
-        item.duration > Duration.zero ||
+        item.watchDuration > Duration.zero ||
         position <= Duration.zero ||
-        (percent is num && percent.isFinite && percent > 0 && percent <= 100)) {
+        (percent is num && percent.isFinite && percent > 0 && percent < 100)) {
       return ServerResumeItem(item);
     }
     final detail =
@@ -1104,12 +1400,12 @@ class HomeFeed extends ChangeNotifier {
     if (detail == null ||
         detail.id != item.id ||
         detail.type != item.type ||
-        detail.duration <= position) {
+        detail.watchDuration <= position) {
       return ServerResumeItem(item);
     }
     // Copy only display duration. The Resume row still owns identity and time.
     return ServerResumeItem(
-      MediaItem({...item.data, 'RunTimeTicks': ticks(detail.duration)}),
+      MediaItem({...item.data, 'RunTimeTicks': ticks(detail.watchDuration)}),
     );
   }
 
@@ -1127,6 +1423,10 @@ class HomeFeed extends ChangeNotifier {
     if (!current) return;
     _resumeMutation++;
     _recent.remove(saved.id);
+    _serverHistory = _serverHistory
+        .where((item) => item.id != saved.id)
+        .toList();
+    _serverNext = _serverNext.where((item) => item.id != saved.id).toList();
     _playbackReceipts.remove(saved.id);
     _playbackHistory.remove(saved.id);
     resume.removeWhere((item) => item.id == saved.id);
@@ -1174,10 +1474,12 @@ class HomeFeed extends ChangeNotifier {
     final removal = _removalRevisions[removalKey];
     final displayBefore = store.watchDisplaySnapshot(account, original.id);
     var detail = original;
-    try {
-      detail = await _freshMetadata(() => api.detail(original.id), revision);
-    } catch (_) {
-      /* The existing sync warning remains visible to the user. */
+    if (actualCompleted != true) {
+      try {
+        detail = await _freshMetadata(() => api.detail(original.id), revision);
+      } catch (_) {
+        /* The existing sync warning remains visible to the user. */
+      }
     }
     if (!current ||
         paused ||
@@ -1198,16 +1500,20 @@ class HomeFeed extends ChangeNotifier {
       return;
     }
     final local = store.localProgress(account, original.id);
-    final position = store.resume(account, detail).position;
-    final restart = store.restartObserved(account, detail);
+    final position = actualCompleted == true
+        ? Duration.zero
+        : store.resume(account, detail).position;
+    final restart =
+        actualCompleted != true && store.restartObserved(account, detail);
     final completed =
-        store.completions.completed(account, detail) &&
-        (!store.completions.superseded(account, detail.id) ||
-            object(detail.data['UserData'])['Played'] == true) &&
-        (local == null || local == Duration.zero) &&
-        !restart &&
-        (actualCompleted == true ||
-            (position == Duration.zero && actualCompleted != false));
+        actualCompleted == true ||
+        (actualCompleted == null &&
+            position == Duration.zero &&
+            (local == null || local == Duration.zero) &&
+            !restart &&
+            store.completions.completed(account, detail) &&
+            (!store.completions.superseded(account, detail.id) ||
+                object(detail.data['UserData'])['Played'] == true));
     final observed = completed
         ? MediaItem({
             ...detail.data,
@@ -1239,7 +1545,7 @@ class HomeFeed extends ChangeNotifier {
     // visible row projects it to the local checkpoint; changing its stored
     // fingerprint would lose a still-unsynced zero during the next refresh.
     _recent[original.id] = (item: restart ? detail : observed, at: watchedAt);
-    resume = mergeResume(_serverResumeRaw ?? const []);
+    resume = projectResume(_serverResumeRaw ?? const []);
     while (_recent.length > 18) {
       final oldest = _recent.keys.first;
       _recent.remove(oldest);

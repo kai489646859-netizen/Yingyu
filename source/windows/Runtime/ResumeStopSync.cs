@@ -9,8 +9,9 @@ public static class ResumeStopSync
 {
     internal static bool Confirmed(EmbyItem remote,long position,bool completed)
     {
-        if(remote.UserData is not {} data||!data.LastPlayedDate.HasValue)return false;
+        if(remote.UserData is not {} data)return false;
         if(completed)return data.Played&&data.PlaybackPositionTicks==0;
+        if(!data.LastPlayedDate.HasValue)return false;
         if(position==0)return !data.Played&&data.PlaybackPositionTicks==0;
         return !data.Played&&data.PlaybackPositionTicks>0&&Math.Abs((decimal)data.PlaybackPositionTicks-position)<=TimeSpan.TicksPerSecond*2;
     }

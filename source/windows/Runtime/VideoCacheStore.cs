@@ -32,7 +32,7 @@ public static class VideoCacheSettings
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
                 { Warning = "视频缓存设置读取失败，使用临时缓冲"; }
-                return (_limit = 0).Value;
+                return (_limit = PlaybackCachePolicy.DefaultDiskGB).Value;
             }
         }
     }
@@ -63,7 +63,7 @@ public static class VideoCacheSettings
         }
     }
     public static void Clear() { Store.Clear(); Warning = null; }
-    internal static long Bytes(int value) => value < 0 ? -1 : value * 1024L * 1024 * 1024;
+    internal static long Bytes(int value) => PlaybackCachePolicy.DiskBytes(value);
     sealed record Policy(int GB);
 }
 

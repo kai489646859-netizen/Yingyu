@@ -1,3 +1,5 @@
+import 'cache_policy.dart';
+
 /// MPV expresses these thresholds in media seconds, not wall-clock seconds.
 /// Keep the normal two-second playback cushion. Above 2x, accumulate eight
 /// seconds of playback before restarting an empty cache, so a cold seek does
@@ -12,8 +14,7 @@ Map<String, String> discBufferOptions(double speed, {int? forwardBytes}) => {
   'cache-pause-wait': ((speed > 2 ? 8 : 2) * speed)
       .clamp(1, 24)
       .toStringAsFixed(2),
-  'cache-secs': (speed > 2 ? 180.0 : (20 * speed).clamp(10, 60))
-      .toStringAsFixed(2),
+  'cache-secs': '$steadyPacketCacheSeconds',
   if (forwardBytes != null) 'demuxer-max-bytes': '$forwardBytes',
 };
 

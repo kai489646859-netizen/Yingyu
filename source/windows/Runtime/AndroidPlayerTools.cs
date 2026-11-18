@@ -13,7 +13,7 @@ internal static class AndroidPlayerTools
 {
     static readonly ConditionalWeakTable<object, AudioState> Audio = new();
     static readonly ConditionalWeakTable<object, PictureState> Pictures = new();
-    sealed class PictureState { internal int Generation; internal double Preset; }
+    sealed class PictureState { internal int Generation; internal double Brightness, Shadows; }
     sealed class AudioState { internal int Generation; internal string? Written; internal int Mode; }
     internal static UIElement Build(object session, object overlay, UIElement original,bool subtitlesFirst=false)
         => new Menu(session, overlay, original,subtitlesFirst).Root;
@@ -100,10 +100,13 @@ internal static class AndroidPlayerTools
             pages.Add(("弹幕",PlayerDanmaku.Menu(session)));
             subtitles.Children.Insert(0,Action("选择本地字幕文件…",()=>DesktopSubtitles.Pick(session)));
             subtitles.Children.Insert(1,new TextBlock{Text="也可将字幕文件直接拖入播放画面",FontSize=12,TextWrapping=TextWrapping.Wrap});
+            subtitles.Children.Insert(2,Action("在线字幕搜索…",()=>DesktopSubtitles.Search(session)));
             subtitles.Children.Add(new Expander{Header="字幕延迟",HorizontalAlignment=HorizontalAlignment.Stretch,Content=Adjustment("sub-delay","_liveSubtitleDelay",-3600,3600,0.1,0,"字幕延迟（秒；正数晚出现）",new[]{-1d,-.1,.1,1})});
             if(position!=null)subtitles.Children.Add(position);
             subtitles.Children.Add(new Expander{Header="字幕大小",HorizontalAlignment=HorizontalAlignment.Stretch,Content=Adjustment("sub-scale","_liveSubtitleScale",.6,2,.1,1,"字幕大小（倍）",new[]{-.1,.1})});
             pages.Add(("画面明暗",Picture()));pages.Add(("音量均衡",Balance()));
+            pages.Add(("音频同步",Adjustment("audio-delay",null,-10,10,.05,0,
+                "音频延迟（秒，正数使声音延后）",new[]{-.5,-.05,.05,.5})));
             if(NetworkBluray.MenuTitles(session).Count>0)pages.Add(("原盘播放",Disc()));
             pages.Insert(0,("字幕",subtitles));
             if(extras.Children.Count>0)pages.Add(("定时停止",extras));
@@ -140,6 +143,30 @@ internal static class AndroidPlayerTools
             body.Children.Clear();status.Text="";title.Visibility=Visibility.Visible;title.Text="播放设置";back.Visibility=Visibility.Collapsed;
             var statistics=Action("影视信息（实时统计）  ›",()=>{PlayerMenus.CloseTools(overlay);PlayerMediaInfo.Toggle(session);return Task.CompletedTask;});
             ToolTipService.SetToolTip(statistics,"点击显示或隐藏实时播放统计");body.Children.Add(statistics);
+            body.Children.Add(Action("播放诊断详情  ›",()=>
+            {
+                body.Children.Clear();title.Text="播放诊断详情";back.Visibility=Visibility.Visible;
+                var snapshot=new TextBlock{Text=PlayerMediaInfo.Snapshot(session),
+                    TextWrapping=TextWrapping.Wrap,IsTextSelectionEnabled=true};
+                var buttons=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8};
+                buttons.Children.Add(Action("刷新",()=>
+                {
+                    snapshot.Text=PlayerMediaInfo.Snapshot(session);
+                    status.Text="";
+                    return Task.CompletedTask;
+                }));
+                buttons.Children.Add(Action("复制技术信息",()=>
+                {
+                    var data=new Windows.ApplicationModel.DataTransfer.DataPackage();
+                    data.SetText(PlayerMediaInfo.TechnicalSnapshot(session));
+                    Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(data);
+                    Windows.ApplicationModel.DataTransfer.Clipboard.Flush();
+                    status.Text="已复制播放技术信息";
+                    return Task.CompletedTask;
+                }));
+                body.Children.Add(buttons);body.Children.Add(snapshot);
+                return Task.CompletedTask;
+            }));
             var grid=new Grid{ColumnSpacing=8,RowSpacing=8};grid.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});grid.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});
             int index=0;
             foreach(var page in pages)
@@ -198,39 +225,97 @@ internal static class AndroidPlayerTools
         }
         UIElement Picture()
         {
-            var pane=Pane();pane.Children.Add(new TextBlock{Text="默认保留原始画面；以下调整仅在手动选择后应用于本次播放。",TextWrapping=TextWrapping.Wrap});
-            var choices=new List<(Button Button,double Value,string Label)>();bool pending=false;
-            void Refresh()
+            var pane=Pane();
+            var brightness = SliderFor("整体亮度增强",15,.1);
+            var shadows = SliderFor("暗部增强",75,1);
+            var reset = new Button { Content="恢复原画" };
+            StyleRow(reset);
+            pane.Children.Add(reset);
+            pane.Children.Add(new TextBlock {
+                Text="拖动时实时预览，暂停也可调整。仅作用于当前影片。",
+                TextWrapping=TextWrapping.Wrap
+            });
+            bool updating=false, pending=false;
+            var confirmed = (Brightness:0d, Shadows:0d);
+            var desired = confirmed;
+
+            Slider SliderFor(string label,double maximum,double step)
             {
-                double value=Pictures.TryGetValue(session,out var state)&&state.Generation==generation?state.Preset:0;
-                foreach(var choice in choices)PaintChoice(choice.Button,choice.Label,choice.Value==value);
+                var slider = new Slider { Header=label, Minimum=0, Maximum=maximum,
+                    StepFrequency=step, SmallChange=step, LargeChange=step*5,
+                    HorizontalAlignment=HorizontalAlignment.Stretch };
+                PlayerSliderInput.ConfigurePicture(slider);
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(slider,label);
+                pane.Children.Add(slider);
+                return slider;
             }
-            foreach(var (value,label) in new[]{(0d,"原始画面"),(5d,"轻度提亮"),(10d,"中度提亮"),(15d,"明显提亮")})
+
+            void Display((double Brightness,double Shadows) value)
             {
-                var button=new Button{HorizontalAlignment=HorizontalAlignment.Stretch,HorizontalContentAlignment=HorizontalAlignment.Left};
-                StyleRow(button);button.MinHeight=40;
-                choices.Add((button,value,label));pane.Children.Add(button);
-                button.Click+=(_,_)=>{
-                    if(pending||!Current)return;pending=true;
-                    foreach(var choice in choices)choice.Button.IsEnabled=false;
-                    status.Text="正在应用画面明暗…";
-                    PlaybackFeatureLog.Write(session,"picture","started");_ = Complete();
-                    async Task Complete()
+                updating=true;
+                brightness.Value=value.Brightness;
+                shadows.Value=value.Shadows;
+                brightness.Header=$"整体亮度增强    {value.Brightness:0.0}";
+                shadows.Header=$"暗部增强    {value.Shadows:0}%";
+                reset.IsEnabled=value != (0d,0d);
+                updating=false;
+            }
+
+            void Queue()
+            {
+                if(updating || !Current)return;
+                desired=(brightness.Value,shadows.Value);
+                Display(desired);
+                if(!pending)ApplyLatest();
+            }
+
+            void ApplyLatest()
+            {
+                if(!Current || desired==confirmed || !pane.IsLoaded)return;
+                var next=desired;
+                pending=true;
+                _=Complete();
+                async Task Complete()
+                {
+                    Exception? failure=null;
+                    try{await PictureAdjustment.Apply(session,next.Brightness,next.Shadows).ConfigureAwait(false);}
+                    catch(Exception error){failure=error;}
+                    element.DispatcherQueue.TryEnqueue(() =>
                     {
-                        long began=Environment.TickCount64;Exception? failure=null;
-                        try{await PictureAdjustment.Apply(session,value).ConfigureAwait(false);PlaybackFeatureLog.Write(session,"picture",Current?"accepted":"superseded",Environment.TickCount64-began);}
-                        catch(Exception error){failure=error;PlaybackFeatureLog.Write(session,"picture","failed",Environment.TickCount64-began,error.GetType().Name);}
-                        finally{element.DispatcherQueue.TryEnqueue(()=>{
-                            pending=false;if(!Current)return;
-                            if(failure==null){var confirmed=Pictures.GetOrCreateValue(session);confirmed.Generation=generation;confirmed.Preset=value;}
-                            foreach(var choice in choices)choice.Button.IsEnabled=true;
-                            Refresh();
-                            status.Text=failure==null?"画面明暗："+label:failure is InvalidOperationException?failure.Message:"画面明暗未能应用，请重新打开菜单。";
-                        });}
-                    }
-                };
+                        pending=false;
+                        if(!Current)return;
+                        if(failure is null)
+                        {
+                            confirmed=next;
+                            var saved=Pictures.GetOrCreateValue(session);
+                            saved.Generation=generation;
+                            saved.Brightness=next.Brightness;
+                            saved.Shadows=next.Shadows;
+                            status.Text="";
+                        }
+                        else
+                        {
+                            PlaybackFeatureLog.Write(session,"picture","failed",null,failure.GetType().Name);
+                            if(desired==next)desired=confirmed;
+                            status.Text=failure is InvalidOperationException?failure.Message:"画面调整未能应用。";
+                        }
+                        if(pane.IsLoaded)Display(desired);
+                        ApplyLatest();
+                    });
+                }
             }
-            Refresh();pane.Loaded+=(_,_)=>Refresh();
+
+            pane.Loaded+=(_,_) =>
+            {
+                if(pending)return;
+                confirmed=Pictures.TryGetValue(session,out var state)&&state.Generation==generation
+                    ? (state.Brightness,state.Shadows) : (0d,0d);
+                desired=confirmed;
+                Display(desired);
+            };
+            brightness.ValueChanged+=(_,_)=>Queue();
+            shadows.ValueChanged+=(_,_)=>Queue();
+            reset.Click+=(_,_)=>{Display((0d,0d));Queue();};
             return pane;
         }
         UIElement Balance()

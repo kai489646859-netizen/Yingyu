@@ -6,7 +6,7 @@ namespace Yingyu.Update;
 
 // Read-side projection only. Never reports playback, writes UserData, changes
 // completion, or turns ordinary cached observations into pending edits.
-internal static class ResumeServerHistory
+public static class ResumeServerHistory
 {
     sealed class State
     {
@@ -17,10 +17,67 @@ internal static class ResumeServerHistory
     }
     static readonly ConditionalWeakTable<object,State> States=new();
     static readonly ConditionalWeakTable<EmbyItem,object> CompletedCards=new();
-    internal static bool HomeCompleted(EmbyItem item)=>CompletedCards.TryGetValue(item,out _);
+    internal static bool HomeCompleted(EmbyItem item)=>!Show(item)
+        &&(CompletedCards.TryGetValue(item,out _)||item.UserData is {PlaybackPositionTicks:0,PlayedPercentage:100});
+    static bool Playable(EmbyItem item)=>item.Type is "Movie" or "Episode";
+    static EmbyUserData Completed(EmbyUserData progress,EmbyUserData? saved)=>new()
+    {
+        Played=true,PlaybackPositionTicks=0,PlayedPercentage=100,LastPlayedDate=progress.LastPlayedDate,
+        IsFavorite=saved?.IsFavorite??progress.IsFavorite,PlayCount=saved?.PlayCount??progress.PlayCount
+    };
+
+    public static bool ApplyLiveActivity(List<EmbyItem> items,EmbyUserData progress)
+    {
+        if(!progress.Played)
+        {
+            foreach(var item in items)CompletedCards.Remove(item);
+            return progress.PlaybackPositionTicks>0;
+        }
+        foreach(var item in items)
+        {
+            item.UserData=Completed(progress,item.UserData);
+            CompletedCards.GetValue(item,_=>new object());
+        }
+        return true;
+    }
+
+    public static void TrackLiveActivity(Dictionary<string,(EmbyItem Item,DateTimeOffset At)> pending,
+        string id,(EmbyItem Item,DateTimeOffset At) activity)
+    {
+        if(activity.Item.UserData?.Played==true)pending.Remove(id);
+        else pending[id]=activity;
+    }
+
+    static EmbyItem CompletedCard(EmbyItem item)
+    {
+        if(item.UserData is not {} data)return item;
+        // Keep the source observation and its upload fingerprint intact.
+        var copy=JsonSerializer.Deserialize<EmbyItem>(JsonSerializer.Serialize(item))!;
+        copy.UserData=Completed(data,data);
+        ResumeSync.CopyPendingMarker(item,copy);
+        CompletedCards.GetValue(copy,_=>new object());
+        return copy;
+    }
     internal static bool Rewatch(EmbyItem item)=>item.UserData is {Played:true,PlaybackPositionTicks:>0} data
         &&(item.RunTimeTicks is not >0||data.PlaybackPositionTicks<item.RunTimeTicks.Value);
     internal static bool Show(EmbyItem item)=>item.UserData?.Played!=true||Rewatch(item);
+    static bool HasViewingHistory(EmbyItem item)=>Playable(item)&&!string.IsNullOrWhiteSpace(item.Id)
+        &&(item.UserData is {PlaybackPositionTicks:>0} progress
+            &&(item.RunTimeTicks is not >0||progress.PlaybackPositionTicks<item.RunTimeTicks.Value)
+            ||item.UserData is {Played:true,PlaybackPositionTicks:0});
+    static Dictionary<string,int> ServerOrder(IEnumerable<EmbyItem> history)
+    {
+        var order=new Dictionary<string,int>(StringComparer.OrdinalIgnoreCase);
+        foreach(var item in history.Where(HasViewingHistory))order.TryAdd(item.Id,order.Count);
+        return order;
+    }
+    static bool IsNewer(EmbyItem item,EmbyItem current,Dictionary<string,int> order)
+    {
+        var at=item.UserData?.LastPlayedDate;
+        var before=current.UserData?.LastPlayedDate;
+        return at.HasValue&&before.HasValue?at.Value>before.Value
+            :order.TryGetValue(item.Id,out var rank)&&order.TryGetValue(current.Id,out var currentRank)&&rank<currentRank;
+    }
     static string Key(EmbyItem item)=>item.Type.Equals("Episode",StringComparison.OrdinalIgnoreCase)&&!string.IsNullOrWhiteSpace(item.SeriesId)?"series:"+item.SeriesId:"item:"+item.Id;
     internal static async Task<IReadOnlyList<EmbyItem>> Read(object page,EmbySession session,EmbyApiClient client,IReadOnlyList<EmbyItem> resume)
     {
@@ -52,55 +109,50 @@ internal static class ResumeServerHistory
     internal static void AppendNext(object page,EmbySession session,EmbyApiClient client,
         List<EmbyItem> displayed,IReadOnlyList<EmbyItem> history,IReadOnlyList<(EmbyItem Item,bool Completed,DateTimeOffset At)> edits)
     {
-        if(!States.TryGetValue(page,out var state)||!ReferenceEquals(state.Session,session)
-            ||!ReferenceEquals(state.Client,client)||state.Reading is not {IsCompletedSuccessfully:true})return;
-        var recent=state.Reading.Result;
-        var next=state.Next?.IsCompletedSuccessfully==true?state.Next.Result:state.NextItems;
-        var cutoff=DateTimeOffset.UtcNow.AddMinutes(-15);
-        var local=history.Where(i=>i.Type=="Episode"&&i.UserData?.LastPlayedDate>=cutoff)
-            .GroupBy(Key,StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g=>g.Key,g=>g.OrderByDescending(i=>i.UserData?.LastPlayedDate).First(),StringComparer.OrdinalIgnoreCase);
-        bool Same(EmbyItem row,string key)=>string.Equals(Key(row),key,StringComparison.OrdinalIgnoreCase);
-        DateTimeOffset At(EmbyItem? row)=>row?.UserData?.LastPlayedDate??DateTimeOffset.MinValue;
-        void Offer(EmbyItem candidate)
-        {
-            string key=Key(candidate);
-            int existing=displayed.FindIndex(row=>Same(row,key));
-            if(existing>=0)
-            {
-                var current=displayed[existing];
-                if(!Waiting(current)&&(At(current)==DateTimeOffset.MinValue||At(current)>=At(candidate)))return;
-                displayed.RemoveAt(existing);
-            }
-            if(!Show(candidate))CompletedCards.GetValue(candidate,_=>new object());
-            int at=displayed.FindIndex(row=>At(row)<At(candidate));
-            if(at<0)displayed.Add(candidate);else displayed.Insert(at,candidate);
-        }
-        foreach(var item in next)
-        {
-            if(!Waiting(item)||string.IsNullOrWhiteSpace(item.SeriesId))continue;
-            string key=Key(item);
-            var latestRemote=recent.Where(row=>Same(row,key)).MaxBy(At);
-            var completion=edits.Where(e=>e.Completed&&Same(e.Item,key)).OrderByDescending(e=>e.At).FirstOrDefault();
-            local.TryGetValue(key,out var saved);
-            if(saved?.UserData is {PlaybackPositionTicks:>0,LastPlayedDate:{ } savedAt} progress&&Show(saved)
-                &&(saved.RunTimeTicks is not >0||progress.PlaybackPositionTicks<saved.RunTimeTicks)
-                &&savedAt>At(latestRemote)&&savedAt>At(item)&&savedAt>completion.At)
-            {Offer(saved);continue;}
+        bool sameAccount=States.TryGetValue(page,out var state)&&ReferenceEquals(state.Session,session)
+            &&ReferenceEquals(state.Client,client);
+        IReadOnlyList<EmbyItem> recent=sameAccount&&state!.Reading is {IsCompletedSuccessfully:true} reading?reading.Result:[];
+        IReadOnlyList<EmbyItem> next=sameAccount?(state!.Next is {IsCompletedSuccessfully:true} following?following.Result:state.NextItems):[];
+        var rows = new Dictionary<string, EmbyItem>(StringComparer.OrdinalIgnoreCase);
+        var order = ServerOrder(recent);
+        foreach (var item in displayed.Where(row => Show(row) || HomeCompleted(row)))
+            if (!string.IsNullOrWhiteSpace(item.Id)) rows.TryAdd(Key(item), item);
 
-            var lastPlayed=new[]{latestRemote,saved,completion.Item}
-                .OfType<EmbyItem>().Where(row=>At(row)>=At(item)).MaxBy(At);
-            if(lastPlayed is not null&&!Show(lastPlayed)){Offer(lastPlayed);continue;}
-            if(latestRemote is null&&item.IndexNumber is not >1&&item.ParentIndexNumber is not >1)continue;
-            if(!displayed.Any(row=>Same(row,key)))displayed.Add(item);
-        }
-        // A finale need not have a NextUp row. Preserve a recent actual finish.
-        var recentCompleted=local.Values.Concat(recent).Concat(edits.Where(e=>e.Completed).Select(e=>e.Item))
-            .Where(row=>row.Type=="Episode"&&At(row)>=cutoff).GroupBy(Key,StringComparer.OrdinalIgnoreCase);
-        foreach(var group in recentCompleted)
+        void Offer(EmbyItem item, bool local = false)
         {
-            var latest=group.MaxBy(At)!;
-            if(!Show(latest))Offer(latest);
+            var key = Key(item);
+            var at = item.UserData?.LastPlayedDate;
+            if (rows.TryGetValue(key, out var current))
+            {
+                if (local && HomeCompleted(current) && current.Id.Equals(item.Id, StringComparison.OrdinalIgnoreCase)) return;
+                var before = current.UserData?.LastPlayedDate;
+                bool newer = IsNewer(item,current,order);
+                bool sameLocal = local && current.Id.Equals(item.Id, StringComparison.OrdinalIgnoreCase)
+                    && (!before.HasValue || at.HasValue && at.Value >= before.Value);
+                if (!newer && !sameLocal) return;
+            }
+            rows[key] = CompletedCard(item);
+        }
+
+        var historyTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in recent)
+        {
+            if (!HasViewingHistory(item) || !historyTitles.Add(Key(item))) continue;
+            if (item.UserData.PlaybackPositionTicks == 0) Offer(item);
+        }
+        foreach (var item in history.Where(item => Playable(item) && item.UserData?.Played == true)
+            .Concat(edits.Where(edit => edit.Completed).Select(edit => edit.Item)))
+            if (item.UserData?.LastPlayedDate is not null) Offer(item, local: true);
+
+        displayed.Clear();
+        displayed.AddRange(rows.Values.OrderBy(item => order.GetValueOrDefault(item.Id, int.MaxValue))
+            .ThenByDescending(item => item.UserData?.LastPlayedDate));
+        foreach (var item in next)
+        {
+            if (!Waiting(item) || string.IsNullOrWhiteSpace(item.SeriesId)) continue;
+            var key = Key(item);
+            if (!historyTitles.Contains(key) && item.IndexNumber is not >1 && item.ParentIndexNumber is not >1) continue;
+            if (rows.TryAdd(key, item)) displayed.Add(item);
         }
     }
     static async Task<IReadOnlyList<EmbyItem>> FetchNext(EmbySession session,EmbyApiClient client)
@@ -116,44 +168,48 @@ internal static class ResumeServerHistory
     static async Task<IReadOnlyList<EmbyItem>> Fetch(EmbySession session,EmbyApiClient client)
     {
         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));
-        string path=$"Users/{Uri.EscapeDataString(session.UserId)}/Items?Limit=36&Recursive=true&IncludeItemTypes=Movie,Episode&MediaTypes=Video&SortBy=DatePlayed&SortOrder=Descending&Filters=IsPlayed&EnableUserData=true&EnableImages=true&ImageTypeLimit=1&EnableImageTypes=Primary,Thumb,Backdrop&Fields=ProviderIds,Overview,RunTimeTicks,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,Genres,OfficialRating,ProductionYear,CommunityRating";
+        string path=$"Users/{Uri.EscapeDataString(session.UserId)}/Items?Limit=48&Recursive=true&IncludeItemTypes=Movie,Episode&MediaTypes=Video&SortBy=DatePlayed,SortName&SortOrder=Descending&GroupItemsIntoCollections=false&EnableTotalRecordCount=false&EnableUserData=true&EnableImages=true&ImageTypeLimit=1&EnableImageTypes=Primary,Thumb,Backdrop&Fields=ProviderIds,Overview,RunTimeTicks,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,Genres,OfficialRating,ProductionYear,CommunityRating";
         var json=await new EmbyPeopleApi(client,session.UserId).Get(path,timeout.Token);
         if(!json.TryGetProperty("Items",out var values)||values.ValueKind!=JsonValueKind.Array)throw new InvalidDataException("Missing recent history rows");
         var options=new JsonSerializerOptions{PropertyNameCaseInsensitive=true};
-        return values.EnumerateArray().Take(36).Select(v=>JsonSerializer.Deserialize<EmbyItem>(v.GetRawText(),options)).OfType<EmbyItem>().Where(i=>!string.IsNullOrWhiteSpace(i.Id)).ToArray();
+        return values.EnumerateArray().Take(48).Select(v=>JsonSerializer.Deserialize<EmbyItem>(v.GetRawText(),options)).OfType<EmbyItem>().Where(i=>!string.IsNullOrWhiteSpace(i.Id)).ToArray();
     }
     static IReadOnlyList<EmbyItem> Merge(IReadOnlyList<EmbyItem> resume,IReadOnlyList<EmbyItem> history)
     {
-        var result=resume.ToList();var seen=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result=resume.Where(Show).ToList();var seen=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var durations = resume.Concat(history).Where(item => item.RunTimeTicks is > 0)
+            .ToLookup(item => item.Id, StringComparer.OrdinalIgnoreCase);
+        var order=ServerOrder(history);
         foreach(var candidate in history)
         {
             // Consume the newest title observation before filtering progress:
             // a latest completed-zero row must suppress older partial episodes.
-            string key=Key(candidate);if(!seen.Add(key)||!Rewatch(candidate))continue;
-            var current=result.FirstOrDefault(i=>Key(i).Equals(key,StringComparison.OrdinalIgnoreCase));
-            var at=candidate.UserData?.LastPlayedDate;var before=current?.UserData?.LastPlayedDate;
-            if(current!=null)
+            string key=Key(candidate);if(!HasViewingHistory(candidate)||!seen.Add(key)||candidate.UserData!.PlaybackPositionTicks<=0)continue;
+            int index = result.FindIndex(item => Key(item).Equals(key, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
             {
-                bool same=current.Id.Equals(candidate.Id,StringComparison.OrdinalIgnoreCase);
-                if(same&&!(at.HasValue&&before.HasValue&&at.Value>before.Value))continue;
-                if(!same&&current.UserData?.PlaybackPositionTicks>0&&!(at.HasValue&&before.HasValue&&at.Value>before.Value))continue;
-                if(!same&&at.HasValue&&before.HasValue&&at.Value<before.Value)continue;
-                result.Remove(current);
+                result.Add(candidate);
+                continue;
             }
-            // Preserve the Resume endpoint's own relative order. Only insert
-            // fresh history where explicit server dates establish its recency.
-            int index=at.HasValue?result.FindIndex(i=>i.UserData?.LastPlayedDate is {} other&&at.Value>other):-1;
-            if(index<0)result.Add(candidate);else result.Insert(index,candidate);
+            if (IsNewer(candidate, result[index], order)) result[index] = candidate;
         }
-        return ResumeSeriesMergePolicy.Collapse(result.Where(Show),18);
+        for (int i = 0; i < result.Count; i++)
+        {
+            var row = result[i];
+            if (row.RunTimeTicks is > 0 || row.UserData is not { PlaybackPositionTicks: > 0 } progress) continue;
+            var runtime = durations[row.Id].FirstOrDefault(observation => observation.RunTimeTicks > progress.PlaybackPositionTicks);
+            result[i] = ResumeSync.WithDuration(row, runtime?.RunTimeTicks);
+        }
+        return ResumeSeriesMergePolicy.Collapse(result.Where(Show),result.Count);
     }
     internal static string Caption(EmbyItem item,string fallback)
     {
-        if(Waiting(item)&&item.IndexNumber is {} next)return (item.ParentIndexNumber is {} s?$"第 {s} 季 · ":"")+$"第 {next} 集 · 待播放";
+        var numbers=EpisodeLabels.DisplayNumbers(item);
+        string episode=(numbers.Season is {} season?$"第 {season} 季 · ":"")+(numbers.Episode is {} number?$"第 {number} 集 · ":"");
+        if(Waiting(item))return episode+"待播放";
         if(item.Type is "Series" or "Season")return fallback.Replace("已看完","已看至当前进度");
         if(item.UserData is null)return fallback;
-        string episode=item.Type=="Episode"&&item.IndexNumber is {} number?(item.ParentIndexNumber is {} season?$"第 {season} 季 · 第 {number} 集 · ":$"第 {number} 集 · "):"";
-        if(item.UserData.Played&&item.UserData.PlaybackPositionTicks==0)return episode+"已看完";
+        if(!Show(item))return episode+"已看完";
         if(item.UserData.PlaybackPositionTicks<=0||!Show(item))return fallback;
         string Stamp(long ticks){var time=TimeSpan.FromTicks(Math.Max(0,ticks));return time.TotalHours>=1?$"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}":$"{(int)time.TotalMinutes}:{time.Seconds:00}";}
         return episode+"继续 "+Stamp(item.UserData!.PlaybackPositionTicks)+(item.RunTimeTicks is >0?" / "+Stamp(item.RunTimeTicks.Value):"");

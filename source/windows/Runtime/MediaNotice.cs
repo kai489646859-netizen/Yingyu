@@ -44,7 +44,9 @@ public static class MediaNotice
         string mark=videos.Length==1?((videos[0].VideoRange??"")+" "+(videos[0].VideoRangeType??"")).ToLowerInvariant():"";
         if(mark.Contains("dolbyvision")||mark.Contains("dolby vision")||mark.Contains("dovi"))return "杜比视界（服务器标注）";
         string transfer=Read("video-params/gamma");
-        if(transfer is "pq" or "smpte2084")return "HDR";
+        if(transfer is "pq" or "smpte2084")
+            return HdrPlaybackPolicy.FromDecoder(transfer, "", "", Read("video-params/scene-avg")) == HdrMedia.Hdr10Plus
+                ? "HDR10+（片源）" : "HDR";
         if(transfer is "hlg" or "arib-std-b67")return "HLG";
         if(transfer is "bt.1886" or "bt.709" or "gamma2.2" or "gamma2.4" or "srgb")return "SDR";
         return mark.Contains("hdr")?"HDR（服务器标注）":mark.Contains("hlg")?"HLG（服务器标注）":"";
@@ -56,7 +58,9 @@ public static class MediaNotice
         if(native.Fatal)return native.Summary;
         string primaries=PlaybackTransport.Get(client,"video-target-params/primaries").ToLowerInvariant();
         return PlaybackTransport.Get(client,"video-target-params/gamma").ToLowerInvariant() switch
-        {"pq" or "smpte2084"=>primaries=="bt.2020"?"HDR10 输出":"HDR（色域待确认）","hlg" or "arib-std-b67"=>"HLG 输出","bt.1886" or "bt.709" or "gamma2.2" or "gamma2.4" or "srgb"=>"SDR 输出",_=>"输出方式待确认"};
+        {"pq" or "smpte2084"=>primaries=="bt.2020"
+            ? DolbyHdrFallback.HdrDisplayActive(session) ? "HDR10 输出" : "HDR10 色彩参数 · Windows HDR 待确认"
+            : "HDR（色域待确认）","hlg" or "arib-std-b67"=>"HLG 输出","bt.1886" or "bt.709" or "gamma2.2" or "gamma2.4" or "srgb"=>"SDR 输出",_=>"输出方式待确认"};
     }
     internal static string PlaybackMessage(object session,bool bluray)
     {

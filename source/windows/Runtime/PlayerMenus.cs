@@ -97,7 +97,7 @@ public static class PlayerMenus
             {
                 var featured=new ToggleButton{Name="FeaturedDanmakuButton"};
                 DanmakuToolbarIcon.Configure(featured);
-                ToolTipService.SetToolTip(featured,"精品弹幕：过滤重复及低信息量弹幕，关闭后显示普通弹幕");
+                ToolTipService.SetToolTip(featured,"精选弹幕：减少重复和过密的滚动弹幕");
                 PlayerDanmaku.AttachFeatured(_overlay,featured);
                 var button=new Button{Name="DanmakuButton"};
                 DanmakuToolbarIcon.Configure(button);

@@ -40,6 +40,11 @@ internal static class PublicDanmaku
     internal static string? DirectSite(string? url)
         =>new[]{"qq","qiyi","imgo"}.FirstOrDefault(site=>VideoId(url,site) is not null);
     internal static bool IsDirectLink(string? url)=>DirectSite(url) is not null;
+    internal static string? DirectEpisodeId(string? url)
+    {
+        if(DirectSite(url) is {} site)return VideoId(url,site);
+        return VideoId(url,"bilibili1");
+    }
     static string? VideoId(string? url,string site,bool catalog=false)
     {
         if(!Uri.TryCreate(url,UriKind.Absolute,out var uri)||uri.Scheme!="https"&&(!catalog||uri.Scheme!="http")||!uri.IsDefaultPort

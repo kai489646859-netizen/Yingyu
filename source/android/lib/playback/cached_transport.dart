@@ -18,14 +18,17 @@ class CachedPlaybackTransport {
     required this.headers,
     required this.cache,
     required this.scope,
+    this.deferDiskUntilPlayback = false,
   });
   final String address, scope;
   final Map<String, String> headers;
   final PlaybackByteCache cache;
+  final bool deferDiskUntilPlayback;
   late final reader = CachedMediaReader(
     open: _open,
     cache: cache,
     scope: scope,
+    deferDiskUntilPlayback: deferDiskUntilPlayback,
   );
   HttpServer? _server;
   final _clients = <HttpClient>{};

@@ -7,10 +7,11 @@ set(CMAKE_CXX_STANDARD 17)
 file(GLOB BD_NAV ${BD}/src/libbluray/bdnav/*.c)
 file(GLOB BD_DEC ${BD}/src/libbluray/decoders/*.c)
 file(GLOB BD_DISC ${BD}/src/libbluray/disc/*.c)
+list(REMOVE_ITEM BD_DISC ${BD}/src/libbluray/disc/udf_fs.c)
 file(GLOB BD_HDMV ${BD}/src/libbluray/hdmv/*.c)
 file(GLOB BD_UTIL ${BD}/src/util/*.c)
 add_library(yingyu_disc SHARED disc_jni.cpp disc_direct.cpp
-  disc_bluray.c ${BD}/src/libbluray/register.c
+  disc_bluray.c disc_udf.c ${BD}/src/libbluray/register.c
   bdj_disabled.c ${BD}/src/libbluray/bdj/bdjo_parse.c
   ${BD_NAV} ${BD_DEC} ${BD_DISC} ${BD_HDMV} ${BD_UTIL}
   ${BD}/src/file/file.c ${BD}/src/file/filesystem.c

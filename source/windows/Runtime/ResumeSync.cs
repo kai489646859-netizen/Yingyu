@@ -9,7 +9,7 @@ public static class ResumeSync
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<EmbyItem,object> Pending=new();
     sealed class AutoPending { internal string Stamp="";internal DateTimeOffset RetryAt; }
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object,AutoPending> Auto=new();
-    static void RequestPending(object page,EmbySession session,IReadOnlyList<PendingPlaybackSyncEntry> entries)
+    internal static void RequestPending(object page,EmbySession session,IReadOnlyList<PendingPlaybackSyncEntry> entries)
     {
         if(entries.Count==0)return;
         string stamp=JsonSerializer.Serialize(new object[]{session.ServerId,session.UserId,entries.OrderBy(e=>e.Playback.ItemId).Select(e=>new object[]{e.Playback.ItemId,e.Playback.PlaySessionId,e.Playback.PositionTicks,e.UpdatedAt.UtcTicks}).ToArray()});
@@ -43,6 +43,32 @@ public static class ResumeSync
             if (!edit.Completed) result.Insert(0, edit.Item);
         }
         return ResumeSeriesMergePolicy.Collapse(result.Where(ResumeServerHistory.Show), limit);
+    }
+
+    internal static EmbyItem WithDuration(EmbyItem item, long? duration)
+    {
+        if (item.RunTimeTicks is > 0 || duration is not > 0 ||
+            (item.UserData?.PlaybackPositionTicks ?? 0) >= duration.Value)
+            return item;
+        var json = JsonSerializer.SerializeToNode(item)!.AsObject();
+        json["RunTimeTicks"] = duration.Value;
+        var copy = json.Deserialize<EmbyItem>()!;
+        copy.UserData = item.UserData;
+        CopyPendingMarker(item, copy);
+        return copy;
+    }
+
+    internal static long? MetadataDuration(JsonElement value)
+    {
+        static long? Runtime(JsonElement row)
+            => row.ValueKind == JsonValueKind.Object &&
+                row.TryGetProperty("RunTimeTicks", out var field) && field.ValueKind == JsonValueKind.Number && field.TryGetInt64(out long ticks) && ticks > 0
+                    ? ticks : null;
+        if (Runtime(value) is {} duration) return duration;
+        if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty("MediaSources", out var sources)
+            || sources.ValueKind != JsonValueKind.Array) return null;
+        var runtimes = sources.EnumerateArray().Select(Runtime).Distinct().Take(2).ToArray();
+        return runtimes.Length == 1 ? runtimes[0] : null;
     }
 
     static bool NeedsPosition(EmbyItem item)
@@ -119,17 +145,30 @@ public static class ResumeSync
         }
         var missing=entries.OrderByDescending(e=>e.UpdatedAt).Select(e=>e.Playback.ItemId).Concat(observed.Where(i=>i.RunTimeTicks is not >0&&i.UserData?.PlaybackPositionTicks>0).Select(i=>i.Id))
             .Where(id=>!metadata.TryGetValue(id,out var known)||known.RunTimeTicks is not >0).Distinct(StringComparer.OrdinalIgnoreCase).Take(18).ToList();
+        var durations = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         if(missing.Count>0)
         {
             string ids=Uri.EscapeDataString(string.Join(',',missing));
-            var data=await new EmbyPeopleApi(client,session.UserId).Get($"Users/{Uri.EscapeDataString(session.UserId)}/Items?Ids={ids}&Limit=18&EnableUserData=true&Fields=Overview,RunTimeTicks,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags",CancellationToken.None);
-            if (!ReferenceEquals(client, Access.Get<EmbyApiClient?>(page, "_client")) || !ReferenceEquals(session, Access.Get<EmbySession?>(page, "_session"))) throw new OperationCanceledException();
-            if(data.TryGetProperty("Items",out var values)&&values.ValueKind==JsonValueKind.Array)
-            foreach(var value in values.EnumerateArray())
+            try
             {
-                var item=JsonSerializer.Deserialize<EmbyItem>(value.GetRawText(),new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
-                if(item!=null&&missing.Contains(item.Id,StringComparer.OrdinalIgnoreCase))metadata[item.Id]=item;
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                var data = await new EmbyPeopleApi(client, session.UserId).Get(
+                    $"Users/{Uri.EscapeDataString(session.UserId)}/Items?Ids={ids}&Limit=18&EnableUserData=true&Fields=Overview,RunTimeTicks,MediaSources,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags",
+                    timeout.Token);
+                if (data.TryGetProperty("Items", out var values) && values.ValueKind == JsonValueKind.Array)
+                    foreach (var value in values.EnumerateArray().Take(18))
+                    {
+                        var item = JsonSerializer.Deserialize<EmbyItem>(value.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                        if (item == null || !missing.Contains(item.Id, StringComparer.OrdinalIgnoreCase)) continue;
+                        metadata[item.Id] = item;
+                        if (MetadataDuration(value) is {} duration) durations[item.Id] = duration;
+                    }
             }
+            catch (Exception error) when (error is HttpRequestException or IOException or JsonException or OperationCanceledException)
+            {
+                PlaybackTransport.Write("Info", "Library.Resume", "补充续播时长未完成，保留当前续播记录；" + error.GetType().Name);
+            }
+            if (!ReferenceEquals(client, Access.Get<EmbyApiClient?>(page, "_client")) || !ReferenceEquals(session, Access.Get<EmbySession?>(page, "_session"))) throw new OperationCanceledException();
         }
         var library=Access.Get<DesktopLibraryState>(page,"_desktopState");
         var scope=DesktopLibraryStore.Scope(session);
@@ -140,11 +179,9 @@ public static class ResumeSync
         observed=observed.Select(item=>{
             if(item.RunTimeTicks is >0)return item;
             metadata.TryGetValue(item.Id,out var full);
-            long? duration=full?.RunTimeTicks;
-            if(duration is not >0&&!library.Versions.ContainsKey(scope+"|"+item.Id))duration=history.FirstOrDefault(i=>i.Id==item.Id&&i.RunTimeTicks>0)?.RunTimeTicks;
-            if(duration is not >0||item.UserData?.PlaybackPositionTicks>duration)return item;
-            var copy=System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(item))!.AsObject();
-            copy["RunTimeTicks"]=duration.Value;return copy.Deserialize<EmbyItem>()!;
+            var projected = WithDuration(item, durations.TryGetValue(item.Id, out long duration) ? duration : full?.RunTimeTicks);
+            if (projected.RunTimeTicks is > 0 || library.Versions.ContainsKey(scope + "|" + item.Id)) return projected;
+            return WithDuration(item, history.FirstOrDefault(i => i.Id.Equals(item.Id, StringComparison.OrdinalIgnoreCase) && i.RunTimeTicks > 0)?.RunTimeTicks);
         }).ToList();
         var edits = new List<(EmbyItem Item, bool Completed, DateTimeOffset At)>();
         foreach (var entry in entries)
@@ -189,8 +226,11 @@ public static class ResumeSync
     }
 
     public static EmbyItem NewestEpisode(IEnumerable<EmbyItem> rows)
-        =>rows.OrderByDescending(row=>row.UserData?.LastPlayedDate)
-            .ThenByDescending(row=>row.UserData is {Played:true,PlaybackPositionTicks:0}).First();
+    {
+        var ordered = rows.OrderByDescending(row => row.UserData?.LastPlayedDate)
+            .ThenByDescending(row => row.UserData is { Played: true, PlaybackPositionTicks: 0 }).ToArray();
+        return WithDuration(ordered[0], ordered.FirstOrDefault(row => row.RunTimeTicks > (ordered[0].UserData?.PlaybackPositionTicks ?? 0))?.RunTimeTicks);
+    }
 
     public static void Home(object page)
     {
@@ -204,4 +244,7 @@ public static class ResumeSync
         catch (OperationCanceledException) { }
         catch (Exception error) { PlaybackTransport.Write("Warning", "Library.Resume", "继续观看核对未完成，保留已有内容；" + error.GetType().Name); }
     }
+
+    internal static void CopyPendingMarker(EmbyItem item,EmbyItem copy)
+    {if(IsPending(item))Pending.GetValue(copy,_=>new object());}
 }

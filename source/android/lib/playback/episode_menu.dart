@@ -9,6 +9,7 @@ import '../core/emby.dart';
 import '../core/models.dart';
 import '../core/episode_bands.dart';
 import '../ui/episode_band_picker.dart';
+import 'episode_number.dart';
 
 /// Only requested catalogue metadata. Playback's optional background work stays
 /// suspended; opening the picker never prepares media or requests artwork.
@@ -203,8 +204,11 @@ class _EpisodeMenuState extends State<EpisodeMenu> {
     });
   }
 
-  String number(int index) =>
-      '${episodes[index].data['IndexNumber'] ?? index + 1}';
+  String number(int index) {
+    final ordinal = playbackEpisodeNumber(episodes[index]);
+    return ordinal > 0 ? '$ordinal' : '—';
+  }
+
   String rangeLabel(int index) => bands.labelAt(index);
 
   Widget picker<T>({
@@ -426,7 +430,9 @@ class _EpisodeMenuState extends State<EpisodeMenu> {
                                   clipBehavior: Clip.antiAlias,
                                   child: InkWell(
                                     key: ValueKey('player-episode-${item.id}'),
-                                    onTap: () => Navigator.pop(context, item),
+                                    onTap: selected
+                                        ? null
+                                        : () => Navigator.pop(context, item),
                                     child: Center(
                                       child: Text(
                                         number(at),

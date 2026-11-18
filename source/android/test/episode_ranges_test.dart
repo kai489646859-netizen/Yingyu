@@ -244,6 +244,11 @@ void main() {
           );
           await tester.tap(find.byKey(const ValueKey('detail-episode-s1-ep1')));
           await tester.pumpAndSettle();
+          expect(played, isNull);
+          await tester.tap(
+            find.byKey(const ValueKey('detail-episode-play-s1-ep1')),
+          );
+          await tester.pumpAndSettle();
           expect(played, 's1-ep1');
           expect(tester.takeException(), null);
           await tester.pumpWidget(const SizedBox());

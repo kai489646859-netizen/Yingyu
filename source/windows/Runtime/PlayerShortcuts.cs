@@ -148,20 +148,21 @@ public static class PlayerShortcuts
             if (e.Key == VirtualKey.Right && _right) { Release(true); e.Handled = true; }
         }
 
-        bool IsInput(KeyRoutedEventArgs e, int mapped)
+        bool IsInput(KeyRoutedEventArgs e, int mapped, int modifiers)
         {
             if (Access.Get<bool>(_overlay, "_desktopDialogOpen")) return true;
             bool volumeCommand = mapped is (int)VirtualKey.Up or (int)VirtualKey.Down;
-            var flyouts = Access.Get<HashSet<object>>(_overlay, "_openControlFlyouts");
+            var flyouts = PlayerHover.ActiveFlyouts(_overlay);
             if (flyouts.Count != 0 && !(volumeCommand && flyouts.Count == 1
                 && flyouts.Contains(Access.Get<Flyout>(_overlay, "VolumeFlyout")))) return true;
             if (Access.Get<Border>(_overlay, "EpisodeDrawer").Visibility == Visibility.Visible) return true;
             var focused = Focused();
-            // Volume bindings keep their meaning after seeking or opening the
-            // volume popup. Other slider navigation and text editing stay local.
-            if (volumeCommand && (Within(focused, Access.Get<Slider>(_overlay, "PositionSlider"))
-                || Within(focused, Access.Get<Slider>(_overlay, "VolumeSlider")))) return false;
-            bool sliderInput = (focused is Slider || e.OriginalSource is Slider)
+            var position = Access.Get<Slider>(_overlay, "PositionSlider");
+            bool positionFocused = Within(focused, position) || Within(e.OriginalSource as DependencyObject, position);
+            // Keep the usual seek and volume bindings on the timeline.
+            if (positionFocused && (volumeCommand || modifiers == 0 && e.Key is VirtualKey.Left or VirtualKey.Right)) return false;
+            if (volumeCommand && Within(focused, Access.Get<Slider>(_overlay, "VolumeSlider"))) return false;
+            bool sliderInput = (positionFocused || focused is Slider || e.OriginalSource is Slider)
                 && e.Key is VirtualKey.Left or VirtualKey.Right or VirtualKey.Up or VirtualKey.Down
                     or VirtualKey.Home or VirtualKey.End or VirtualKey.PageUp or VirtualKey.PageDown;
             return sliderInput || focused is TextBox or PasswordBox or NumberBox or ComboBox
@@ -177,7 +178,7 @@ public static class PlayerShortcuts
             if ((GetAsyncKeyState(0x5B)&0x8000)!=0 || (GetAsyncKeyState(0x5C)&0x8000)!=0) return true;
             int modifiers=ShortcutBinding.Modifiers();
             if (modifiers==0 && e.Key == VirtualKey.Escape && !Access.Get<bool>(_overlay, "_desktopDialogOpen")
-                && Access.Get<HashSet<object>>(_overlay, "_openControlFlyouts").Count == 0
+                && PlayerHover.ActiveFlyouts(_overlay).Count == 0
                 && Access.Get<Border>(_overlay, "EpisodeDrawer").Visibility == Visibility.Visible
                 && Focused() is not ComboBox { IsDropDownOpen: true }
                 && e.OriginalSource is not ComboBox { IsDropDownOpen: true })
@@ -192,7 +193,13 @@ public static class PlayerShortcuts
             var key = e.Key;
             var preferences = DesktopTheme.Options;
             int mapped = ShortcutBinding.Command(preferences, (int)key, modifiers);
-            if (IsInput(e, mapped)) return true;
+            if (IsInput(e, mapped, modifiers)) return true;
+            if(mapped==0&&modifiers==ShortcutBinding.Ctrl&&key==VirtualKey.F8)
+            {
+                if(!e.KeyStatus.WasKeyDown&&DolbyHdrFallback.CycleQuality(_overlay))
+                {_processed.Add(e,new object());e.Handled=true;}
+                return true;
+            }
             if (key == VirtualKey.Right && modifiers==0)
             {
                 _processed.Add(e, new object());
@@ -276,7 +283,7 @@ public static class PlayerShortcuts
         bool WheelAllowed(DependencyObject? source)
         {
             if(_keyboardRoot==null||!_element.IsLoaded||Access.Get<bool>(_overlay,"_desktopDialogOpen")
-                ||Access.Get<HashSet<object>>(_overlay,"_openControlFlyouts").Count!=0
+                ||PlayerHover.ActiveFlyouts(_overlay).Count!=0
                 ||Access.Get<Border>(_overlay,"EpisodeDrawer").Visibility==Visibility.Visible)return false;
             for(var node=source;node!=null&&node!=_keyboardRoot;node=VisualTreeHelper.GetParent(node))
                 if(node is TextBox or PasswordBox or NumberBox or ComboBox or ScrollViewer)return false;

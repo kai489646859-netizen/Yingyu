@@ -35,6 +35,16 @@ internal static class ColorDiagnostics
         try{BeginCore(session,client);}
         catch(Exception error){if(Interlocked.Increment(ref Faults)<=3)PlaybackTransport.Write("Warning","Playback.Color","event=registration-failed; type="+error.GetType().Name);}
     }
+    internal static string SystemHdr(object session)
+    {
+        if(!Sessions.TryGetValue(session,out var state) || state.Generation!=Access.Get<int>(session,"_mediaGeneration"))
+            return "未提供";
+        string display=Volatile.Read(ref state.Display);
+        if(display.Contains("; systemHdr=active;",StringComparison.Ordinal))return "已开启";
+        if(display.Contains("; systemHdr=inactive;",StringComparison.Ordinal))
+            return display.Contains("; hdrSupported=False;",StringComparison.Ordinal)?"关闭 · 当前显示器未报告 HDR 支持":"已关闭";
+        return "未提供";
+    }
     static void BeginCore(object session,MpvClient client)
     {
         var state=new State(Access.Get<int>(session,"_mediaGeneration"),client,session);
@@ -46,7 +56,7 @@ internal static class ColorDiagnostics
         for(int i=0;i<Watched.Length;i++)
             if((int)MpvNative.ObserveProperty(client.Handle,0x5949430000000000UL+(ulong)i,Watched[i],MpvFormat.None)>=0)accepted++;
         Observed.Add(client,new());
-        PlaybackTransport.Write("Info","Playback.Color",$"版本=1.3.4; event=observation-registration; accepted={accepted}; requested={Watched.Length}; valuesCopied=false");
+        PlaybackTransport.Write("Info","Playback.Color",$"版本=1.3.5; event=observation-registration; accepted={accepted}; requested={Watched.Length}; valuesCopied=false");
     }
     internal static void Property(MpvClient client,MpvEventProperty property)
     {

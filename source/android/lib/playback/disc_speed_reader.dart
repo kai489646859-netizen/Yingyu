@@ -54,6 +54,10 @@ class DiscSpeedReader {
   String? _path;
   int? _next, _singleEnd;
   double _speed = 1;
+  bool _normalRecovery = false, _normalTrialStarted = false;
+  bool _opening = false, _openingTrialStarted = false;
+  bool _normalHandoff = false, _normalReviewed = false;
+  bool _normalRejected = false, _normalSample = false;
   bool _closed = false, _disabled = false, _reportedUnqualified = false;
   bool _retiring = false;
   int _allocated = 0;
@@ -62,7 +66,9 @@ class DiscSpeedReader {
   Completer<void> _space = Completer<void>();
   Object? _failure;
   int _partOpens = 0, _partReads = 0, peakResponses = 0, peakPartBytes = 0;
+  static const _leadSampleBytes = 1024 * 1024;
   int _singleBytes = 0, _singleMicros = 0;
+  int _sampleBytes = 0, _sampleMicros = 0, _openingLeadBytes = _leadSampleBytes;
   int _trialBytes = 0, _trialMicros = 0, _busy = 0, _busySince = 0;
   final _clock = Stopwatch()..start();
   bool _reviewed = false;
@@ -114,16 +120,18 @@ class DiscSpeedReader {
       '本次等前段=${_frontWait?.elapsedMilliseconds ?? 0} ms；'
       '满页等待者=$_spaceWaiters；满页等待累计=${(_spaceWaitMicros / 1000000).toStringAsFixed(2)} 秒；'
       '单路比较样本=${(_singleBytes / 1048576).toStringAsFixed(2)} MiB/${_singleMicros ~/ 1000} ms；'
-      '流水比较样本=${(_trialBytes / 1048576).toStringAsFixed(2)} MiB；已核对收益=$_reviewed';
+      '流水比较样本=${(_trialBytes / 1048576).toStringAsFixed(2)} MiB；已核对收益=${_normalHandoff ? _normalReviewed : _reviewed}';
   String get mode => _disabled
       ? '单路（预读已退回）'
       : _parts.isNotEmpty
       ? '流水双路'
       : '连续单路';
 
-  void setSpeed(double speed) {
+  void setSpeed(double speed, {bool recovery = false, bool opening = false}) {
     if (!speed.isFinite || speed <= 0) return;
     _speed = speed;
+    _normalRecovery = recovery;
+    _opening = opening;
     _pumpParts();
   }
 
@@ -169,6 +177,7 @@ class DiscSpeedReader {
     if (_closed ||
         _retiring ||
         _disabled ||
+        (_normalRecovery && _normalRejected) ||
         _speed < 2 ||
         _singleEnd != null ||
         _parts.isEmpty ||
@@ -225,13 +234,17 @@ class DiscSpeedReader {
     // Compare actual active read time, excluding time sitting on a full cache.
     // Review once, after four bounded parts; never confuse the two queued cache
     // jobs with two network connections.
-    if (_reviewed ||
+    if ((_normalHandoff ? !_normalRecovery || _normalReviewed : _reviewed) ||
         _trialBytes < 4 * partBytes ||
         _singleBytes < 8 * 1024 * 1024 ||
         _singleMicros < 250000) {
       return;
     }
-    _reviewed = true;
+    if (_normalHandoff) {
+      _normalReviewed = true;
+    } else {
+      _reviewed = true;
+    }
     final micros =
         _trialMicros +
         (_busy == 0 ? 0 : _clock.elapsedMicroseconds - _busySince);
@@ -244,15 +257,28 @@ class DiscSpeedReader {
     }
     if (micros > 0 &&
         _trialBytes / micros < _singleBytes / _singleMicros * 1.1) {
-      _disable('读取吞吐未达到单路的 1.1 倍');
+      if (_normalHandoff) {
+        _normalRejected = true;
+        onDiagnostic?.call('原盘供数恢复没有达到单路读取的 1.1 倍，已收数据用完后回到单路');
+      } else {
+        _disable('读取吞吐未达到单路的 1.1 倍');
+      }
     }
   }
 
-  void _startPart(int start) {
+  void _startPart(int start, {bool warm = false}) {
     if (_closed) return;
     final identity = _continuation!;
     if (start >= identity.total) return;
-    final end = (start + rangeBytes).clamp(start, identity.total);
+    // During opening the old response can burst through a short overlap
+    // before the adjacent response produces data. Give that trial a longer
+    // byte range, and keep the original response until a full block is ready.
+    // After handoff, also amortize response latency across a longer range.
+    // _page still caps the retained bytes independently of range length.
+    final length = _normalRecovery && (warm ? _opening : _normalHandoff)
+        ? 16 * 1024 * 1024
+        : rangeBytes;
+    final end = (start + length).clamp(start, identity.total);
     final part = _Part(this, _path!, start, end, identity);
     _parts.add(part);
     _samplePeak();
@@ -271,7 +297,17 @@ class DiscSpeedReader {
     }
     _parts.clear();
     _singleEnd = null;
+    _normalHandoff = false;
     _retiring = false;
+  }
+
+  int _handoffBytes(int length) {
+    if (!_normalRecovery || !_opening) return rangeBytes;
+    // Give the adjacent connection room to deliver future bytes before
+    // the continuous response consumes them. Keep this opening-only lead
+    // within the existing per-lane budget and align it to the next read.
+    final overlap = _openingLeadBytes;
+    return ((overlap + length - 1) ~/ length) * length;
   }
 
   Future<DiscRangeBlock> _read(
@@ -292,16 +328,45 @@ class DiscSpeedReader {
         // Retire even when normal's next position differs, before any new part.
         await _single.retire();
         _continuation = null;
+        _sampleBytes = _sampleMicros = 0;
+        _openingLeadBytes = _leadSampleBytes;
       }
       _path = path;
-      if (sequential && _parts.isEmpty && _speed >= 2 && !_disabled) {
+      if (sequential &&
+          _parts.isEmpty &&
+          _speed >= 2 &&
+          !_disabled &&
+          (!_normalRecovery ||
+              (_opening ? !_openingTrialStarted : !_normalTrialStarted))) {
         final identity = _single.identity;
-        if (identity != null && start + rangeBytes < identity.total) {
+        final handoffBytes = _handoffBytes(length);
+        if (identity != null && start + handoffBytes < identity.total) {
           _continuation = identity;
-          _singleEnd = start + rangeBytes;
-          _startPart(_singleEnd!);
+          if (_normalSample || _normalRecovery) {
+            // This transition has no active part. Do not carry a normal-speed
+            // recovery sample into the established high-speed comparison.
+            _trialBytes = 0;
+            _trialMicros = 0;
+          }
+          _normalSample = _normalRecovery;
+          _normalHandoff = _normalRecovery;
+          if (_normalRecovery) {
+            _normalReviewed = false;
+            _normalRejected = false;
+            if (_opening) {
+              _openingTrialStarted = true;
+            } else {
+              _normalTrialStarted = true;
+            }
+          }
+          // During initial output the front lane is already starving. Keep
+          // serving it until the adjacent lane is ready. Keep the rest of
+          // that range available if the original response passes its start.
+          _singleEnd = start + handoffBytes;
+          _startPart(_singleEnd!, warm: true);
           onDiagnostic?.call(
-            '倍速流水预读启动：最多 2 路；每段 ${rangeBytes ~/ 1048576} MiB；'
+            '${_normalRecovery ? (_opening ? '原盘开播需求供数' : '原盘供数恢复') : '倍速流水预读'}启动：'
+            '最多 2 路；交接段 ${handoffBytes ~/ 1048576} MiB；'
             '分段内存预算=${2 * partBytes ~/ 1048576} MiB；前段优先交付；文件身份已校验；STRM 入口不重访',
           );
         } else if (identity == null && !_reportedUnqualified) {
@@ -314,10 +379,32 @@ class DiscSpeedReader {
       for (final part in _parts) {
         if (part.error is DiscIdentityFailure) throw part.error!;
       }
-      if (_singleEnd != null && _parts.firstOrNull?.error != null) {
-        _disable('相邻范围读取失败，沿用当前有效连续响应');
-        await _retireParts();
-        _continuation = null;
+      final singleEnd = _singleEnd;
+      final firstPart = _parts.firstOrNull;
+      if (singleEnd != null && firstPart != null) {
+        final atBoundary = start >= singleEnd;
+        final blockReady =
+            firstPart.start + firstPart.received >= start + length;
+        // A fast burst on the old connection can consume the first overlap
+        // before the new headers arrive. Continue on the old connection
+        // without waiting, but keep the new response until it runs out of
+        // overlapping range or can deliver the next full block.
+        final canExtend =
+            _opening && _normalRecovery && start + length < firstPart.end;
+        if (firstPart.error != null ||
+            _normalHandoff &&
+                atBoundary &&
+                (!_normalRecovery || !blockReady && !canExtend)) {
+          if (_normalHandoff) {
+            onDiagnostic?.call('原盘相邻范围未及时供数，继续使用原连续响应');
+          } else {
+            _disable('相邻范围读取失败，沿用当前有效连续响应');
+          }
+          await _retireParts();
+          _continuation = null;
+        } else if (_normalHandoff && atBoundary && !blockReady) {
+          _singleEnd = start + length;
+        }
       }
       if (_singleEnd == null) {
         for (final part in _parts) {
@@ -340,13 +427,32 @@ class DiscSpeedReader {
         );
         if (_parts.isEmpty) {
           _singleBytes += block.bytes.length;
-          _singleMicros += watch.elapsedMicroseconds;
+          final elapsed = watch.elapsedMicroseconds;
+          _singleMicros += elapsed;
+          if (_opening && _speed == 1) {
+            _sampleBytes += block.bytes.length;
+            _sampleMicros += elapsed;
+            if (_sampleBytes >= _leadSampleBytes) {
+              // Aim ahead by about one recent second of demand. A slow
+              // continuous response still hands off after a short prefix.
+              _openingLeadBytes =
+                  (_sampleBytes * 1000000 ~/ (_sampleMicros + 1)).clamp(
+                    _leadSampleBytes,
+                    partBytes,
+                  );
+              _sampleBytes = _sampleMicros = 0;
+            }
+          }
         }
         _samplePeak();
       } else {
         if (_singleEnd != null) {
+          firstPart?.releasePages(before: start - firstPart.start);
           await _single.retire();
           _singleEnd = null;
+          if (_normalHandoff && _normalRecovery) {
+            onDiagnostic?.call('原盘顺序范围已接续，后续使用 16 MiB 范围，保留原分段内存上限');
+          }
         }
         // Remove a consumed part only after its socket has finished closing.
         while (_parts.isNotEmpty && start >= _parts.first.end) {

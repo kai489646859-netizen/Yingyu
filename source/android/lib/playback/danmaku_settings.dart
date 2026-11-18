@@ -6,21 +6,22 @@ import '../ui/surface.dart';
 import 'danmaku_overlay.dart';
 import 'danmaku_preferences.dart';
 import 'danmaku_sources.dart';
+import 'danmaku_storage.dart';
 
 class DanmakuSettings extends StatefulWidget {
   const DanmakuSettings({
     super.key,
     required this.initial,
-    required this.status,
-    required this.controller,
+    this.status,
+    this.controller,
     required this.onChanged,
-    required this.onImport,
+    this.onImport,
   });
   final DanmakuPreferences initial;
-  final ValueNotifier<String> status;
-  final DanmakuOverlayController controller;
+  final ValueNotifier<String>? status;
+  final DanmakuOverlayController? controller;
   final ValueChanged<DanmakuPreferences> onChanged;
-  final Future<void> Function() onImport;
+  final Future<void> Function()? onImport;
 
   @override
   State<DanmakuSettings> createState() => _DanmakuSettingsState();
@@ -33,6 +34,7 @@ class _DanmakuSettingsState extends State<DanmakuSettings> {
   final scroll = ScrollController();
   DanmakuTrack? selected;
   String? error;
+  String? cacheStatus;
   bool sources = false;
 
   void change(DanmakuPreferences value) {
@@ -93,6 +95,12 @@ class _DanmakuSettingsState extends State<DanmakuSettings> {
     final look = prefs.appearance;
     return [
       toggle('显示弹幕', prefs.enabled, (v) => change(prefs.copyWith(enabled: v))),
+      if (widget.controller == null)
+        toggle(
+          '精选弹幕',
+          look.featured,
+          (v) => appearance(look.update(featured: v)),
+        ),
       Wrap(
         spacing: 8,
         children: [
@@ -176,104 +184,193 @@ class _DanmakuSettingsState extends State<DanmakuSettings> {
   }
 
   List<Widget> sourceRows() => [
-    ValueListenableBuilder(
-      valueListenable: widget.status,
-      builder: (_, status, _) => Text(status),
-    ),
+    if (widget.status case final status?)
+      ValueListenableBuilder(
+        valueListenable: status,
+        builder: (_, status, _) => Text(status),
+      ),
     toggle(
       '自动在线匹配',
       prefs.automatic,
       (v) => change(prefs.copyWith(automatic: v)),
     ),
-    OutlinedButton(
-      onPressed: prefs.enabled ? widget.controller.retry : null,
-      child: const Text('重新匹配公开弹幕'),
-    ),
-    TextField(
-      controller: query,
-      maxLength: 320,
-      decoration: const InputDecoration(labelText: '搜索片名或粘贴单集链接'),
-    ),
-    OutlinedButton(
-      onPressed: !prefs.enabled
-          ? null
-          : () {
-              FocusScope.of(context).unfocus();
-              final value = query.text.trim();
-              if (value.isNotEmpty) unawaited(widget.controller.search(value));
-            },
-      child: const Text('查找在线弹幕'),
-    ),
-    ValueListenableBuilder(
-      valueListenable: widget.controller.candidates,
-      builder: (_, candidates, _) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          DropdownButton<DanmakuTrack>(
-            isExpanded: true,
-            hint: const Text('匹配候选'),
-            value: candidates.contains(selected) ? selected : null,
-            items: [
-              for (final track in candidates)
-                DropdownMenuItem(value: track, child: Text(track.source)),
-            ],
-            onChanged: candidates.isEmpty
-                ? null
-                : (track) => setState(() => selected = track),
-          ),
-          OutlinedButton(
-            onPressed: prefs.enabled && candidates.contains(selected)
-                ? () => widget.controller.select(selected!)
-                : null,
-            child: const Text('使用所选弹幕'),
-          ),
-        ],
+    if (widget.controller case final controller?) ...[
+      OutlinedButton(
+        onPressed: prefs.enabled ? controller.retry : null,
+        child: const Text('重新匹配公开弹幕'),
       ),
-    ),
-    OutlinedButton(
-      onPressed: prefs.enabled ? widget.onImport : null,
-      child: const Text('加载本地 XML 弹幕…'),
-    ),
+      ValueListenableBuilder(
+        valueListenable: controller.remembered,
+        builder: (_, remembered, _) => remembered
+            ? TextButton(
+                onPressed: controller.forget,
+                child: const Text('忘记本集纠错，恢复自动匹配'),
+              )
+            : const SizedBox.shrink(),
+      ),
+      ValueListenableBuilder(
+        valueListenable: controller.active,
+        builder: (_, active, _) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('本次播放的来源'),
+            if (active.isEmpty) const Text('暂无已匹配来源'),
+            for (final track in active)
+              Text(
+                track.label == null
+                    ? track.source
+                    : '${track.source} · ${track.label}',
+              ),
+          ],
+        ),
+      ),
+      TextField(
+        controller: query,
+        maxLength: 320,
+        decoration: const InputDecoration(labelText: '搜索片名或粘贴单集链接'),
+      ),
+      OutlinedButton(
+        onPressed: !prefs.enabled
+            ? null
+            : () {
+                FocusScope.of(context).unfocus();
+                final value = query.text.trim();
+                if (value.isNotEmpty) unawaited(controller.search(value));
+              },
+        child: const Text('查找在线弹幕'),
+      ),
+      ValueListenableBuilder(
+        valueListenable: controller.candidates,
+        builder: (_, candidates, _) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            DropdownButton<DanmakuTrack>(
+              isExpanded: true,
+              hint: const Text('匹配候选'),
+              value: candidates.contains(selected) ? selected : null,
+              items: [
+                for (final track in candidates)
+                  DropdownMenuItem(
+                    value: track,
+                    child: Text(
+                      track.label == null
+                          ? track.source
+                          : '${track.source} · ${track.label}',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+              onChanged: candidates.isEmpty
+                  ? null
+                  : (track) => setState(() => selected = track),
+            ),
+            OutlinedButton(
+              onPressed: prefs.enabled && candidates.contains(selected)
+                  ? () => controller.select(selected!)
+                  : null,
+              child: Text(selected?.link == null ? '使用所选弹幕' : '用所选来源纠正并记住'),
+            ),
+            TextButton(
+              onPressed: prefs.enabled && candidates.contains(selected)
+                  ? () => controller.add(selected!)
+                  : null,
+              child: const Text('追加为本次播放来源'),
+            ),
+          ],
+        ),
+      ),
+      OutlinedButton(
+        onPressed: prefs.enabled && !prefs.hidden.contains('本地 XML')
+            ? widget.onImport
+            : null,
+        child: const Text('加载本地 XML 弹幕…'),
+      ),
+    ],
     _DanmakuDelay(
       value: prefs.appearance.delay,
       onChanged: (v) => appearance(prefs.appearance.update(delay: v)),
     ),
+    const Text('以下开关和偏移按来源记忆，与上面的全局偏移叠加。正值推迟，负值提前。'),
+    for (final source in danmakuSourceNames)
+      ExpansionTile(
+        key: ValueKey('danmaku-source-$source'),
+        tilePadding: EdgeInsets.zero,
+        title: Text(source),
+        subtitle: Text(
+          '${prefs.hidden.contains(source) ? '已屏蔽' : '已启用'} · ${prefs.delays[source] ?? 0} 秒',
+        ),
+        children: [
+          toggle(
+            '启用来源',
+            !prefs.hidden.contains(source),
+            (enabled) => change(prefs.configure(source, enabled: enabled)),
+          ),
+          _DanmakuDelay(
+            value: prefs.delays[source] ?? 0,
+            onChanged: (seconds) =>
+                change(prefs.configure(source, delay: seconds)),
+          ),
+        ],
+      ),
     TextField(
       controller: address,
-      maxLength: 512,
-      keyboardType: TextInputType.url,
+      maxLength: 2600,
+      maxLines: 3,
+      keyboardType: TextInputType.multiline,
       decoration: InputDecoration(
-        labelText: '兼容弹幕服务（HTTPS，可选）',
+        labelText: '自建备用服务（选填，每行一个）',
         errorText: error,
       ),
     ),
     OutlinedButton(
       onPressed: () {
         final value = address.text.trim();
-        if (value.isNotEmpty &&
-            DanmakuSources.compatibleAddress(value) == null) {
-          setState(() => error = '请输入有效的 HTTPS 兼容服务地址');
+        final entries = value
+            .split(RegExp(r'[\r\n]+'))
+            .where((line) => line.trim().isNotEmpty)
+            .toList();
+        final urls = DanmakuSources.compatibleAddresses(value);
+        if (entries.length > 5 ||
+            entries.any(
+              (line) =>
+                  line.length > 512 ||
+                  DanmakuSources.compatibleAddress(line) == null,
+            )) {
+          setState(() => error = '最多 5 条地址，使用 HTTPS 或本机回环 HTTP');
         } else {
           setState(() => error = null);
-          change(prefs.copyWith(compatible: value));
+          final normalized = urls.join('\n');
+          address.text = normalized;
+          change(prefs.copyWith(compatible: normalized));
           FocusScope.of(context).unfocus();
         }
       },
       child: const Text('保存服务地址'),
     ),
     OutlinedButton(
-      onPressed: prefs.enabled ? widget.controller.clear : null,
+      onPressed: () async {
+        final controller = widget.controller;
+        if (controller == null) {
+          final cleared = await DanmakuStorage.local.clear();
+          if (mounted) {
+            setState(() => cacheStatus = cleared ? '弹幕缓存已清空' : '暂时无法清空弹幕缓存');
+          }
+        } else {
+          controller.clear();
+        }
+      },
       child: const Text('清空弹幕缓存'),
     ),
-    const Text('公开来源包括哔哩哔哩、腾讯视频和爱奇艺。'),
+    if (cacheStatus case final status?) Text(status),
+    const Text('公开来源包括哔哩哔哩、腾讯视频、爱奇艺和芒果 TV。'),
   ];
 
   @override
   Widget build(BuildContext context) => SurfacePage(
     title: '弹幕',
-    playerMenu: true,
-    playerMenuWidth: 360,
-    compactPlayerMenu: true,
+    playerMenu: widget.controller != null,
+    playerMenuWidth: widget.controller != null ? 360 : null,
+    compactPlayerMenu: widget.controller != null,
     child: Material(
       type: MaterialType.transparency,
       child: ListView(

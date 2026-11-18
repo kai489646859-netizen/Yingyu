@@ -1,18 +1,23 @@
 namespace Yingyu.Update;
 
 // Progress extends the initial deadline, never the inactivity or total bound.
-internal sealed class BlurayStartupPolicy(long bytes)
+internal sealed class BlurayStartupPolicy(long bytes, bool mounted = false)
 {
     internal const double IdleSeconds = 20;
     internal const double MaximumSeconds = 120;
+    internal const double MountedInitialSeconds = 32;
     long _bytes = bytes;
     double _lastProgress;
     internal double IdleAt(double elapsed) => elapsed - _lastProgress;
     internal bool Expired(double elapsed, long bytes)
     {
         if (bytes > _bytes) { _bytes = bytes; _lastProgress = elapsed; }
-        return elapsed >= MaximumSeconds || IdleAt(elapsed) >= IdleSeconds;
+        double idleLimit = mounted && _bytes <= 0 ? MountedInitialSeconds : IdleSeconds;
+        return elapsed >= MaximumSeconds || IdleAt(elapsed) >= idleLimit;
     }
+
+    internal static bool IsDiscUri(Uri uri) => uri.Scheme == "bd" ||
+        uri.IsFile && Path.GetExtension(uri.LocalPath).Equals(".iso", StringComparison.OrdinalIgnoreCase);
 
     // mpv_event_end_file.reason, bundled MPV API: actual EOF/error/unknown
     // remain visible. Replacing, stopping or redirecting isn't natural EOF.

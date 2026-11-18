@@ -54,9 +54,10 @@ public static class PlaybackTransport
         KeepOpenCompletion.Bind(client);
         state.NewMedia();
         PlayerFeedback.Bind(session);
+        WindowsMediaControls.Bind(session);
         PlaybackOutput.Configure(session, client);
         PlaybackTelemetry.Start(session, client);
-        // Keep the new renderer/decoder, but use the HTTP backend used by 1.3.4/6.
+        // Keep the new renderer/decoder, but use the HTTP backend used by 1.3.5/6.
         // curl takes unescaped URLs literally; FFmpeg normalizes them and retains
         // the existing 302/Range, proxy and HTTP-header behavior.
         int result = Native.Value.Set(Handle(client), "curl-enabled", "no");
@@ -97,14 +98,16 @@ public static class PlaybackTransport
         if(e.Id is MpvClientEventId.PlaybackRestart or MpvClientEventId.PositionChanged or MpvClientEventId.StateChanged) {DolbyHdrFallback.Observe(session);MediaNotice.Sample(session);}
         var client = Access.Get<MpvClient?>(session, "_mpvClient");
         if (client == null || !States.TryGetValue(client, out var state)) return;
-        if (e.Id == MpvClientEventId.PlaybackRestart) { state.Complete(client); MediaNotice.Refresh(session); PlaybackOutput.Snapshot(session, client); }
+        PlaybackRecovery.Observe(session,client,e);
+        WindowsMediaControls.Observe(session,e);
+        if (e.Id == MpvClientEventId.PlaybackRestart) { state.Complete(client); MediaNotice.Refresh(session); DolbyHdrFallback.CheckAudio(session,client); PlaybackOutput.Snapshot(session, client); }
         else if (e.Id == MpvClientEventId.StateChanged && e.Data is MpvPlayerState.Playing)
             state.Playing(client);
         else if (e.Id == MpvClientEventId.StateChanged && e.Data is MpvPlayerState.Buffering)
             state.Buffering(client);
         else if (e.Id == MpvClientEventId.SpeedChanged && e.Data is double speed)
             state.Speed(speed, client);
-        else if (e.Id == MpvClientEventId.PositionChanged) state.NetworkProgress();
+        else if (e.Id == MpvClientEventId.PositionChanged && e.Data is double position) state.NetworkProgress(position);
         else if (e.Id == MpvClientEventId.StateChanged && e.Data is MpvPlayerState.Paused or MpvPlayerState.Seeking)
         {
             if (e.Data is MpvPlayerState.Seeking) NetworkBluray.Probing(session, true);
@@ -132,9 +135,6 @@ public static class PlaybackTransport
         bool _earlyRefillRaised;
         bool _earlyRefillSuppressed;
         double _speed = 1;
-        string? _originalForwardBytes;
-        string? _originalCacheSeconds, _originalReadAheadSeconds;
-        int _budgetWarnings;
         NetworkBufferRecovery? _networkRecovery;
         static double Now => (double)Stopwatch.GetTimestamp() / Stopwatch.Frequency;
         public void PrepareNetwork(MpvClient client)
@@ -151,7 +151,7 @@ public static class PlaybackTransport
                     message => Write("Info", "Playback.Buffer", message));
             }
         }
-        public void NetworkProgress() { lock (_gate) _networkRecovery?.Progress(Now); }
+        public void NetworkProgress(double position) { lock (_gate) _networkRecovery?.Progress(Now, position); }
         public void ArmNotice()
         {
             if (_session.TryGetTarget(out var session)) MediaNotice.Arm(session);
@@ -162,8 +162,7 @@ public static class PlaybackTransport
             lock (_gate)
             {
                 _firstRestart = false; _cacheSamples = _bufferSamples = 0; _lastBufferSample = 0;
-                _firstPlayingAt = 0; _earlyRefillRaised = _earlyRefillSuppressed = false; _speed = 1; _originalForwardBytes = null;
-                _originalCacheSeconds = _originalReadAheadSeconds = null; _budgetWarnings = 0;
+                _firstPlayingAt = 0; _earlyRefillRaised = _earlyRefillSuppressed = false; _speed = 1;
                 _networkRecovery = null;
             }
         }
@@ -189,7 +188,6 @@ public static class PlaybackTransport
                     _initial = bluray ? "yes" : Native.Value.Get(handle, "cache-pause-initial");
                     _wait = bluray ? MediaSeconds(3) : Native.Value.Get(handle, "cache-pause-wait");
                 }
-                // Cache stays enabled; only this bridged Blu-ray speed budget scales.
                 // The user's Blu-ray log shows cache=0 on restart followed by
                 // an immediate Buffering state. Keep MPV's short initial refill
                 // for this path; ordinary video retains its fast seek policy.
@@ -258,40 +256,12 @@ public static class PlaybackTransport
                 {
                     NetworkBluray.Speed(current, speed);
                     var handle = Handle(client);
-                    string forward = _originalForwardBytes ?? Native.Value.Get(handle, "demuxer-max-bytes");
-                    if (PlaybackSpeedPolicy.TryBytes(forward, out var original) && original > 0)
-                    {
-                        _originalForwardBytes ??= forward;
-                        long bytes = PlaybackSpeedPolicy.ForwardBytes(original, speed);
-                        SetBudget(handle, "demuxer-max-bytes", bytes.ToString(CultureInfo.InvariantCulture), "apply");
-                    }
-                    SetTimeBudget(handle, "cache-secs", ref _originalCacheSeconds, speed);
-                    SetTimeBudget(handle, "demuxer-readahead-secs", ref _originalReadAheadSeconds, speed);
                     int waitResult = Native.Value.Set(handle, "cache-pause-wait", MediaSeconds(_firstPlayingAt == 0 || _started != 0 ? 1 : 3));
                     if (waitResult < 0) Write("Warning", "Playback.Buffer", "蓝光倍速恢复门槛设置失败；错误码=" + waitResult);
                     if (_initial != null) _wait = MediaSeconds(3);
-                    string BudgetValue(string name) => PlaybackSpeedPolicy.TryBytes(Native.Value.Get(handle, name), out var bytes)
-                        ? bytes.ToString(CultureInfo.InvariantCulture) : "unknown";
-                    Write("Info", "Playback.Buffer", $"蓝光倍速缓存；倍速={speed.ToString(CultureInfo.InvariantCulture)}，实际容量字节={BudgetValue("demuxer-max-bytes")}，目标恢复媒体秒={MediaSeconds(_firstPlayingAt == 0 || _started != 0 ? 1 : 3)}，门槛设置结果={waitResult}；不强制暂停或改变播放速度。 ");
                 }
                 if (_firstPlayingAt != 0 && Math.Abs(speed - 1) >= .001) _earlyRefillSuppressed = true;
             }
-        }
-        void SetTimeBudget(IntPtr handle, string property, ref string? saved, double speed)
-        {
-            string original = saved ?? Native.Value.Get(handle, property);
-            if (!PlaybackSpeedPolicy.TrySeconds(original, out double seconds)) return;
-            saved ??= original;
-            // Always derive from the saved session baseline, not our previous
-            // target, so returning to 1x cannot retain the 3x target by accident.
-            double target = PlaybackSpeedPolicy.ForwardSeconds(seconds, speed);
-            SetBudget(handle, property, target.ToString("0.###", CultureInfo.InvariantCulture), "apply");
-        }
-        void SetBudget(IntPtr handle, string property, string value, string phase)
-        {
-            int result = Native.Value.Set(handle, property, value);
-            if (result < 0 && _budgetWarnings++ < 6)
-                Write("Warning", "Playback.Buffer", $"蓝光预读参数设置未完成；参数={property}，阶段={phase}，错误码={result}；保留实际播放与错误反馈。 ");
         }
         public void Buffering(MpvClient client)
         {
@@ -324,13 +294,6 @@ public static class PlaybackTransport
                 {
                     NetworkBluray.Probing(current, false);
                     RestoreCore(client);
-                    if (_originalForwardBytes != null || _originalCacheSeconds != null || _originalReadAheadSeconds != null)
-                    {
-                        var handle = Handle(client);
-                        if (_originalForwardBytes != null) SetBudget(handle, "demuxer-max-bytes", _originalForwardBytes, "restore");
-                        if (_originalCacheSeconds != null) SetBudget(handle, "cache-secs", _originalCacheSeconds, "restore");
-                        if (_originalReadAheadSeconds != null) SetBudget(handle, "demuxer-readahead-secs", _originalReadAheadSeconds, "restore");
-                    }
                 }
             }
         }

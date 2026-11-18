@@ -4,8 +4,8 @@ Yingyu is an independent Android and Windows client for user-provided Emby media
 
 | Platform | Current release | Requirement | Download |
 | --- | --- | --- | --- |
-| Android | 2.2.4 / code253 | Android 8.0+ | [Android release](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.2.4) |
-| Windows | 1.3.4 | Windows 10/11 x64 | [Windows release](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.3.4) |
+| Android | 2.6.5 / code294 | Android 8.0+ | [Android release](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.6.5) |
+| Windows | 1.7.1 | Windows 10/11 x64 | [Windows release](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.7.1) |
 
 Both platforms have real-hardware usage history. The exact validation scope of each final build is documented in its release. Compatibility can still vary with the server, reverse proxy, network, media, decoder, GPU driver, refresh rate and display.
 
@@ -20,7 +20,7 @@ Both platforms have real-hardware usage history. The exact validation scope of e
 
 ## Important boundaries
 
-Yingyu does not provide media, subtitles, servers or accounts. Use only services and content you are authorized to access.
+Yingyu does not provide media, audio, subtitles, danmaku, servers or accounts. Use only services and content you are authorized to access.
 
 HDR/Dolby identification or compatibility processing is not Dolby certification and does not guarantee native signal output, every profile or complete enhancement-layer presentation. ISO/BDMV playlist support is not the same as complete Blu-ray menus or BD-J.
 

@@ -371,6 +371,51 @@ class PlaybackSession extends ChangeNotifier {
   }
 
   Future<void> _pictureTail = Future.value();
+
+  Future<(double, double)> setPictureEnhancements(
+    double brightness,
+    double shadows,
+  ) {
+    final job = _pictureTail.then((_) async {
+      final control = backend;
+      if (!_adjustmentsAllowed || control is! PictureBrightnessBackend) {
+        throw const AppFailure('当前播放器无法调整画面明暗');
+      }
+      bool allowed() => _adjustmentsAllowed;
+      final (double, double) result;
+      if (control is PictureEnhancementsBackend) {
+        result = await (control as PictureEnhancementsBackend)
+            .setPictureEnhancements(brightness, shadows, allowed: allowed);
+      } else {
+        var actualBrightness = await readPictureBrightness();
+        var actualShadows = shadowEnhancement;
+        if (brightness != actualBrightness) {
+          actualBrightness = await (control as PictureBrightnessBackend)
+              .setPictureBrightness(brightness, allowed: allowed);
+        }
+        if (shadows != actualShadows && control is ShadowEnhancementBackend) {
+          actualShadows = await (control as ShadowEnhancementBackend)
+              .setShadowEnhancement(shadows, allowed: allowed);
+        }
+        result = (actualBrightness, actualShadows);
+      }
+      if (!allowed()) throw const AppFailure('播放会话已改变');
+      changed();
+      return result;
+    });
+    _pictureTail = job.then<void>(
+      (_) {},
+      onError: (Object failure) {
+        store.log.add(
+          LogArea.player,
+          '画面增强失败：${safeError(failure)}',
+          level: LogLevel.warning,
+        );
+      },
+    );
+    return job;
+  }
+
   Future<double> setPictureBrightness(double value) {
     final job = _pictureTail.then((_) async {
       final control = backend;
@@ -769,6 +814,7 @@ class PlaybackSession extends ChangeNotifier {
   bool _reporting = false, _started = false, _wasBuffering = false;
   Duration _mediaDuration = Duration.zero;
   MediaItem? _serverBaseline;
+  MediaItem? _openingMetadata;
   bool _completed = false;
   bool _restartDisplayIntent = false;
   ({int command, PlaybackSnapshot state})? _seekCompletion;
@@ -780,7 +826,8 @@ class PlaybackSession extends ChangeNotifier {
   bool get completed => _completed;
   bool get seeking => _seeking;
   int get seekRevision => _seekCommands;
-  MediaItem get currentMetadata => _serverBaseline ?? item;
+  MediaItem get currentMetadata => _openingMetadata ?? item;
+
   Future<void>? _closing;
   void changed() {
     if (!closed) notifyListeners();
@@ -805,10 +852,11 @@ class PlaybackSession extends ChangeNotifier {
     bool fromBeginning = false,
     EpisodeContinuity? continuity,
     OpeningMetadata? metadata,
+    Future<bool> Function()? prepareVideo,
   }) async {
     _sessionClock.start();
     unawaited(_readDeviceIdentity());
-    if (!_subtitleViewportConfigured) configureSubtitleViewport(phone: false);
+    if (prepareVideo == null) configureSubtitleViewport(phone: false);
     final watch = Stopwatch()..start();
     var phase = '读取最新进度与媒体资料';
     store.log.add(LogArea.player, '开始一次播放；${fromBeginning ? '从头播放' : '允许续播'}');
@@ -818,8 +866,22 @@ class PlaybackSession extends ChangeNotifier {
       if (api.session == null) throw const AppFailure('登录已过期，请重新登录');
       // Capture before the first await; an account switch must cancel this open.
       final openingAccount = account;
+      final video = prepareVideo == null ? null : Future.sync(prepareVideo);
+      AsyncError? videoFailure;
+      if (video != null) {
+        // Preserve overlap with the detail request even on the fast route that
+        // needs no PlaybackInfo. Keep a failure handled until the join.
+        unawaited(
+          video.then<void>(
+            (_) {},
+            onError: (Object error, StackTrace stack) {
+              videoFailure = AsyncError(error, stack);
+            },
+          ),
+        );
+      }
       final detail = metadata == null
-          ? await api.detail(item.id)
+          ? await api.openingDetail(item.id)
           : await metadata.take(api, item.id);
       if (closed) return;
       if (api.session != openingAccount) {
@@ -838,12 +900,14 @@ class PlaybackSession extends ChangeNotifier {
       }
       _mediaDuration = detail.duration;
       _serverBaseline = detail;
-      // Use the already-requested detail before media load. A list item may
-      // omit SeasonId; it cannot make the entire season lose its preference.
-      _configureSubtitlePositions(
-        openingAccount,
-        MediaItem({...item.data, ...detail.data}),
-      );
+      _openingMetadata = MediaItem({
+        ...item.data,
+        ...detail.data,
+        for (final key in ['Type', 'SeriesId', 'SeasonId', 'ParentIndexNumber'])
+          if ((detail.data[key]?.toString().isEmpty ?? true) &&
+              item.data.containsKey(key))
+            key: item.data[key],
+      });
       _restartDisplayIntent =
           fromBeginning || store.restartObserved(account, detail);
       _continuity = continuity?.matches(account, detail) == true
@@ -851,53 +915,122 @@ class PlaybackSession extends ChangeNotifier {
           : null;
       _continuitySpeed = _continuity?.speed ?? 1;
       final resume = store.resume(account, detail);
-      _position.reset(fromBeginning ? Duration.zero : resume.position);
-      if (skipOpeningIntro && detail.type == 'Episode') {
-        final rule = store.personal.resolveSkipRule(account, detail)?.rule;
-        if (rule?.autoIntro == true &&
-            rule!.introContains(position, detail.duration)) {
-          openingIntro = (from: position, to: rule.intro!.end);
-          _position.reset(rule.intro!.end);
-          store.log.add(LogArea.player, '自动连播：已启用的片头范围合并到首次定位；不预取下一集媒体');
+      final start = fromBeginning ? Duration.zero : resume.position;
+      final sources = objects(detail.data['MediaSources']);
+      final listedSource = sourceId == null
+          ? sources.firstOrNull
+          : sources.where((s) => s['Id'] == sourceId).firstOrNull;
+      final listedRuntime = fromTicks(listedSource?['RunTimeTicks']);
+      final initialRuntime = listedRuntime > Duration.zero
+          ? listedRuntime
+          : detail.duration > Duration.zero
+          ? detail.duration
+          : item.duration;
+      final openingItem = currentMetadata;
+      final rule = skipOpeningIntro && openingItem.type == 'Episode'
+          ? store.personal.resolveSkipRule(account, openingItem)?.rule
+          : null;
+      Duration openingPosition(Duration runtime) {
+        if (closed || api.session != openingAccount) return position;
+        final invalid =
+            start.isNegative ||
+            (openingItem.type == 'Episode' &&
+                runtime > Duration.zero &&
+                start >= runtime);
+        final checkpoint = invalid ? Duration.zero : start;
+        final intro = rule?.intro;
+        openingIntro =
+            rule?.enabled == true &&
+                rule?.autoIntro == true &&
+                intro != null &&
+                rule!.validFor(runtime) &&
+                checkpoint < intro.end
+            ? (from: checkpoint, to: intro.end)
+            : null;
+        _position.reset(openingIntro?.to ?? checkpoint);
+        if (invalid) {
+          store.log.add(LogArea.progress, '忽略超出剧集片长的续播点，从有效起点打开');
         }
+        if (openingIntro != null) {
+          store.log.add(LogArea.player, '自动连播：片头终点用作首次播放位置');
+        }
+        return position;
+      }
+
+      phase = '准备原文件播放地址';
+      _beginLoading(phase);
+      if (videoFailure case final AsyncError failure) {
+        Error.throwWithStackTrace(failure.error, failure.stackTrace);
+      }
+      final routeStart = watch.elapsedMilliseconds;
+      var routeReady = routeStart;
+      final source = api.preparePlayback(
+        detail,
+        sourceId: sourceId,
+        start: openingPosition(initialRuntime),
+      );
+      late PlaybackRoute selectedRoute;
+      var phone = false;
+      // Source metadata and the local viewport are independent. Neither
+      // operation can start the media, and a failed branch prevents loading.
+      await Future.wait<void>([
+        source.then<void>((value) {
+          selectedRoute = value;
+          routeReady = watch.elapsedMilliseconds;
+        }),
+        if (video != null)
+          video.then<void>((value) {
+            phone = value;
+          }),
+      ], eagerError: true);
+      if (closed) return;
+      if (api.session != openingAccount) {
+        throw const AppFailure('账户已切换，请重新打开影片');
+      }
+      route = selectedRoute;
+      final viewportWait = watch.elapsedMilliseconds - routeReady;
+      configureSubtitleViewport(phone: phone);
+      // The list item may omit SeasonId. Resolve the remembered position
+      // from fresh detail after the phone/tablet viewport has been selected.
+      _configureSubtitlePositions(
+        openingAccount,
+        MediaItem({...item.data, ...detail.data}),
+      );
+      final mediaRuntime = route!.sourceDuration > Duration.zero
+          ? route!.sourceDuration
+          : initialRuntime;
+      if (mediaRuntime != initialRuntime) openingPosition(mediaRuntime);
+      if (openingItem.type == 'Episode' &&
+          (start > Duration.zero || rule?.autoIntro == true) &&
+          backend is OpeningStartBackend) {
+        (backend as OpeningStartBackend).resolveOpeningStart = openingPosition;
       }
       store.log.add(
         LogArea.progress,
         '续播决策：来源=${fromBeginning ? "从头播放" : resume.reason}；位置=${position.inMilliseconds} ms；服务器=${detail.resume.inMilliseconds} ms',
       );
-      phase = '准备原文件播放地址';
-      _beginLoading(phase);
-      final routeStart = watch.elapsedMilliseconds;
-      route = await api.preparePlayback(
-        detail,
-        sourceId: sourceId,
-        start: position,
-      );
-      if (closed) return;
-      if (api.session != openingAccount) {
-        throw const AppFailure('账户已切换，请重新打开影片');
-      }
       store.log.add(
         LogArea.player,
-        '开播耗时：地址准备=${watch.elapsedMilliseconds - routeStart} ms；累计=${watch.elapsedMilliseconds} ms',
+        '开播耗时：地址准备=${routeReady - routeStart} ms；'
+        '地址就绪后画布等候=$viewportWait ms；累计=${watch.elapsedMilliseconds} ms',
       );
       _prepareTracks(detail);
       if (backend is PersistentPlaybackBackend && store.playbackCacheGB != 0) {
         final limit = store.playbackCacheGB;
-        // A cold cache index must not delay the first picture. Until it is
-        // ready, raw ranges go directly from the source to the player.
-        unawaited(
-          store.videoCache
-              .configure(limit < 0 ? -1 : limit * playbackGiB)
-              .catchError((Object _) {
-                store.videoCache.warning = '播放缓存暂不可用，继续直接播放';
-              }),
-        );
         if (closed || api.session != openingAccount) return;
         (backend as PersistentPlaybackBackend).configureCache(
           store.videoCache,
           playbackCacheHash([accountKey(account), detail.id, route!.sourceId]),
-          detail.duration,
+          () async {
+            if (closed || api.session != openingAccount) return false;
+            try {
+              await store.videoCache.configure(playbackDiskQuota(limit));
+              return !closed && api.session == openingAccount;
+            } catch (_) {
+              store.videoCache.warning = '播放缓存暂不可用，继续直接播放';
+              return false;
+            }
+          },
         );
       }
       _stateSub = backend.changes.listen((state) {
@@ -1147,18 +1280,29 @@ class PlaybackSession extends ChangeNotifier {
           );
         }
         if (api.session != account) throw const AppFailure('账户已切换，进度保留在本机');
-        await api.report(
-          event,
-          item,
-          route!,
-          at,
-          paused,
-          duration: duration,
-          rate: rate,
-          eventName: eventName,
-          audioStreamIndex: audioIndex,
-          subtitleStreamIndex: subtitleIndex,
-        );
+        Object? stoppedReportError;
+        try {
+          await api.report(
+            event,
+            item,
+            route!,
+            at,
+            paused,
+            duration: duration,
+            rate: rate,
+            eventName: eventName,
+            audioStreamIndex: audioIndex,
+            subtitleStreamIndex: subtitleIndex,
+          );
+        } catch (error) {
+          if (!completed || !currentServerIntent()) rethrow;
+          stoppedReportError = error;
+          store.log.add(
+            LogArea.progress,
+            '播放结束上报未确认，继续核对同账号的已看记录：${safeError(error)}',
+            level: LogLevel.warning,
+          );
+        }
         if (api.session != account) throw const AppFailure('账户已切换，进度保留在本机');
         if (completed && currentServerIntent()) {
           await store.completions.syncOne(
@@ -1169,6 +1313,10 @@ class PlaybackSession extends ChangeNotifier {
           );
         }
         if (!currentProgressIntent()) return;
+        if (stoppedReportError != null &&
+            store.completions.receipt(account, item.id)?['confirmed'] != true) {
+          throw stoppedReportError;
+        }
         // A 2xx check-in acknowledges the event; it does not prove that a
         // zero-duration STRM has acquired a usable resume point. Keep the local
         // checkpoint until stopped playback has been read back from Emby.
@@ -1179,10 +1327,26 @@ class PlaybackSession extends ChangeNotifier {
               .timeout(const Duration(seconds: 3));
           if (api.session != account) throw const AppFailure('账户已切换，停止核对旧账户进度');
           if (!currentProgressIntent()) return;
+          final restoredUnplayed =
+              !completed &&
+              (at > Duration.zero ||
+                  _serverBaseline?.resume == Duration.zero) &&
+              duration > Duration.zero &&
+              at < duration ~/ 10 &&
+              at < const Duration(seconds: 30) &&
+              progressIntent == 0 &&
+              currentMetadata.type == 'Episode' &&
+              _serverBaseline?.duration == Duration.zero &&
+              object(_serverBaseline!.data['UserData'])['Played'] == false &&
+              saved.id == item.id &&
+              saved.resume == Duration.zero &&
+              object(saved.data['UserData'])['Played'] == true;
           bool matches(MediaItem value) => completed
               ? object(value.data['UserData'])['Played'] == true &&
                     value.resume == Duration.zero
-              : progressMatches(value.resume, at);
+              : progressMatches(value.resume, at) &&
+                    (!restoredUnplayed ||
+                        object(value.data['UserData'])['Played'] == false);
           store.log.add(
             LogArea.progress,
             '退出进度核对：上报=${at.inMilliseconds} ms；回读=${saved.resume.inMilliseconds} ms；服务器时长=${saved.duration.inMilliseconds} ms；一致=${matches(saved)}',
@@ -1200,7 +1364,7 @@ class PlaybackSession extends ChangeNotifier {
               '播放事件已接受但续播位置不一致；通过用户进度接口补存一次',
               level: LogLevel.warning,
             );
-            await api.saveResume(saved, at);
+            await api.saveResume(saved, at, restoreUnplayed: restoredUnplayed);
             if (api.session != account) {
               throw const AppFailure('账户已切换，停止核对旧账户进度');
             }
@@ -1338,6 +1502,9 @@ class PlaybackSession extends ChangeNotifier {
     final wasBackground = background;
     background = true;
     if (!closed) {
+      if (backend case final PersistentPlaybackBackend cache) {
+        cache.setReadAheadForeground(false);
+      }
       if (!wasBackground) _recordAction('自动暂停请求；来源=${source.label}');
       await backend.pause();
       await endSpeedHold();
@@ -1349,7 +1516,12 @@ class PlaybackSession extends ChangeNotifier {
   void foreground() {
     final wasBackground = background;
     background = false;
-    if (wasBackground && !closed) _recordAction('回到前台；没有自动恢复播放');
+    if (wasBackground && !closed) {
+      if (backend case final PersistentPlaybackBackend cache) {
+        cache.setReadAheadForeground(true);
+      }
+      _recordAction('回到前台；没有自动恢复播放');
+    }
   }
 
   Future<void> seek(
@@ -1529,6 +1701,9 @@ class PlaybackSession extends ChangeNotifier {
     _timer?.cancel();
     await _stateSub?.cancel();
     await _errorSub?.cancel();
+    if (backend case final PersistentPlaybackBackend cache) {
+      cache.setReadAheadForeground(false);
+    }
     try {
       await backend.pause();
     } catch (_) {

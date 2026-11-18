@@ -11,12 +11,14 @@ class ResourceTags extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final labels = resourceLabels(video);
+    final format = resourceLabels(video);
+    final codec = resourceCodecLabel(video);
+    final labels = [...format, if (codec.isNotEmpty) codec];
     return Wrap(
       spacing: 4,
       runSpacing: 4,
       children: [
-        for (final label in labels.isEmpty ? ['格式未知'] : labels)
+        for (final label in labels)
           Container(
             padding: EdgeInsets.symmetric(
               horizontal: 6,

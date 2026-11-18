@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
+using Microsoft.UI.Xaml;
 using EmbyDesktop.Core.Models;
 using Richasy.MpvKernel;
 using Richasy.MpvKernel.Core;
@@ -11,8 +12,8 @@ using Richasy.MpvKernel.Core.Models;
 
 namespace Yingyu.Update;
 
-// Passive local diagnostics. No HTTP, media reads, polling of native handles,
-// playback commands, configuration changes, or global keyboard hooks.
+// Passive observations. A sustained stall with a fresh cached range can
+// schedule one recheck on the same UI dispatcher as interactive seeking.
 public static class PlaybackTelemetry
 {
     static readonly ConditionalWeakTable<MpvClient, State> Clients = new();
@@ -38,6 +39,9 @@ public static class PlaybackTelemetry
     }
     internal static void Emit(string value) => DiagnosticQueue.Emit(value);
 
+    internal static long StartupForwardBytes(object session) =>
+        Sessions.TryGetValue(session, out var state) ? state.StartupForwardBytes() : 0;
+
     internal static void DanmakuTiming(object session, string details)
     {
         if (Sessions.TryGetValue(session, out var state))
@@ -53,7 +57,7 @@ public static class PlaybackTelemetry
             {
                 if (Sessions.TryGetValue(session, out var previous)) previous.Close("media-reconfigured");
                 if (Clients.TryGetValue(client, out var old) && !ReferenceEquals(old, previous)) old.Close("client-reconfigured");
-                var state = new State(client, Interlocked.Increment(ref _next));
+                var state = new State(new(session), client, Interlocked.Increment(ref _next));
                 Clients.Remove(client); Clients.Add(client, state);
                 Sessions.Remove(session); Sessions.Add(session, state);
                 var overlay = Access.Get<object?>(session, "_overlay");
@@ -136,7 +140,7 @@ public static class PlaybackTelemetry
     static string N(double? value) => value.HasValue && double.IsFinite(value.Value) ? value.Value.ToString("0.###", CultureInfo.InvariantCulture) : "unknown";
     static double Seconds(long ticks) => (double)ticks / Stopwatch.Frequency;
 
-    sealed class State(MpvClient client, int id)
+    sealed class State(WeakReference<object> owner, MpvClient client, int id)
     {
         readonly object _gate = new();
         readonly long _origin = Stopwatch.GetTimestamp();
@@ -144,6 +148,7 @@ public static class PlaybackTelemetry
         readonly Dictionary<string, (long At, int Count)> _actions = new();
         Timer? _timer;
         bool _closed, _first, _stall;
+        bool _recoveryQueued, _recoveryUsed;
         MpvPlayerState? _state;
         long _lastAdvance, _lastTick, _lastOutput, _detailUntil, _bufferAt;
         int _buffers, _stalls;
@@ -153,6 +158,13 @@ public static class PlaybackTelemetry
         double _seenDecoder, _seenOutput, _seenDelayed;
         long _cacheAt, _speedAt, _resourcesAt;
         int _sourceId;
+        internal long StartupForwardBytes()
+        {
+            lock (_gate)
+            {
+                return !_closed && _fwBytes is > 0 and < long.MaxValue ? (long)_fwBytes.Value : 0;
+            }
+        }
         public void Begin(string kind, string type, double resume, int sourceId)
         {
             lock (_gate)
@@ -246,7 +258,11 @@ public static class PlaybackTelemetry
                 long now = Stopwatch.GetTimestamp();
                 _actions.TryGetValue(action, out var old);
                 _actions[action] = (old.At, old.Count + 1);
-                if (action is "seek" or "retry" or "episode") _detailUntil = now + 30 * Stopwatch.Frequency;
+                if (action is "seek" or "retry" or "episode" or "toggle-play")
+                {
+                    _lastAdvance = now;
+                    _detailUntil = now + 30 * Stopwatch.Frequency;
+                }
                 if (old.At != 0 && Seconds(now - old.At) < .5) return;
                 _actions[action] = (now, old.Count + 1);
                 Record("operation", $"action={action}; value={N(value)}; count={old.Count + 1}; positionSeconds={N(_position)}");
@@ -314,6 +330,7 @@ public static class PlaybackTelemetry
         {
             try
             {
+                double? recoveryPosition = null;
                 lock (_gate)
                 {
                     if (_closed) return;
@@ -336,6 +353,11 @@ public static class PlaybackTelemetry
                     {
                         _stall = true; _stalls++; Anomaly("suspected-no-position-progress", now);
                     }
+                    if (!_recoveryQueued && !_recoveryUsed && CanRecover(now))
+                    {
+                        _recoveryQueued = true;
+                        recoveryPosition = _position;
+                    }
                     string sample = $"elapsedMs={Stopwatch.GetElapsedTime(_origin).TotalMilliseconds:0}; {Snapshot(now)}";
                     if (_history.Count == 16) _history.Dequeue();
                     _history.Enqueue(sample);
@@ -345,8 +367,59 @@ public static class PlaybackTelemetry
                         Record("sample", $"timerGapSeconds={N(timerGap)}; {Snapshot(now)}");
                     }
                 }
+                if (recoveryPosition is double position) QueueRecovery(position);
             }
             catch (Exception error) { Fault(error); }
+        }
+
+        bool CanRecover(long now) => !_closed && _state == MpvPlayerState.Playing
+            && _videoBitrate is > 0 && _cacheAt != 0 && PlaybackStallPolicy.Eligible(
+                Seconds(now - _lastAdvance), _position, _cacheAhead, Seconds(now - _cacheAt));
+
+        [DllImport("user32.dll")]
+        static extern bool IsIconic(nint hwnd);
+
+        void QueueRecovery(double position)
+        {
+            bool queued = false;
+            try
+            {
+                if (!owner.TryGetTarget(out var session)
+                    || Access.Get<object?>(session, "_overlay") is not FrameworkElement overlay) return;
+                queued = overlay.DispatcherQueue.TryEnqueue(async () =>
+                {
+                    try
+                    {
+                        lock (_gate)
+                        {
+                            if (!CanRecover(Stopwatch.GetTimestamp()) || _position != position) return;
+                        }
+                        var window = WindowsHdrDisplay.Window(session);
+                        if (window == 0 || IsIconic(window) || NativeDolby.IsClosing(session)
+                            || client.IsDisposed || !overlay.IsLoaded
+                            || !Sessions.TryGetValue(session, out var current) || !ReferenceEquals(current, this)
+                            || !ReferenceEquals(client, Access.Get<MpvClient?>(session, "_mpvClient"))
+                            || !Access.Get<bool>(session, "_acceptPlaybackEvents")
+                            || Access.Get<bool>(session, "_switching")
+                            || Access.Get<MediaSourceInfo>(session, "_source").IsInfiniteStream == true) return;
+                        string Read(string name) => PlaybackTransport.Get(client, name);
+                        if (!double.TryParse(Read("time-pos"), NumberStyles.Float, CultureInfo.InvariantCulture, out var live)
+                            || !double.TryParse(Read("duration"), NumberStyles.Float, CultureInfo.InvariantCulture, out var duration)
+                            || !PlaybackStallPolicy.Confirm(position, live, duration, Read("pause"),
+                                Read("paused-for-cache"), Read("seeking"), Read("idle-active"), Read("eof-reached"))) return;
+                        lock (_gate)
+                        {
+                            if (!CanRecover(Stopwatch.GetTimestamp()) || _position != position) return;
+                            _recoveryUsed = true;
+                        }
+                        var result = await client.SetCurrentPositionAsync(live);
+                        Record("stall-reseat", $"positionSeconds={N(live)}; requestAccepted={!result.IsFailed}");
+                    }
+                    catch (Exception error) { Fault(error); }
+                    finally { lock (_gate) _recoveryQueued = false; }
+                });
+            }
+            finally { if (!queued) lock (_gate) _recoveryQueued = false; }
         }
     }
 

@@ -2,13 +2,16 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'expansion_chevron.dart';
 import 'package:flutter/services.dart';
+import '../core/log.dart';
 import '../core/release_notes.dart';
 import '../version.dart';
 import 'style.dart';
 import 'surface.dart';
+import 'app_update.dart';
 
 class ReleaseNotesPage extends StatefulWidget {
-  const ReleaseNotesPage({super.key});
+  const ReleaseNotesPage({super.key, this.log});
+  final DiagnosticLog? log;
   @override
   State<ReleaseNotesPage> createState() => _ReleaseNotesPageState();
 }
@@ -24,6 +27,7 @@ class _ReleaseNotesPageState extends State<ReleaseNotesPage> {
     child: ListView(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
       children: [
+        AndroidUpdatePanel(log: widget.log),
         Row(
           children: [
             ClipRRect(

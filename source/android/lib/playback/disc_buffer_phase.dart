@@ -1,3 +1,4 @@
+import 'cache_policy.dart';
 import 'disc_buffering.dart';
 
 double discBufferTier(double speed) => speed <= 1
@@ -46,6 +47,7 @@ class DiscBufferPlan {
 
   Map<String, String> get options => {
     ...discBufferOptions(tier, forwardBytes: bytes),
+    if (fast) 'cache-secs': '$fastPacketCacheSeconds',
     'cache-pause-wait': discBufferOptions(playbackTier)['cache-pause-wait']!,
   };
 }

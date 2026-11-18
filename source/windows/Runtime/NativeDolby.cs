@@ -87,9 +87,11 @@ public static class NativeDolby
     }
     public static void BeginClose(object session)
     {
+        WindowsMediaControls.Close(session);
         PlayerDanmaku.Stop(session);
         if(Access.Get<MpvClient?>(session,"_mpvClient") is {} pictureClient)PictureAdjustment.Cancel(pictureClient);
         ClosingSessions.GetValue(session,_=>new());
+        DolbyHdrFallback.Close(session);
         if(Access.Get<object?>(session,"_overlay") is FrameworkElement overlay&&Uis.TryGetValue(overlay,out var state))state.Stop();
     }
     public static void WindowClosing(object window)
@@ -133,6 +135,7 @@ public static class NativeDolby
             if(overlay.DispatcherQueue.HasThreadAccess)Detach();else overlay.DispatcherQueue.TryEnqueue(Detach);
             if(Session?.TryGetTarget(out var session)!=true||session is null)return;
             ClosingSessions.GetValue(session,_=>new());
+            DolbyHdrFallback.Close(session);
             var client=Access.Get<MpvClient?>(session,"_mpvClient");
             int result=client is {IsDisposed:false}?DolbyVision.SignalUi(client,false):0;
             PlaybackFeatureLog.Write(session,"native-close","ui-detached-async",result);
@@ -205,7 +208,7 @@ public static class NativeDolby
             if(blockers.Length>768)blockers=blockers[..768];
             string block=$"chrome={chrome}; feedback={feedback}; status={status}; dialog={dialog}; popup={popup}; rootPaint={paintedRoot}; childPaint={paintedChildren}; rootBrush={root.Background?.GetType().Name??"none"}; blockers={blockers}";
             long now=Environment.TickCount64;
-            if(block!=lastBlock||now-lastTrace>=30000){lastBlock=block;lastTrace=now;PlaybackTransport.Write("Info","Playback.NativeDolby.UI",$"版本=1.3.4; safe={safe}; {block}。");}
+            if(block!=lastBlock||now-lastTrace>=30000){lastBlock=block;lastTrace=now;PlaybackTransport.Write("Info","Playback.NativeDolby.UI",$"版本=1.3.5; safe={safe}; {block}。");}
             Set(safe,reconcile&&safe);
         }
         void Set(bool safe,bool reconcile)

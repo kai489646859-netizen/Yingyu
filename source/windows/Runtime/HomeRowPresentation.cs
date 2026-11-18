@@ -11,6 +11,7 @@ public static class HomeRowPresentation
 {
     static readonly ConditionalWeakTable<FrameworkElement, object> Roots=new();
     static readonly ConditionalWeakTable<GridView, object> Panels=new();
+    static readonly ConditionalWeakTable<StackPanel, object> CompactPanels=new();
     public static void Connect(object page, int connectionId, object target)
     {
         if(target is Button button && connectionId is 14 or 251 or 252 or 254)
@@ -28,6 +29,21 @@ public static class HomeRowPresentation
     }
     static void Prepare(object page,StackPanel root)
     {
+        if(!CompactPanels.TryGetValue(root,out _))
+        {
+            CompactPanels.Add(root,new());
+            var margin=root.Margin;
+            if(margin.Bottom>18)
+                root.Margin=new(margin.Left,margin.Top,margin.Right,LandscapeRecovery.CompactGap(margin.Bottom));
+            else if(margin.Top>18)
+                root.Margin=new(margin.Left,LandscapeRecovery.CompactGap(margin.Top),margin.Right,margin.Bottom);
+            else if(Access.Get<ItemsControl?>(page,"HomeLibrarySectionsControl")?.ItemsPanelRoot is StackPanel panel
+                &&!CompactPanels.TryGetValue(panel,out _))
+            {
+                CompactPanels.Add(panel,new());
+                panel.Spacing=LandscapeRecovery.CompactGap(panel.Spacing);
+            }
+        }
         var nodes=UiElements.Descendants(root).ToArray();
         foreach(var heading in root.Children.OfType<Button>().ToArray())
             DesktopRefinement.Heading(heading,ReferenceSurfaces.Palette(root));

@@ -39,7 +39,7 @@ public static class TrackLabels
         return count is >0 and <=64?count+" 声道":"";
     }
     public static string Format(string? language,string? title,string? codec,string? channels,bool audio){
-        string name=Clean(title),kind=Clean(codec);var parts=new List<string>{Language(language,name)};
+        string name=Clean(title),kind=Clean(codec);var parts=new List<string>{audio?AudioLanguageLabels.Resolve(language,name):Language(language,name)};
         var candidates=new[]{("DTS-HD MA",@"DTS[- _]?HD.*(?:MA|Master)"),("DTS-HD",@"DTS[- _]?HD"),("TrueHD",@"truehd"),("E-AC-3",@"e[-_]?ac[-_]?3|Dolby Digital Plus"),("AC-3",@"(?<![A-Za-z])ac[-_]?3|Dolby Digital(?! Plus)"),("DTS",@"\bdts\b"),("AAC",@"\baac\b"),("FLAC",@"\bflac\b"),("Opus",@"\bopus\b"),("MP3",@"\bmp3\b"),("PCM",@"\bpcm\b"),("PGS",@"pgs|HDMV Presentation Graph"),("ASS",@"\bass\b|\bssa\b"),("SRT",@"subrip|\bsrt\b"),("VobSub",@"dvd_subtitle|vobsub"),("WebVTT",@"webvtt")};
         string haystack=kind+" "+name;var known=candidates.FirstOrDefault(c=>Has(haystack,c.Item2)).Item1;
         if(!string.IsNullOrEmpty(known))parts.Add(known);

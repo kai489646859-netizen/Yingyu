@@ -100,6 +100,9 @@ void main() {
   late List<http.Request> reports;
   late int serverPosition;
   late bool persistReports;
+  late Completer<void> routeRequested;
+  late Future<void>? routeGate;
+  late Future<void>? detailGate;
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     store = AppStore(await SharedPreferences.getInstance());
@@ -107,9 +110,14 @@ void main() {
     reports = [];
     serverPosition = 350000000;
     persistReports = true;
+    routeRequested = Completer<void>();
+    routeGate = null;
+    detailGate = null;
     api = EmbyClient(
       client: MockClient((request) async {
         if (request.url.path.endsWith('PlaybackInfo')) {
+          if (!routeRequested.isCompleted) routeRequested.complete();
+          await routeGate;
           return response(jsonEncode(playbackData()), 200);
         }
         if (request.url.path.contains('Sessions/Playing')) {
@@ -119,6 +127,7 @@ void main() {
           }
           return response('', 204);
         }
+        await detailGate;
         return response(
           jsonEncode({
             'Id': 'movie',
@@ -143,6 +152,107 @@ void main() {
     item: MediaItem({'Id': 'movie'}),
     backend: backend,
   );
+  for (final videoFirst in [false, true]) {
+    test(
+      'source and viewport join before loading (video first: $videoFirst)',
+      () async {
+        final source = Completer<void>();
+        final video = Completer<bool>();
+        var videoStarted = false;
+        routeGate = source.future;
+        final player = controller();
+        final opening = player.open(
+          prepareVideo: () {
+            videoStarted = true;
+            return video.future;
+          },
+        );
+        await routeRequested.future;
+        expect(videoStarted, true);
+        if (videoFirst) {
+          video.complete(true);
+        } else {
+          source.complete();
+        }
+        await Future<void>.delayed(Duration.zero);
+        expect(backend.opened.isCompleted, false);
+        expect(reports, isEmpty);
+        if (videoFirst) {
+          source.complete();
+        } else {
+          video.complete(false);
+        }
+        await backend.opened.future;
+        expect(backend.initial, const Duration(seconds: 35));
+        expect(backend.receivedRoute?.sourceId, 'source-1');
+        expect(backend.plays, 0);
+        backend.gate.complete();
+        await opening;
+        expect(backend.plays, 1);
+        await player.close();
+        player.dispose();
+        api.close();
+      },
+    );
+  }
+  test('viewport also prepares while fresh detail is still pending', () async {
+    final detail = Completer<void>();
+    detailGate = detail.future;
+    final player = controller();
+    var videoStarted = false;
+    final opening = player.open(
+      prepareVideo: () async {
+        videoStarted = true;
+        return true;
+      },
+    );
+    expect(videoStarted, true);
+    expect(routeRequested.isCompleted, false);
+    expect(backend.opened.isCompleted, false);
+    detail.complete();
+    await backend.opened.future;
+    backend.gate.complete();
+    await opening;
+    expect(backend.plays, 1);
+    await player.close();
+    player.dispose();
+    api.close();
+  });
+  for (final reason in ['关闭', '换账号', '画布失败']) {
+    test(
+      '$reason invalidates a pending opening before any media load',
+      () async {
+        final source = Completer<void>();
+        final video = Completer<bool>();
+        routeGate = source.future;
+        final player = controller();
+        final opening = player.open(prepareVideo: () => video.future);
+        await routeRequested.future;
+        switch (reason) {
+          case '关闭':
+            await player.close();
+            video.complete(true);
+          case '换账号':
+            api.session = syntheticSession();
+            video.complete(true);
+          case '画布失败':
+            video.completeError(const AppFailure('画布准备失败'));
+            await opening;
+            expect(player.error, contains('画布准备失败'));
+        }
+        source.complete();
+        await opening;
+        await Future<void>.delayed(Duration.zero);
+        expect(backend.opened.isCompleted, false);
+        expect(backend.plays, 0);
+        expect(reports, isEmpty);
+        await player.close();
+        player.dispose();
+        api.close();
+      },
+    );
+  }
+
   test(
     'waits for actual backend readiness before play and started report',
     () async {

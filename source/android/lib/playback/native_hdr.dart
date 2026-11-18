@@ -11,19 +11,21 @@ class OutputCapabilities {
   const OutputCapabilities({
     this.sdk = 0,
     this.display,
+    this.mode,
     this.maxLuminance = 0,
     this.hdr = const {},
     this.anticipatedAudio = const {},
   });
   final int sdk;
   final double maxLuminance;
-  final int? display;
+  final int? display, mode;
   final Set<int> hdr, anticipatedAudio;
   factory OutputCapabilities.parse(Map<dynamic, dynamic> value) {
     Set<int> ints(Object? v) => v is List ? v.whereType<int>().toSet() : {};
     return OutputCapabilities(
       sdk: value['sdk'] is int ? value['sdk'] as int : 0,
       display: value['display'] is int ? value['display'] as int : null,
+      mode: value['mode'] is int ? value['mode'] as int : null,
       maxLuminance:
           value['hdrMaxLuminance'] is num &&
               (value['hdrMaxLuminance'] as num).isFinite &&
@@ -35,6 +37,18 @@ class OutputCapabilities {
       anticipatedAudio: ints(value['anticipatedAudioTypes']),
     );
   }
+
+  bool supportsHdrSurface(String transfer) =>
+      sdk >= 33 &&
+      display != null &&
+      switch (transfer) {
+        'pq' => hdr.contains(2),
+        'hlg' => hdr.contains(3),
+        _ => false,
+      };
+
+  bool sameDisplayMode(OutputCapabilities other) =>
+      display != null && display == other.display && mode == other.mode;
   String get displayDescription {
     final labels = [
       if (hdr.contains(2)) 'HDR10',
@@ -98,6 +112,12 @@ DetectedVideoRange detectVideoRange(
         'srgb',
         'gamma2.2',
         'gamma2.4',
+        'gamma1.8',
+        'gamma2.0',
+        'gamma2.6',
+        'gamma2.8',
+        'prophoto',
+        'st428',
         'bt.709',
       }.contains(decoded['video-params/gamma'])
       ? DetectedVideoRange.sdr
@@ -123,19 +143,25 @@ String? nativeHdrTransfer({
   required String container,
   required OutputCapabilities capabilities,
 }) {
-  if (!requested ||
-      disc ||
-      capabilities.sdk < 33 ||
-      capabilities.display == null ||
-      !supportedHdrContainer(container)) {
+  if (!requested || disc || !supportedHdrContainer(container)) {
     return null;
   }
-  return source == DetectedVideoRange.hdr10 && capabilities.hdr.contains(2)
-      ? 'pq'
-      : source == DetectedVideoRange.hlg && capabilities.hdr.contains(3)
-      ? 'hlg'
-      : null;
+  if (source != DetectedVideoRange.hdr10 && source != DetectedVideoRange.hlg) {
+    return null;
+  }
+  if (source == DetectedVideoRange.hdr10 &&
+      capabilities.supportsHdrSurface('pq')) {
+    return 'pq';
+  }
+  return capabilities.supportsHdrSurface('hlg') ? 'hlg' : null;
 }
+
+/// The current renderer negotiates static PQ and HLG surfaces. An HDR10+
+/// display declaration alone cannot enable dynamic metadata transport.
+List<String> dolbyHdrTransfers(OutputCapabilities capabilities) => [
+  if (capabilities.supportsHdrSurface('pq')) 'pq',
+  if (capabilities.supportsHdrSurface('hlg')) 'hlg',
+];
 
 abstract class PlaybackOutputBackend {
   String get outputDescription;
@@ -233,8 +259,10 @@ class NativeHdrAdapter {
   String status = 'not-attempted';
   int? _display;
   int _token = 0;
+  int _capabilityRevision = 0;
   String? _transfer;
   bool get established => _established;
+  String? get establishedTransfer => _established ? _transfer : null;
   bool _autoDolby = false, _warming = false;
   int _warmSerial = 0;
   String _preparedTransfer = 'pq';
@@ -301,14 +329,12 @@ class NativeHdrAdapter {
                     (!target._established && !target.autoArmed)) {
                   return;
                 }
+                final local = OutputCapabilities.parse(value);
                 if (token == 0 ||
                     token != target._token ||
                     target._surface != value ||
-                    OutputCapabilities.parse(value).display !=
-                        target._display ||
-                    !OutputCapabilities.parse(
-                      value,
-                    ).hdr.contains(target._transfer == 'pq' ? 2 : 3)) {
+                    !local.sameDisplayMode(target.capabilities) ||
+                    !local.supportsHdrSurface(target._transfer ?? '')) {
                   if (target._surface == value) await target._fallback();
                   return;
                 }
@@ -320,6 +346,7 @@ class NativeHdrAdapter {
     } else if (call.method == 'changed') {
       final next = OutputCapabilities.parse(value);
       final old = target.capabilities;
+      target._capabilityRevision++;
       target.capabilities = next;
       if (value['kind'] == 'audio' &&
           !setEquals(old.anticipatedAudio, next.anticipatedAudio)) {
@@ -328,16 +355,26 @@ class NativeHdrAdapter {
         );
       }
       if ((target._established || target.autoArmed) &&
-          (next.display != target._display ||
-              !next.hdr.contains(target._transfer == 'pq' ? 2 : 3))) {
+          !target._currentDisplaySupportsOutput()) {
+        final token = target._token;
         unawaited(
           target
-              ._run(target._fallback)
+              ._run<void>(() async {
+                if (token == target._token &&
+                    (target._established || target.autoArmed) &&
+                    !target._currentDisplaySupportsOutput()) {
+                  await target._fallback();
+                }
+              })
               .catchError((Object _) => target.failure('HDR 显示恢复失败，已保留观看进度')),
         );
       }
     }
   }
+
+  bool _currentDisplaySupportsOutput() =>
+      capabilities.display == _display &&
+      capabilities.supportsHdrSurface(_transfer ?? '');
 
   Future<void> start() => _starting ??= _start();
 
@@ -383,12 +420,12 @@ class NativeHdrAdapter {
         );
         return;
       }
-      final transfers = [
-        if (!_hlgOnly && capabilities.hdr.contains(2)) 'pq',
-        if (capabilities.hdr.contains(3) &&
-            (!_deferHlg || !capabilities.hdr.contains(2)))
-          'hlg',
-      ];
+      final supported = dolbyHdrTransfers(capabilities);
+      final transfers = supported.where(
+        (transfer) => transfer == 'pq'
+            ? !_hlgOnly
+            : !_deferHlg || !supported.contains('pq'),
+      );
       if (transfers.isEmpty) {
         _warmResult('hdr10-unsupported');
         return;
@@ -423,8 +460,8 @@ class NativeHdrAdapter {
             continue;
           }
           final local = OutputCapabilities.parse(surface);
-          if (local.display != capabilities.display ||
-              !local.hdr.contains(transfer == 'pq' ? 2 : 3)) {
+          if (!local.sameDisplayMode(capabilities) ||
+              !local.supportsHdrSurface(transfer)) {
             _warmResult('$transfer-surface-capability');
             continue;
           }
@@ -439,8 +476,8 @@ class NativeHdrAdapter {
           if (!current()) return;
           if (probe?['status'] == 'ready' &&
               _surface?['token'] == surface['token'] &&
-              capabilities.display == local.display &&
-              capabilities.hdr.contains(transfer == 'pq' ? 2 : 3)) {
+              capabilities.sameDisplayMode(local) &&
+              capabilities.supportsHdrSurface(transfer)) {
             _preparedTransfer = transfer;
             _warmReady = surface;
             _warmResult('$transfer-prepared');
@@ -532,7 +569,7 @@ class NativeHdrAdapter {
           selected != 'pq' ||
           _hlgOnly ||
           _deferHlg ||
-          !capabilities.hdr.contains(3) ||
+          !capabilities.supportsHdrSurface('hlg') ||
           clock.elapsed >= budget) {
         return false;
       }
@@ -556,8 +593,8 @@ class NativeHdrAdapter {
         prepared == null ||
         surface == null ||
         surface['token'] != prepared['token'] ||
-        OutputCapabilities.parse(surface).display != capabilities.display ||
-        !capabilities.hdr.contains(_preparedTransfer == 'hlg' ? 3 : 2)) {
+        !OutputCapabilities.parse(surface).sameDisplayMode(capabilities) ||
+        !capabilities.supportsHdrSurface(_preparedTransfer)) {
       cancelWarm();
       return false;
     }
@@ -580,8 +617,8 @@ class NativeHdrAdapter {
         serial != _warmSerial ||
         !active() ||
         _surface?['token'] != _token ||
-        capabilities.display != _display ||
-        !capabilities.hdr.contains(_transfer == 'hlg' ? 3 : 2)) {
+        !capabilities.sameDisplayMode(OutputCapabilities.parse(surface)) ||
+        !_currentDisplaySupportsOutput()) {
       await _fallback(
         retainCandidate:
             !ok &&
@@ -589,7 +626,7 @@ class NativeHdrAdapter {
             active() &&
             serial == _warmSerial &&
             _preparedTransfer == 'pq' &&
-            capabilities.hdr.contains(3),
+            capabilities.supportsHdrSurface('hlg'),
       );
       return false;
     }
@@ -603,8 +640,7 @@ class NativeHdrAdapter {
         !_closed &&
         active() &&
         _surface?['token'] == _token &&
-        capabilities.display == _display &&
-        capabilities.hdr.contains(_transfer == 'hlg' ? 3 : 2)) {
+        _currentDisplaySupportsOutput()) {
       _established = true;
       status = 'dolby-hdr-${_transfer!}-ready';
       message(
@@ -640,11 +676,12 @@ class NativeHdrAdapter {
       return;
     }
     _started = true;
+    final revision = _capabilityRevision;
     try {
       final value = await _channel
           .invokeMapMethod<dynamic, dynamic>('watch', {'owner': owner})
           .timeout(const Duration(milliseconds: 400));
-      if (!_closed && value != null) {
+      if (!_closed && value != null && revision == _capabilityRevision) {
         capabilities = OutputCapabilities.parse(value);
       }
     } catch (_) {
@@ -666,10 +703,7 @@ class NativeHdrAdapter {
     }
     _dolbyPreparing = true;
     try {
-      for (final transfer in [
-        if (capabilities.hdr.contains(2)) 'pq',
-        if (capabilities.hdr.contains(3)) 'hlg',
-      ]) {
+      for (final transfer in dolbyHdrTransfers(capabilities)) {
         if (_closed || !active()) return false;
         _attempted = false;
         final ready = await prepare(transfer);
@@ -691,8 +725,36 @@ class NativeHdrAdapter {
     }
   }
 
+  Future<bool> prepareWithHlgFallback(
+    String transfer, {
+    required Future<bool> Function() current,
+  }) async {
+    if (await prepare(transfer)) return true;
+    if (transfer != 'pq' ||
+        !capabilities.supportsHdrSurface('hlg') ||
+        _closed ||
+        !active() ||
+        !await current()) {
+      return false;
+    }
+    // The rejected window has been released by prepare. Let its removal
+    // reach the platform view before creating a new transfer candidate.
+    _needsReleaseFrame = false;
+    await WidgetsBinding.instance.endOfFrame.timeout(
+      const Duration(milliseconds: 100),
+      onTimeout: () {},
+    );
+    if (_closed || !active() || !await current()) return false;
+    _attempted = false;
+    return prepare('hlg');
+  }
+
   Future<bool> prepare(String transfer) => _run(() async {
     if (_closed || _attempted || !active()) return false;
+    if (!capabilities.supportsHdrSurface(transfer)) {
+      status = 'display-capability';
+      return false;
+    }
     _attempted = true;
     _transfer = transfer;
     Map<dynamic, dynamic>? first;
@@ -722,8 +784,8 @@ class NativeHdrAdapter {
       return false;
     }
     final local = OutputCapabilities.parse(current);
-    if (local.display != capabilities.display ||
-        !local.hdr.contains(transfer == 'pq' ? 2 : 3)) {
+    if (!local.sameDisplayMode(capabilities) ||
+        !local.supportsHdrSurface(transfer)) {
       status = 'display-capability';
       if (!_dolbyPreparing) request.value = null;
       return false;
@@ -774,8 +836,8 @@ class NativeHdrAdapter {
         _closed ||
         !active() ||
         _surface?['token'] != current['token'] ||
-        capabilities.display != local.display ||
-        !capabilities.hdr.contains(transfer == 'pq' ? 2 : 3)) {
+        !capabilities.sameDisplayMode(local) ||
+        !capabilities.supportsHdrSurface(transfer)) {
       if (!_dolbyPreparing) request.value = null;
       return false;
     }
@@ -794,8 +856,8 @@ class NativeHdrAdapter {
         _closed ||
         !active() ||
         _surface?['token'] != current['token'] ||
-        capabilities.display != _display ||
-        !capabilities.hdr.contains(transfer == 'pq' ? 2 : 3)) {
+        !capabilities.sameDisplayMode(local) ||
+        !_currentDisplaySupportsOutput()) {
       await _fallback();
       return false;
     }

@@ -8,6 +8,7 @@ import 'package:yingyu/core/emby.dart';
 import 'package:yingyu/core/models.dart';
 import 'package:yingyu/core/store.dart';
 import 'package:yingyu/playback/device.dart';
+import 'package:yingyu/playback/opening_metadata.dart';
 import 'package:yingyu/playback/page.dart';
 import 'package:yingyu/playback/session.dart';
 import 'core_test.dart' show syntheticSession, response, playbackData;
@@ -25,7 +26,14 @@ class MetadataProbeApi extends EmbyClient {
 }
 
 void main() {
-  for (final scenario in ['device', 'switch', 'denied', 'cancel', 'account']) {
+  for (final scenario in [
+    'device',
+    'switch',
+    'denied',
+    'cancel',
+    'account',
+    'handoff',
+  ]) {
     final switching = scenario == 'switch';
     final pendingDetail = scenario == 'cancel' || scenario == 'account';
     testWidgets(
@@ -115,9 +123,17 @@ void main() {
           store.dispose();
           messenger.setMockMethodCallHandler(Device.channel, null);
         });
+        final initialMetadata = scenario == 'handoff'
+            ? OpeningMetadata.begin(api, '1')
+            : null;
+        if (initialMetadata != null) {
+          await tester.pump();
+          expect(calls.where((call) => call.startsWith('route:')), isEmpty);
+        }
         await tester.pumpWidget(
           MaterialApp(
             home: PlayerPage(
+              initialMetadata: initialMetadata,
               createSession: () => make(featureEpisode('1')),
               createSessionForItem: make,
               allowNetwork: (_) async => scenario != 'denied',
@@ -154,6 +170,9 @@ void main() {
             reason: 'Fresh metadata begins before independent device setup.',
           );
           expect(sessions.last.ready, isTrue);
+          if (initialMetadata != null) {
+            expect(calls.where((call) => call == 'begin:1'), hasLength(1));
+          }
         } else {
           await settle();
           expect(sessions.last.ready, isTrue);

@@ -49,23 +49,46 @@ public static class PlayerSkipCountdown
         state.ExpectedItem=item??Access.Get<string?>(Access.Get<object>(session,"_nextEpisodeCountdown"),"_itemId");
         state.ExpectedUntil=Environment.TickCount64+60000;
     }
-    internal static void PrepareStart(object session,MpvPlayOptions options)
+    internal static double? PrepareStart(object session, MpvPlayOptions options)
     {
-        if(!States.TryGetValue(session,out var state))return;
-        var item=Access.Get<EmbyItem>(session,"_item");
+        if (!States.TryGetValue(session, out var state) || NativeDolby.IsClosing(session)) return null;
+        var item = Access.Get<EmbyItem>(session, "_item");
         state.EnsureMedia();
-        if(state.StartAt>0){options.StartPosition=Math.Max(options.StartPosition??0,state.StartAt);return;}
-        if(state.ExpectedItem!=item.Id||Environment.TickCount64>state.ExpectedUntil)return;
-        state.ExpectedItem=null;
-        if(!item.Type.Equals("Episode",StringComparison.OrdinalIgnoreCase))return;
-        var source=Access.Get<MediaSourceInfo>(session,"_source");
-        var desktop=Access.Get<DesktopLibraryState>(session,"_desktopOptions");
-        var scope=(string)session.GetType().GetProperty("SkipScope",Flags)!.GetValue(session)!;
-        var manual=desktop.Skips.GetValueOrDefault(scope)??new SkipPreference();
-        double duration=(item.RunTimeTicks??0)/10000000d;
-        var intro=PlaybackSkipPolicy.Resolve((source.Chapters??[]).Concat(item.Chapters??[]),manual,duration).IntroEnd;
-        if(intro is >0&&double.IsFinite(intro.Value)&&intro.Value<duration)
-        {state.StartAt=intro.Value;options.StartPosition=Math.Max(options.StartPosition??0,intro.Value);}
+        if (state.StartAt > 0)
+            return state.StartAt > (options.StartPosition ?? 0) ? state.StartAt : null;
+        bool expected = state.ExpectedItem == item.Id && Environment.TickCount64 <= state.ExpectedUntil;
+        state.ExpectedItem = null;
+        if (!expected && !(state.ChangedItem && Access.Get<bool>(session, "_switching"))) return null;
+        var source = Access.Get<MediaSourceInfo>(session, "_source");
+        var desktop = Access.Get<DesktopLibraryState>(session, "_desktopOptions");
+        var scope = (string)session.GetType().GetProperty("SkipScope", Flags)!.GetValue(session)!;
+        var manual = desktop.Skips.GetValueOrDefault(scope) ?? new SkipPreference();
+        var start = SwitchIntroStart(item, source, manual, options.StartPosition);
+        state.StartAt = start ?? 0;
+        return start;
+    }
+
+    internal static void ReleaseStart(object session)
+    {
+        if (States.TryGetValue(session, out var state)) state.StartAt = 0;
+    }
+
+    internal static double? SwitchIntroStart(
+        EmbyItem item, MediaSourceInfo source, SkipPreference manual, double? savedPosition)
+    {
+        if (!EpisodeRequests.IsEpisode(item) || source.IsInfiniteStream == true) return null;
+        double position = savedPosition ?? 0;
+        if (!double.IsFinite(position) || position < 0) return null;
+        if (double.IsFinite(manual.IntroSeconds) && manual.IntroSeconds > 0)
+            return position < manual.IntroSeconds ? manual.IntroSeconds : null;
+
+        var chapters = (source.Chapters ?? []).Concat(item.Chapters ?? []).ToArray();
+        // The loaded edition can differ from the listing or omit its duration.
+        // MPV checks the selected stream before using this candidate.
+        var intro = PlaybackSkipPolicy.Resolve(chapters, new SkipPreference(), double.PositiveInfinity).IntroEnd;
+        double markerStart = (chapters.FirstOrDefault(c => c.MarkerType == "IntroStart")?.StartPositionTicks ?? 0)
+            / (double)TimeSpan.TicksPerSecond;
+        return position >= markerStart && intro is double end && end > position ? end : null;
     }
     public static bool AllowsNext(object session)=>!States.TryGetValue(session,out var state)||!state.CancelledCredits;
     public static bool StartNext(object session,string item)
@@ -101,6 +124,8 @@ public static class PlayerSkipCountdown
         double target;
         bool cancelledIntro,natural,issued;
         internal bool CancelledCredits,ReadyForNext,AutoSeeking;
+        string? itemId;
+        internal bool ChangedItem;
         internal string? ExpectedItem;internal long ExpectedUntil,ReadyUntil;internal double StartAt;
         internal State(object session,FrameworkElement overlay)
         {
@@ -136,7 +161,14 @@ public static class PlayerSkipCountdown
             panel.Margin=new(20,20,24,Access.Get<bool>(overlay,"_controlsVisible")?116:24);PlaceReplay();
         }
         internal void ResetMedia(){StopSkip();HideReplay();replayOffered=false;restarting=false;restart.IsEnabled=true;restartRevision++;generation=Access.Get<int>(session,"_mediaGeneration");StartAt=0;AutoSeeking=false;cancelledIntro=CancelledCredits=ReadyForNext=issued=natural=false;panel.Visibility=Visibility.Collapsed;}
-        internal void EnsureMedia(){if(generation!=Access.Get<int>(session,"_mediaGeneration"))ResetMedia();}
+        internal void EnsureMedia()
+        {
+            if (generation == Access.Get<int>(session, "_mediaGeneration")) return;
+            string next = Access.Get<EmbyItem>(session, "_item").Id;
+            ChangedItem = itemId != null && !string.Equals(itemId, next, StringComparison.Ordinal);
+            itemId = next;
+            ResetMedia();
+        }
         void PlaceReplay()
         {
             if(!overlay.IsLoaded)return;
@@ -151,7 +183,8 @@ public static class PlayerSkipCountdown
                     if(expected!=Access.Get<int>(session,"_mediaGeneration"))return;EnsureMedia();
                     if(replayOffered||!Current||!Access.Get<bool>(session,"_hasStartedPlayback"))return;
                     replayOffered=true;double position=Access.Get<double>(session,"_position");
-                    if(!double.IsFinite(position)||position<3)return;
+                    if (!double.IsFinite(position) || position < 3 ||
+                        StartAt > 0 && Math.Abs(position - StartAt) < 1) return;
                     replayText.Text="当前播放至 "+PlayerInfoData.Clock(position);PlaceReplay();replay.Visibility=Visibility.Visible;replayTimer.Start();
                 }catch(Exception e){PlaybackTransport.Write("Warning","Playback.Skip","续播提示未显示；"+e.GetType().Name);}
             });
@@ -195,7 +228,8 @@ public static class PlayerSkipCountdown
             if(!Current){StopSkip();return;}
             if(natural||restarting)return;
             if(region==null){StopSkip();issued=false;return;}
-            if(region=="intro"&&cancelledIntro||region=="credits"&&CancelledCredits){StopSkip();return;}
+            if (region == "intro" && (cancelledIntro || StartAt > 0) ||
+                region == "credits" && CancelledCredits) { StopSkip(); return; }
             double next=Access.Get<double?>(session,"_skipTarget")!.Value;
             if(phase==region&&Math.Abs(target-next)<.05)return;
             if(issued)return;

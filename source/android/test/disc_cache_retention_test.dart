@@ -29,7 +29,7 @@ void main() {
       expect(cache.tier, 3);
       expect(cache.bytes, 768 * mib);
       expect(cache.options['cache-pause-wait'], '2.00');
-      expect(cache.options['cache-secs'], '180.00');
+      expect(cache.options['cache-secs'], '3600000');
       await tester.pump(const Duration(milliseconds: 1999));
       expect(tiers, isEmpty);
       await tester.pump(const Duration(milliseconds: 1));

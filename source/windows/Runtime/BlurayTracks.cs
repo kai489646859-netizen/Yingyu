@@ -1,4 +1,5 @@
-using System.Globalization;
+using EmbyDesktop.Core.Models;
+using EmbyDesktop.Core.Services;
 using FluentResults;
 using Richasy.MpvKernel.Core;
 using Richasy.MpvKernel.Core.Enums;
@@ -15,8 +16,24 @@ public static class BlurayTracks
         var uri = Access.Get<Uri>(session, "_playbackUri");
         int generation = Access.Get<int>(session, "_mediaGeneration");
         var result = await client.GetTracksAsync().ConfigureAwait(false);
-        if (result.IsFailed || uri.Scheme != "yingyu-bd"
-            || generation != Access.Get<int>(session, "_mediaGeneration")) return result;
+        if (result.IsFailed || generation != Access.Get<int>(session, "_mediaGeneration")) return result;
+        if (uri.Scheme != "yingyu-bd")
+        {
+            try
+            {
+                if (uri.Scheme is "http" or "https" && uri == Access.Get<Uri>(session, "_playbackUri"))
+                {
+                    var source = Access.Get<MediaSourceInfo>(session, "_source");
+                    if (!NetworkIsoMount.IsRemoteIso(source))
+                        AudioLanguageLabels.Supplement(result.Value, source);
+                }
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                PlaybackTransport.Write("Warning", "Playback.Tracks", "音轨语言补充暂不可用；" + error.GetType().Name + "。");
+            }
+            return result;
+        }
         try
         {
             if (PlaybackTransport.Get(client, "stream-open-filename") != uri.ToString()) return result;
@@ -36,7 +53,7 @@ public static class BlurayTracks
                     var audio = result.Value.SingleOrDefault(t => t.Type == MpvTrackType.Audio && t.Id == id);
                     if (audio == null) continue;
                     string? audioLanguage = audio.Language;
-                    if ((string.IsNullOrWhiteSpace(audioLanguage) || audioLanguage == "und")
+                    if (AudioLanguageLabels.Resolve(audioLanguage, null) == AudioLanguageLabels.Unknown
                         && ushort.TryParse(PlaybackTransport.Get(client, path + "src-id"), out ushort audioPid))
                         audioLanguage = DiscAudioLabels.AudioLanguage(uri, audioPid);
                     DiscAudioLabels.Remember(audio, audioLanguage, PlaybackTransport.Get(client, path + "codec"),

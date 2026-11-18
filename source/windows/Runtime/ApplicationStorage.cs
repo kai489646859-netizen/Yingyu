@@ -19,7 +19,13 @@ public static class ApplicationStorage
     }
     static readonly Lazy<string> Root = new(Initialize);
     public static string DataRoot => Root.Value;
-    public static void Prepare() => _ = DataRoot;
+    static int hdrRecoveryStarted;
+    public static void Prepare()
+    {
+        _ = DataRoot;
+        if (Interlocked.Exchange(ref hdrRecoveryStarted, 1) == 0)
+            DolbyHdrFallback.RecoverWindowsHdr();
+    }
     static string Initialize()
     {
         try

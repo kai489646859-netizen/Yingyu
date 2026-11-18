@@ -13,6 +13,14 @@ abstract class ShadowEnhancementBackend {
   });
 }
 
+abstract class PictureEnhancementsBackend {
+  Future<(double, double)> setPictureEnhancements(
+    double brightness,
+    double shadows, {
+    required bool Function() allowed,
+  });
+}
+
 enum ShadowTransfer { bt1886, gamma22, srgb, pq, hlg }
 
 /// Match the pinned renderers' actual OUTPUT hook transfer. Never choose from a
@@ -55,7 +63,9 @@ String shadowShader(
   double picture = 0,
   bool p7Sdr = false,
 }) {
-  if ((!const [0.0, 0.25, 0.5, 0.75].contains(strength)) ||
+  if (!strength.isFinite ||
+      strength < 0 ||
+      strength > 0.75 ||
       (strength == 0 && picture == 0) ||
       !picture.isFinite ||
       picture < 0 ||
@@ -165,7 +175,7 @@ class ShadowEnhancement {
     if (!nextPicture.isFinite || nextPicture < 0 || nextPicture > 15) {
       throw const AppFailure('画面提亮须在 0 到 15 之间');
     }
-    if (!const [0.0, 0.25, 0.5, 0.75].contains(next)) {
+    if (!next.isFinite || next < 0 || next > 0.75) {
       throw const AppFailure('暗部增强强度无效');
     }
     if (value == next &&

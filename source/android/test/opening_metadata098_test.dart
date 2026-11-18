@@ -35,6 +35,43 @@ MediaItem item(String id) => MediaItem({
 
 void main() {
   test(
+    'a fresh browsing detail saves a round trip once for the same item',
+    () async {
+      final source = item('one');
+      final api = DetailApi((_) async => source);
+      addTearDown(api.close);
+      await api.browsingDetail('one');
+      expect(
+        await OpeningMetadata.begin(api, 'one').take(api, 'one'),
+        same(source),
+      );
+      expect(api.calls, 1);
+      expect(
+        await OpeningMetadata.begin(api, 'one').take(api, 'one'),
+        same(source),
+      );
+      expect(api.calls, 2);
+    },
+  );
+
+  test(
+    'browsing detail cannot survive switching accounts or the selected item',
+    () async {
+      final api = DetailApi((id) async => item(id));
+      addTearDown(api.close);
+      await api.browsingDetail('one');
+      api.session = syntheticSession();
+      await OpeningMetadata.begin(api, 'one').take(api, 'one');
+      expect(api.calls, 2);
+      await api.browsingDetail('one');
+      expect(
+        (await OpeningMetadata.begin(api, 'two').take(api, 'two')).id,
+        'two',
+      );
+      expect(api.calls, 4);
+    },
+  );
+  test(
     'one fresh request retains exact metadata including Dolby and resume',
     () async {
       final source = item('one');

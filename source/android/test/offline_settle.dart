@@ -23,3 +23,17 @@ Future<void> settleOffline(WidgetTester tester) async {
   }
   await tester.pumpAndSettle();
 }
+
+// Some actions await throttled network fixtures after the last rendered frame.
+Future<void> settleAction(WidgetTester tester, Future<void> action) async {
+  var done = false;
+  final observed = action.whenComplete(() => done = true);
+  for (var i = 0; i < 120 && !done; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+  expect(done, true, reason: 'Expected the test action to finish');
+  await observed;
+}

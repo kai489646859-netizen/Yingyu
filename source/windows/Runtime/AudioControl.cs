@@ -5,7 +5,7 @@ using Richasy.MpvKernel.Core;
 
 namespace Yingyu.Update;
 
-// Preserve MPV's own audio processing and the original typed property setters.
+// Keep PCM amplification in MPV so its gain and the reported volume agree.
 // Serialize the application's previously independent Task.Run setters; only
 // the explicit control operation reads the current property (no polling).
 public static class AudioControl
@@ -13,7 +13,14 @@ public static class AudioControl
     static readonly ConditionalWeakTable<MpvClient, SerialAudioQueue> Queues = new();
 
     public static Task<Result> Volume(MpvClient client, double value)
-        => Number(client, "volume", "音量", value, 0, 300, () => client.SetVolumeAsync(value));
+        => Number(client, "volume", "音量", value, 0, 300, () =>
+        {
+            if (PlaybackTransport.Set(client,"volume",value.ToString(CultureInfo.InvariantCulture)) < 0
+                || !double.TryParse(PlaybackTransport.Get(client,"volume"),NumberStyles.Float,
+                    CultureInfo.InvariantCulture,out var actual) || !double.IsFinite(actual) || Math.Abs(actual-value) > .001)
+                throw new InvalidOperationException("播放器未确认音量设置。");
+            return Task.FromResult(Result.Ok());
+        });
 
     public static Task<Result> Speed(MpvClient client, double value)
         => Number(client, "speed", "倍速", value, .01, 100, () => client.SetSpeedAsync(value));

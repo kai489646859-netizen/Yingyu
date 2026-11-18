@@ -23,6 +23,8 @@ import 'episode_neighbors.dart';
 import 'episode_menu.dart';
 import 'info.dart';
 import 'feedback.dart';
+import 'playback_report.dart';
+import 'system_media.dart';
 import 'danmaku_sources.dart';
 import 'danmaku_overlay.dart';
 import 'danmaku_settings.dart';
@@ -45,6 +47,7 @@ class PlayerPage extends StatefulWidget {
     super.key,
     required this.createSession,
     this.fromBeginning = false,
+    this.initialMetadata,
     this.createSessionForItem,
     this.browse,
     this.allowNetwork,
@@ -53,6 +56,7 @@ class PlayerPage extends StatefulWidget {
   });
   final PlaybackSession Function() createSession;
   final bool fromBeginning;
+  final OpeningMetadata? initialMetadata;
   final PlaybackSession Function(MediaItem)? createSessionForItem;
   final BrowseRepository? browse;
   final Future<bool> Function(BuildContext)? allowNetwork;
@@ -127,6 +131,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   final _awake = PlayerAwake();
+  final _systemMedia = SystemMedia();
+  bool _systemInput = true;
+  bool _systemDismissed = false;
+  int _mediaTransport = 0;
+  DateTime _reportStart = DateTime.now();
   final _positionRefresh = ValueNotifier<Duration>(Duration.zero);
   Object? _builtState;
 
@@ -287,6 +296,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   double brightness = .5, volume = .5;
+  int _brightnessEdits = 0, _volumeEdits = 0;
   Duration? scrub;
   Duration dragStart = Duration.zero;
   double dragDx = 0, dragDy = 0, levelStart = .5;
@@ -325,8 +335,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     setState(() {
       scrub = null;
       if (leftSide) {
+        _brightnessEdits++;
         brightness = value;
       } else {
+        _volumeEdits++;
         volume = value;
       }
       overlay = leftSide ? 'brightness-level' : 'volume-level';
@@ -591,6 +603,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         switching = false;
         switchingNext = false;
       });
+      _publishMedia();
     }
   }
 
@@ -611,6 +624,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _systemMedia.bind(_mediaCommand);
     PlaybackNetworkRoutes.shared.beginObservation();
     WidgetsBinding.instance.addObserver(this);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -666,7 +680,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     orientationReady = orientation.enter().catchError((Object error) {
       if (mounted) setState(() => operationError = safeError(error));
     });
-    start();
+    start(metadata: widget.initialMetadata);
     final events =
         widget.networkEvents ??
         (Platform.isAndroid
@@ -694,6 +708,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               : widget.createSessionForItem!(selectedEpisode!))
           ..addListener(changed);
     final owner = session;
+    _systemMedia.renew();
+    _systemDismissed = false;
+    _reportStart = DateTime.now();
     _networkRecovery?.close();
     _networkRecovery = NetworkPlaybackRecovery(
       eligible: () =>
@@ -745,8 +762,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         return;
       }
       if (!mounted || exiting || owner.closed || session != owner) return;
-      // Read only fresh metadata while independent device preparation runs.
-      // No source/PlaybackInfo request starts until the original checks finish.
+      // Read fresh metadata during audio focus. Source negotiation follows
+      // network permission and the focus decision.
       metadata ??= OpeningMetadata.begin(owner.api, owner.item.id);
       if (_openingMetadata != metadata) _openingMetadata?.cancel();
       _openingMetadata = metadata;
@@ -756,39 +773,48 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (audioDucked && duckBackend is PlaybackDuckingBackend) {
         await (duckBackend as PlaybackDuckingBackend).setAudioDucked(true);
       }
-      final levels = await Device.levels();
-      owner.api.log?.add(
-        LogArea.player,
-        '进入播放器亮度：${Device.brightnessDescription(levels)}',
-      );
-      brightness = (levels['brightness'] as num).toDouble();
-      volume = (levels['volume'] as num).toDouble();
-      if (!mounted || exiting || owner.closed || session != owner) return;
-      if (owner.backend is MpvBackend) {
-        await orientationReady;
-        if (!mounted || exiting || owner.closed || session != owner) return;
-        if (orientation.phone) {
-          final display = View.of(context).display;
-          await (owner.backend as MpvBackend).configurePhoneViewport(
-            display.size.longestSide.round(),
-            display.size.shortestSide.round(),
-          );
-        } else {
-          final viewport = View.of(context).physicalSize;
-          await (owner.backend as MpvBackend).configureScreenViewport(
-            viewport.width.round(),
-            viewport.height.round(),
-          );
+      bool current() =>
+          mounted &&
+          !exiting &&
+          !owner.closed &&
+          owner.error == null &&
+          session == owner &&
+          owner.api.session == owner.account;
+      Future<bool> prepareVideo() async {
+        if (!current()) throw const AppFailure('播放准备已取消');
+        final backend = owner.backend;
+        if (backend is MpvBackend) {
+          backend.observeOpeningDisplay();
+          await orientationReady;
+          if (!mounted || !current()) throw const AppFailure('播放准备已取消');
+          if (orientation.phone) {
+            final display = View.of(context).display;
+            await backend.configurePhoneViewport(
+              display.size.longestSide.round(),
+              display.size.shortestSide.round(),
+            );
+          } else {
+            final viewport = View.of(context).physicalSize;
+            await backend.configureScreenViewport(
+              viewport.width.round(),
+              viewport.height.round(),
+            );
+          }
         }
+        if (!current()) throw const AppFailure('播放准备已取消');
+        return orientation.phone;
       }
+
       if (!mounted || exiting || owner.closed || session != owner) return;
-      owner.configureSubtitleViewport(phone: orientation.phone);
-      await owner.open(
+      final opening = owner.open(
         metadata: metadata,
+        prepareVideo: prepareVideo,
         continuity: continuity,
         fromBeginning:
             fromBeginning ?? (selectedEpisode == null && widget.fromBeginning),
       );
+      unawaited(_readGestureLevels(owner));
+      await opening;
       if (!mounted || exiting || owner.closed || session != owner) return;
       if (session.ready) {
         unawaited(loadNeighbors(session));
@@ -818,6 +844,35 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _readGestureLevels(PlaybackSession owner) async {
+    final brightnessEdits = _brightnessEdits, volumeEdits = _volumeEdits;
+    try {
+      final levels = await Device.levels().timeout(
+        const Duration(milliseconds: 600),
+      );
+      if (!mounted || exiting || owner.closed || session != owner) return;
+      final windowLevel = levels['brightness'], deviceVolume = levels['volume'];
+      if (_brightnessEdits == brightnessEdits &&
+          !(_levelDragActive && leftSide) &&
+          windowLevel is num &&
+          windowLevel.isFinite) {
+        brightness = windowLevel.toDouble().clamp(0.0, 1.0);
+      }
+      if (_volumeEdits == volumeEdits &&
+          !(_levelDragActive && !leftSide) &&
+          deviceVolume is num &&
+          deviceVolume.isFinite) {
+        volume = deviceVolume.toDouble().clamp(0.0, 1.0);
+      }
+      owner.api.log?.add(
+        LogArea.player,
+        '进入播放器亮度：${Device.brightnessDescription(levels)}',
+      );
+    } catch (_) {
+      // The HUD can retain its current values if the device read is unavailable.
+    }
+  }
+
   Future<void> recordBrightness(PlaybackSession owner, String stage) async {
     if (owner.api.log?.enabled != true) return;
     try {
@@ -840,6 +895,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   );
   void changed() {
     if (!mounted) return;
+    _publishMedia();
     if (session.seeking ||
         session.background ||
         !session.backend.snapshot.playing) {
@@ -905,6 +961,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   Future<void> toggle() async {
     if (locked || !_playbackInteractive) return;
+    _mediaTransport++;
+    _systemDismissed = false;
     if (!session.backend.snapshot.playing) {
       if (!await Device.focus()) throw const AppFailure('暂时无法取得音频播放权限');
       session.foreground();
@@ -913,9 +971,104 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     scheduleHide();
   }
 
+  Future<void> _setSystemPlaying(bool playing) async {
+    final request = ++_mediaTransport;
+    final owner = session;
+    if (!_playbackInteractive || owner.backend.snapshot.playing == playing) {
+      return;
+    }
+    if (playing) {
+      if (!await Device.focus()) throw const AppFailure('暂时无法取得音频播放权限');
+      if (!mounted ||
+          session != owner ||
+          request != _mediaTransport ||
+          !_playbackInteractive ||
+          !_systemInput ||
+          owner.backend.snapshot.playing) {
+        return;
+      }
+      owner.foreground();
+    }
+    await owner.toggle();
+    scheduleHide();
+  }
+
+  void _publishMedia() {
+    if (!Platform.isAndroid) return;
+    if (!_playbackInteractive || session.completed || _systemDismissed) {
+      _systemMedia.clear();
+      return;
+    }
+    final state = session.backend.snapshot;
+    _systemMedia.update(
+      title: session.item.title,
+      mode: !_systemInput || !state.playing
+          ? 'paused'
+          : state.buffering
+          ? 'buffering'
+          : 'playing',
+      position: session.position,
+      duration: state.duration,
+      speed: session.speed,
+      interactive: _systemInput,
+    );
+  }
+
+  Future<void> _mediaCommand(MethodCall call) async {
+    final args = call.arguments;
+    if (call.method != 'command' ||
+        args is! Map ||
+        args['owner'] != _systemMedia.owner ||
+        !mounted ||
+        !_playbackInteractive ||
+        session.completed ||
+        session.api.session != session.account) {
+      return;
+    }
+    final command = args['command'];
+    if (command == 'stop') {
+      // System stop follows the same progress-saving path as closing the player.
+      if (_systemInput && (ModalRoute.of(context)?.isCurrent ?? true)) {
+        await leave();
+      } else {
+        _systemDismissed = true;
+        await act(() => _setSystemPlaying(false));
+        _systemMedia.clear();
+      }
+    } else if (_systemInput && !session.background) {
+      switch (command) {
+        case 'play':
+          await act(() => _setSystemPlaying(true));
+        case 'pause':
+          await act(() => _setSystemPlaying(false));
+        case 'seek':
+          final position = args['position'];
+          final duration = session.backend.snapshot.duration.inMilliseconds;
+          if (position is int && duration > 0) {
+            await act(
+              () => session.seek(
+                Duration(milliseconds: position.clamp(0, duration)),
+                source: SeekSource.menu,
+              ),
+            );
+          }
+      }
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     foreground = state == AppLifecycleState.resumed;
+    // Opening the shade makes the activity inactive without backgrounding video.
+    if (foreground) {
+      _systemInput = true;
+      _systemDismissed = false;
+    }
+    if (state != AppLifecycleState.inactive && !foreground) {
+      _systemInput = false;
+      _mediaTransport++;
+    }
+    _publishMedia();
     if (state == AppLifecycleState.inactive) {
       // Notification shade and side panels only take input focus. Stop the
       // hidden status work and release a held gesture, keeping playback intact.
@@ -1008,7 +1161,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await old.close();
       if (!mounted || exiting) return;
       old.dispose();
-      await start(fromBeginning: fromBeginning);
+      await start(
+        fromBeginning: fromBeginning,
+        automatic: fromBeginning != true && old.skipOpeningIntro,
+      );
     } catch (e) {
       if (mounted && !exiting) setState(() => operationError = safeError(e));
     } finally {
@@ -1083,6 +1239,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       exiting = true;
       locked = unlockVisible = false;
     });
+    _systemMedia.clear();
     final directionStarted = DateTime.now();
     Object? directionFailure;
     final directionRestored = orientation.release().catchError((Object error) {
@@ -1135,6 +1292,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _systemMedia.dispose();
     _transportFeedbackTimer?.cancel();
     if (_danmakuSaveTimer != null) _saveDanmaku();
     _danmakuStatus.dispose();
@@ -1167,6 +1325,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  Future<void> _showPlaybackReport() async {
+    final report = PlaybackReport(
+      log: session.store.log,
+      started: _reportStart,
+      title: session.item.title,
+      position: session.position,
+    );
+    await showSurface<void>(context, (_) => PlaybackReportPage(report: report));
+  }
+
   Future<void> playerMenu([String pane = 'root']) async {
     if (locked) return;
     if (pane == 'rate' && !session.canChangeSpeed) return;
@@ -1194,6 +1362,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     setState(() => controls = true);
     if (chosen != null) {
       switch (chosen.pane) {
+        case 'report':
+          await _showPlaybackReport();
         case 'danmaku':
           await _showDanmakuSettings();
         case 'subtitleSize':
@@ -1701,6 +1871,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                                 session.error!,
                                 retry: exiting ? null : retry,
                               ),
+                              if (!exiting)
+                                TextButton(
+                                  onPressed: _showPlaybackReport,
+                                  child: const Text('反馈播放问题'),
+                                ),
                               if (!exiting &&
                                   session.route != null &&
                                   session.backend is DiscNavigationBackend)

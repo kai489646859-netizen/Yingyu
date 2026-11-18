@@ -8,11 +8,11 @@ import 'package:yingyu/playback/cache_policy.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test(
-    'upgrades default to no retained playback cache and ask before mobile playback',
+    'unset cache budget defaults to 5 GB and mobile playback still requires consent',
     () async {
       SharedPreferences.setMockInitialValues({'yingyu.images.gb.v1': 10});
       final store = AppStore(await SharedPreferences.getInstance());
-      expect(store.playbackCacheGB, 0);
+      expect(store.playbackCacheGB, 5);
       expect(store.allowMobilePlayback, false);
       expect(playbackCacheChoices.keys, [0, 2, 5, 10, 20, 50, -1]);
       await store.setAllowMobilePlayback(true);

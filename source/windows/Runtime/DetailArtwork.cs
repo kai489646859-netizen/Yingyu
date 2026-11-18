@@ -138,8 +138,6 @@ public static class DetailArtwork
             var sizes = ArtworkRequestSizePolicy.Resolve(size);
             var poster = Access.Get<Image>(page, "DetailPosterImage");
             var backdrop = Access.Get<Image>(page, "DetailBackdropImage");
-            // Load only an advertised backdrop required by the current presentation.
-            bool backgroundRequested=ReferenceAppearance.WantsDetailBackground((FrameworkElement)page)&&AndroidCacheCards.DetailBackgroundCandidates(page,item).Count>0;
             async Task LoadPrimary()
             {
                 if(!Current()||Ready(poster))return;
@@ -159,29 +157,40 @@ public static class DetailArtwork
             var primary=LoadPrimary();States.GetValue(page,_=>new()).Primary=primary;
             async Task LoadBackground()
             {
-                if(!backgroundRequested||!Current()||Ready(backdrop))return;
-                try
+                if(owner is null||!ReferenceAppearance.WantsDetailBackground((FrameworkElement)page))return;
+                var cache=Access.Get<PosterCacheService>(page,"_posterCache");
+                for(int retry=0;Current()&&!Ready(backdrop);retry++)
                 {
-                    // Cache reads run beside primary reads/downloads. Only a
-                    // misses share the bounded scheduler without serial dependency.
-                    var cached=await AndroidCacheCards.CachedDetailBackground(page,item,token);
-                    if(!Current())return;
-                    if(cached!=null){backdrop.Source=cached;return;}
-                    // Independent interactive work joins the original two-slot
-                    // scheduler; a stalled primary must not hold the other slot idle.
-                    foreach(var candidate in AndroidCacheCards.DetailBackgroundCandidates(page,item)){
+                    try
+                    {
+                        var cached=await AndroidCacheCards.CachedDetailBackground(page,item,token);
                         if(!Current())return;
-                        var image=await AndroidCacheCards.Bitmap(page,item,candidate.ImageType,sizes.DetailBackdropWidth,token,candidate.ItemId,candidate.ImageTag,
-                            PosterFetchPriority.Interactive,PosterCacheRetention.Detail,RequestCurrent,null);
-                        if(!Current())return;
-                        if(image is {PixelWidth:>0,PixelHeight:>0}&&ResumeArtwork.IsLandscape(image.PixelWidth,image.PixelHeight)){backdrop.Source=image;break;}
+                        if(cached!=null){backdrop.Source=cached;return;}
+                        if(AndroidCacheRuntime.IsPaused)return;
+                        foreach(var candidate in AndroidCacheCards.DetailBackgroundCandidates(page,item))
+                        {
+                            if(!Current())return;
+                            var image=await AndroidCacheCards.Bitmap(page,item,candidate.ImageType,sizes.DetailBackdropWidth,token,candidate.ItemId,candidate.ImageTag,
+                                PosterFetchPriority.Interactive,PosterCacheRetention.Detail,RequestCurrent,null);
+                            if(!Current())return;
+                            if(image is {PixelWidth:>0,PixelHeight:>0}&&ResumeArtwork.IsLandscape(image.PixelWidth,image.PixelHeight))
+                            {backdrop.Source=image;return;}
+                        }
                     }
+                    catch(OperationCanceledException){return;}
+                    catch(Exception error){PlaybackTransport.Write("Warning","Poster.Detail","详情背景独立加载未完成；"+error.GetType().Name);}
+
+                    if(!Current()||AndroidCacheRuntime.IsPaused)return;
+                    Access.Set(page,"_detailBackdropUnavailable",true);
+                    var delay=LandscapeRecovery.Delay(retry,cache.GetServerRetryDelay(owner.ServerId));
+                    if(delay<=TimeSpan.Zero)return;
+                    await Task.Delay(delay,token);
                 }
-                catch(OperationCanceledException){}
-                catch(Exception error){PlaybackTransport.Write("Warning","Poster.Detail","详情背景独立加载未完成；"+error.GetType().Name);}
             }
             await Task.WhenAll(primary,LoadBackground());
             if (!Current()) return;
+            bool backgroundRequested=ReferenceAppearance.WantsDetailBackground((FrameworkElement)page)
+                &&AndroidCacheCards.DetailBackgroundCandidates(page,item).Count>0;
             Access.Set(page, "_detailBackdropUnavailable", backgroundRequested&&!Ready(backdrop));
             EnsureSurface(page);
             Access.Call(page, "UpdateDetailExperienceLayout");

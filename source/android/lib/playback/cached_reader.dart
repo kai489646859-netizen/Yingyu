@@ -4,6 +4,7 @@ import 'dart:io' show HttpDate;
 import 'dart:typed_data';
 import '../core/models.dart';
 import 'byte_cache.dart';
+import 'cache_policy.dart';
 import 'disc_cache.dart';
 import 'disc_stream.dart';
 
@@ -14,11 +15,15 @@ class CachedMediaReader {
     required this.open,
     required this.cache,
     required this.scope,
-  });
+    this.deferDiskUntilPlayback = false,
+  }) : _diskActivated = !deferDiskUntilPlayback;
   final DiscStreamOpen open;
   final PlaybackByteCache cache;
   final String scope;
-  static const blockBytes = 256 * 1024;
+  final bool deferDiskUntilPlayback;
+  bool _diskActivated;
+  Future<void>? _foregroundWrite;
+  static const blockBytes = playbackCacheBlockBytes;
   late final _reader = DiscStreamReader(_open);
   DiscStreamSource? _seed;
   Future<void>? _initializing;
@@ -97,12 +102,20 @@ class CachedMediaReader {
   }
 
   void configureAhead(int bytes) {
-    aheadBytes = cache.limitBytes > 0
-        ? math.min(bytes, (cache.limitBytes * .9).floor())
-        : bytes;
+    final wasEnabled = _enabled;
+    _diskActivated = true;
+    aheadBytes = bytes;
     _enabled = true;
-    _speculationFailed = false;
+    if (!wasEnabled) _speculationFailed = false;
     _warm();
+  }
+
+  int get _aheadEnd {
+    final limit = cache.limitBytes;
+    final capacity = limit < 0
+        ? aheadBytes
+        : limit ~/ (blockBytes + playbackCacheHeaderBytes) * blockBytes;
+    return math.min(total, cursor + math.min(aheadBytes, capacity));
   }
 
   void suspend() {
@@ -129,10 +142,19 @@ class CachedMediaReader {
     DiscReadCancellation? owner,
   }) async {
     if (_closed) throw const AppFailure('播放已退出');
-    if (_hot[start] case final hit?) return hit;
-    final identity = _identity;
+    final identity = _diskActivated ? _identity : null;
+    if (_hot[start] case final hit?) {
+      if (!deferDiskUntilPlayback &&
+          speculative &&
+          identity != null &&
+          !cache.contains(identity, start)) {
+        await _save(identity, start, hit.bytes);
+      }
+      return hit;
+    }
     final size = math.min(blockBytes, total - start);
-    if (identity != null) {
+    if (identity != null &&
+        (!deferDiskUntilPlayback || cache.contains(identity, start))) {
       final bytes = await cache.read(identity, start, size);
       if (bytes != null) {
         _seed?.close(false);
@@ -175,10 +197,17 @@ class CachedMediaReader {
           _hot.remove(_hot.keys.first);
         }
         if (identity != null) {
-          try {
-            await cache.write(identity, start, result.bytes);
-          } catch (_) {
-            cache.warning = '播放缓存暂不可写，继续直接播放';
+          if (!deferDiskUntilPlayback) {
+            await _save(identity, start, result.bytes);
+          } else if (!speculative && _enabled && _foregroundWrite == null) {
+            // Keep at most one pending demand write. Read-ahead owns the next
+            // uncached block if storage cannot keep up with playback.
+            final write = _foregroundWrite = _save(
+              identity,
+              start,
+              result.bytes,
+            ).whenComplete(() => _foregroundWrite = null);
+            unawaited(write);
           }
         }
       }
@@ -202,6 +231,14 @@ class CachedMediaReader {
     }
   }
 
+  Future<void> _save(String identity, int start, Uint8List bytes) async {
+    try {
+      await cache.write(identity, start, bytes);
+    } catch (_) {
+      cache.warning = '播放缓存暂不可写，继续直接播放';
+    }
+  }
+
   Future<Uint8List> read(
     int start,
     int length,
@@ -218,6 +255,7 @@ class CachedMediaReader {
     if ((first - cursor).abs() > blockBytes * 4) {
       _epoch++;
       _warmedUntil = first;
+      _speculationFailed = false;
       if (_activeSpeculative) _active?.cancel();
     }
     cursor = first;
@@ -242,9 +280,8 @@ class CachedMediaReader {
 
   void _protect() {
     final identity = _identity;
-    if (identity == null) return;
-    final end = math.min(total, cursor + aheadBytes);
-    cache.protectRange(identity, cursor, end);
+    if (identity == null || !_enabled) return;
+    cache.protectRange(identity, cursor, _aheadEnd);
   }
 
   void _warm() {
@@ -263,20 +300,26 @@ class CachedMediaReader {
     final epoch = _epoch;
     unawaited(() async {
       try {
-        var at = math.max(cursor, _warmedUntil);
+        var at = math.max(cursor, _warmedUntil), cachedBlocks = 0;
         _protect();
-        while (!_closed &&
-            _enabled &&
-            epoch == _epoch &&
-            at < math.min(total, cursor + aheadBytes)) {
+        while (!_closed && _enabled && epoch == _epoch && at < _aheadEnd) {
+          if (at < cursor) at = cursor;
           if (!cache.contains(_identity!, at)) {
-            await _block(at, speculative: true);
+            final block = await _block(at, speculative: true);
+            if (_closed || !_enabled || epoch != _epoch) break;
+            if (deferDiskUntilPlayback && !cache.contains(_identity!, at)) {
+              await _save(_identity!, at, block.bytes);
+            }
+            cachedBlocks = 0;
+          } else if (++cachedBlocks == 64) {
+            // Network and disk reads already yield. Only a scan of cached
+            // offsets needs to give the event loop an opportunity to run.
+            cachedBlocks = 0;
+            await Future<void>.delayed(Duration.zero);
           }
-          if (cache.warning != null) break;
+          if (cache.warning != null || !cache.contains(_identity!, at)) break;
           at += blockBytes;
           if (epoch == _epoch) _warmedUntil = at;
-          // Let an incoming demand or seek run before the next speculative read.
-          await Future<void>.delayed(Duration.zero);
         }
       } catch (_) {
         if (epoch == _epoch && !_closed) _speculationFailed = true;
@@ -292,6 +335,7 @@ class CachedMediaReader {
     _closed = true;
     suspend();
     await _reader.close();
+    await _foregroundWrite;
     if (_identity != null) cache.release(_identity);
   }
 }

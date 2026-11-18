@@ -12,3 +12,12 @@ class ServerResumeItem extends MediaItem {
           'UserData': {...object(item.data['UserData'])},
       });
 }
+
+/// A display row backed by this account's server history or natural-end receipt.
+class CompletedResumeItem extends MediaItem {
+  CompletedResumeItem(MediaItem item) : super(item.data);
+}
+
+class NextResumeItem extends ServerResumeItem {
+  NextResumeItem(super.item);
+}

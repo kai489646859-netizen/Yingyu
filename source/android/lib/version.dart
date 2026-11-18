@@ -1,4 +1,4 @@
-const appVersion = '2.2.4';
-const androidVersionCode = 253;
-const diagnosticBuild = '20261105-danmaku222-code$androidVersionCode';
+const appVersion = '2.6.5';
+const androidVersionCode = 294;
+const diagnosticBuild = '20261118-release265-code$androidVersionCode';
 const playbackUserAgent = 'Yingyu/$appVersion';

@@ -171,6 +171,17 @@ public static class AndroidCacheImages
                 pending=(Task<HttpResponseMessage>)Access.Call(cache,"SendWithRedirectsAsync",compatible,abort.Token)!;
                 response=claimed=await pending.WaitAsync(TimeSpan.FromSeconds(12),token).ConfigureAwait(false);
             }
+            // A proxy or server can reject both resized encodings. Try the same
+            // advertised wide artwork once without image transformation.
+            if(response.StatusCode==HttpStatusCode.UnsupportedMediaType
+                &&LandscapeRecovery.Original(source) is {} original
+                &&!token.IsCancellationRequested&&needed?.Invoke()!=false)
+            {
+                response.Dispose();claimed=null;
+                ImageLoadDiagnostics.Record("original-fallback",started,415);
+                pending=(Task<HttpResponseMessage>)Access.Call(cache,"SendWithRedirectsAsync",original,abort.Token)!;
+                response=claimed=await pending.WaitAsync(TimeSpan.FromSeconds(12),token).ConfigureAwait(false);
+            }
             using var ownedResponse=response;
             status=(int)response.StatusCode;ImageLoadDiagnostics.Record("response-headers",started,status);
             if (!response.IsSuccessStatusCode)
