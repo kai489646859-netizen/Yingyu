@@ -8,7 +8,7 @@ import urllib.request
 
 
 REQUIRED = {
-    "android-v2.6.6-windows-v1.7.4": {
+    "android-v2.6.6": {
         "Yingyu-2.6.6.apk",
         "Yingyu-Setup-x64-1.7.4.exe",
         "SHA256SUMS.txt",

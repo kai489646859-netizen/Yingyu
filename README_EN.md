@@ -4,8 +4,8 @@ Yingyu is an independent Android and Windows client for user-provided Emby media
 
 | Platform | Current release | Requirement | Download |
 | --- | --- | --- | --- |
-| Android | 2.6.6 / code295 | Android 8.0+ | [2.6.6 APK](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-v2.6.6-windows-v1.7.4/Yingyu-2.6.6.apk) |
-| Windows | 1.7.4 | Windows 10/11 x64 | [1.7.4 EXE](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-v2.6.6-windows-v1.7.4/Yingyu-Setup-x64-1.7.4.exe) |
+| Android | 2.6.6 / code295 | Android 8.0+ | [2.6.6 APK](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-v2.6.6/Yingyu-2.6.6.apk) |
+| Windows | 1.7.4 | Windows 10/11 x64 | [1.7.4 EXE](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-v2.6.6/Yingyu-Setup-x64-1.7.4.exe) |
 
 Both platforms have real-hardware usage history. The exact validation scope of each final build is documented in its release. Compatibility can still vary with the server, reverse proxy, network, media, decoder, GPU driver, refresh rate and display.
 
