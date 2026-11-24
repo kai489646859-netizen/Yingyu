@@ -16,7 +16,7 @@ Both platforms have real-hardware usage history. The exact validation scope of e
 - Built-in mpv original-file playback, seeking, speed, chapters, audio and subtitles.
 - STRM, redirect/reverse-proxy and ISO/BDMV playlist/title compatibility within documented boundaries.
 - Android phone/tablet layouts and touch gestures; Windows desktop window, mouse and keyboard interaction.
-- Redacted diagnostic logs, matching source archives, debugging symbols and SHA-256 files for releases.
+- Redacted diagnostic logs and SHA-256 checksums for downloads.
 
 ## Important boundaries
 
