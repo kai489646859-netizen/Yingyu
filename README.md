@@ -5,8 +5,8 @@
   <p>原文件播放 · 媒体库管理 · 多账号 · 观看进度 · 手机/平板/桌面适配</p>
   <p><a href="README_EN.md">English</a></p>
   <p>
-    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.6.5"><img src="https://img.shields.io/badge/Android-2.6.5-19A974?style=for-the-badge&logo=android" alt="Android 2.6.5"></a>
-    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.7.1"><img src="https://img.shields.io/badge/Windows-1.7.1-0078D4?style=for-the-badge&logo=windows11" alt="Windows 1.7.1"></a>
+    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.6.6-windows-v1.7.4"><img src="https://img.shields.io/badge/Android-2.6.6-19A974?style=for-the-badge&logo=android" alt="Android 2.6.6"></a>
+    <a href="https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.6.6-windows-v1.7.4"><img src="https://img.shields.io/badge/Windows-1.7.4-0078D4?style=for-the-badge&logo=windows11" alt="Windows 1.7.4"></a>
     <a href="https://github.com/kai489646859-netizen/Yingyu/releases"><img src="https://img.shields.io/github/downloads/kai489646859-netizen/Yingyu/total?style=for-the-badge&logo=github&label=Downloads" alt="GitHub 下载量"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue?style=for-the-badge" alt="GPL-3.0"></a>
   </p>
@@ -21,8 +21,8 @@
 
 | 平台 | 当前公开版本 | 安装要求 | 下载 |
 | --- | --- | --- | --- |
-| Android | **2.6.5 / code294** | Android 8.0+ | [Android 2.6.5](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.6.5) |
-| Windows | **1.7.1** | Windows 10/11 x64 | [Windows 1.7.1](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.7.1) |
+| Android | **2.6.6 / code295** | Android 8.0+ | [2.6.6 APK](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-v2.6.6-windows-v1.7.4/Yingyu-2.6.6.apk) |
+| Windows | **1.7.4** | Windows 10/11 x64 | [1.7.4 EXE](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-v2.6.6-windows-v1.7.4/Yingyu-Setup-x64-1.7.4.exe) |
 
 ## 主要功能
 
@@ -39,7 +39,7 @@
 
 ## 最新版本摘要
 
-### Android 2.6.5
+### Android 2.6.6
 
 - 首页与“查看全部”统一显示继续观看进度；缺少总时长时保留已观看时间，并修复窄屏分集卡片标签溢出。
 - HDR 输出按实际片源和屏幕能力选择：SDR 保持 SDR，HDR10/HLG 优先同类输出，杜比兼容转换按可用路径回退。
@@ -49,7 +49,7 @@
 
 完整累计变化见 [Android 更新历史](CHANGELOG-Android.md)。
 
-### Windows 1.7.1
+### Windows 1.7.4
 
 - 切换分集时可直接从已设置的片头结束位置开始；首页继续观看补足同集时长，换服务器后精选封面按当前账号重新加载。
 - 继续观看合并续播、已看和待播放记录；完善完成状态、进度条、刷新回退以及本机待同步恢复。
@@ -63,17 +63,17 @@
 
 ### Android
 
-在 [Android 2.6.5 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.6.5) 下载 `Yingyu-2.6.5.apk`。2.2.5 及之后版本可直接覆盖安装，**不要先卸载**。2.2.4 及更早公开版使用不同应用身份和签名，会与当前版共存，不能直接覆盖。
+在 [Android 2.6.6 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.6.6-windows-v1.7.4) 下载 `Yingyu-2.6.6.apk`。2.2.5 及之后版本可直接覆盖安装，**不要先卸载**。2.2.4 及更早公开版使用不同应用身份和签名，会与当前版共存，不能直接覆盖。
 
 ### Windows
 
-在 [Windows 1.7.1 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/windows-v1.7.1) 下载 `Yingyu-Setup-x64-1.7.1.exe`。关闭正在运行的映屿后覆盖安装；安装程序沿用既有应用身份和目录，不要求卸载旧版或清空个人数据。安装包当前未使用代码签名，Windows 可能显示“未知发布者”。
+在 [Windows 1.7.4 发布页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-v2.6.6-windows-v1.7.4) 下载 `Yingyu-Setup-x64-1.7.4.exe`。关闭正在运行的映屿后覆盖安装；安装程序沿用既有应用身份和目录，不要求卸载旧版或清空个人数据。安装包当前未使用代码签名，Windows 可能显示“未知发布者”。
 
 每个发布页同时提供与二进制对应的源码归档、调试符号、SHA-256 校验文件，以及累计更新说明和测试结果。
 
 ```powershell
-Get-FileHash .\Yingyu-2.6.5.apk -Algorithm SHA256
-Get-FileHash .\Yingyu-Setup-x64-1.7.1.exe -Algorithm SHA256
+Get-FileHash .\Yingyu-2.6.6.apk -Algorithm SHA256
+Get-FileHash .\Yingyu-Setup-x64-1.7.4.exe -Algorithm SHA256
 ```
 
 ## 快速开始
