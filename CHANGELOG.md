@@ -1,4 +1,4 @@
-# Yingyu-Theater 更新记录
+# Yingyu 更新记录
 
 ## 0.0.2
 
@@ -6,7 +6,7 @@
 - Windows 新增独立「放映厅」布局。首页优先显示 Emby 影片徽标，缺图时回退到文字，并显示当前片源的 HDR、杜比视界或 SDR 格式。
 - 双端整体亮度调整上限统一为 100%。Windows 在实际输出为 SDR 时开放画质预设，包括 HDR 或杜比片源转 SDR；改善转 SDR 时的暗阶和中间调，右键影视参数显示当前输出。
 
-[发行页](https://github.com/kai489646859-netizen/Yingyu-Theater/releases/tag/android-formal-v0.0.2)
+[发行页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-formal-v0.0.2)
 
 ## 0.0.1
 
@@ -28,4 +28,4 @@
 - 修复 Android 切换音轨后待执行播放丢失、缓冲或暂停时误判音频停滞、部分长播音画差累积，以及调整弹幕设置时在途弹幕重复生成。
 - 修复 Windows 部分 SDR 片源偏暗、切换画质时增强失效，以及播放时钟停滞、关闭播放器时资源释放、进度条焦点和鼠标光标恢复问题。
 
-[发行页](https://github.com/kai489646859-netizen/Yingyu-Theater/releases/tag/android-formal-v0.0.1)
+[发行页](https://github.com/kai489646859-netizen/Yingyu/releases/tag/android-formal-v0.0.1)

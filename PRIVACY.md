@@ -1,10 +1,10 @@
 # Privacy
 
-Yingyu-Theater is a third-party client for a server chosen by the user. It does not provide an Emby account, server or media library.
+Yingyu is a third-party client for a server chosen by the user. It does not provide an Emby account, server or media library.
 
 ## Data handled by the application
 
-Depending on the platform and enabled features, Yingyu-Theater may store locally:
+Depending on the platform and enabled features, Yingyu may store locally:
 
 - server address and account/session information required to reconnect;
 - application settings, theme and playback preferences;
