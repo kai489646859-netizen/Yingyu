@@ -4,7 +4,7 @@
   <p>面向 Android 和 Windows 的第三方 Emby 媒体播放器</p>
 </div>
 
-[下载软件](#下载) · [更新日志](CHANGELOG.md) · [使用说明](#使用说明) · [免责声明](#免责声明) · [English](README_EN.md)
+[下载软件](#下载) · [更新日志](CHANGELOG.md) · [使用说明](#使用说明) · [赞助](#赞助) · [免责声明](#免责声明) · [English](README_EN.md)
 
 ## 说明
 
@@ -33,6 +33,12 @@
 ## 问题反馈
 
 遇到问题可在 [GitHub Issues](https://github.com/kai489646859-netizen/Yingyu/issues) 提交，附上版本、平台、复现步骤和必要的脱敏日志。请遮盖服务器地址、账号、令牌和媒体直链。安全问题请参阅[安全说明](SECURITY.md)。
+
+## 赞助
+
+如果映屿对你有帮助，欢迎通过微信扫描下方赞赏码，自愿支持项目维护。感谢你的支持！
+
+<img src="assets/sponsor-qr.png" alt="映屿微信赞赏二维码" width="260" height="260">
 
 ## 免责声明
 
