@@ -10,24 +10,7 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {".git", "bin", "obj"}
 
-REQUIRED = [
-    "README.md",
-    "README_EN.md",
-    "LICENSE",
-    "SECURITY.md",
-    "PRIVACY.md",
-    "CONTRIBUTING.md",
-    "SUPPORT.md",
-    "BUILDING.md",
-    "COMPATIBILITY.md",
-    "FAQ.md",
-    "THIRD_PARTY_NOTICES.md",
-    "OPEN_SOURCE_AND_DISCLAIMER.md",
-    "CHANGELOG-Android.md",
-    "CHANGELOG-Windows.md",
-    "source/android/lib/app.dart",
-    "source/windows/Runtime/DesktopSearch.cs",
-]
+REQUIRED = ["README.md", "README_EN.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "OPEN_SOURCE_AND_DISCLAIMER.md"]
 
 FORBIDDEN_SUFFIXES = {
     ".apk",
@@ -98,7 +81,7 @@ def main() -> int:
             fail(f"missing required file: {name}", errors)
 
     readme = (ROOT / "README.md").read_text("utf-8")
-    for expected in ("2.6.6 APK", "1.7.4 EXE", "COMPATIBILITY.md", "SECURITY.md"):
+    for expected in ("0.0.2 APK", "0.0.2 EXE", "THIRD_PARTY_NOTICES.md", "OPEN_SOURCE_AND_DISCLAIMER.md"):
         if expected not in readme:
             fail(f"README missing current reference: {expected}", errors)
     if "界面预览" in readme:
@@ -113,15 +96,6 @@ def main() -> int:
         for label, pattern in SECRET_PATTERNS.items():
             if pattern.search(content):
                 fail(f"{label} pattern in {path.relative_to(ROOT)}", errors)
-
-    for issue_form in (
-        ROOT / ".github/ISSUE_TEMPLATE/android_bug.yml",
-        ROOT / ".github/ISSUE_TEMPLATE/windows_bug.yml",
-        ROOT / ".github/ISSUE_TEMPLATE/feature_request.yml",
-    ):
-        content = issue_form.read_text("utf-8") if issue_form.exists() else ""
-        if "name:" not in content or "description:" not in content or "body:" not in content:
-            fail(f"invalid issue form: {issue_form.relative_to(ROOT)}", errors)
 
     check_links(errors)
 

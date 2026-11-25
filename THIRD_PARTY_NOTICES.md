@@ -1,6 +1,6 @@
 # Third-party notices
 
-Yingyu includes or interoperates with third-party software. This summary is informational; the license files and source records in the matching release archive are controlling.
+Yingyu-Theater includes or interoperates with third-party software. This summary is informational; the license files and source records in the matching release archive are controlling.
 
 | Component or group | Typical role | License/source location |
 | --- | --- | --- |
@@ -21,6 +21,6 @@ Yingyu includes or interoperates with third-party software. This summary is info
 | rclone | optional network/disc helper included by the Windows payload | `COPYING` retained beside the shipped component |
 | Inno Setup | Windows installer builder | Inno Setup license; build tool itself is not committed to this repository |
 
-The repository's GPL-3.0 license covers Yingyu project modifications distributed here. Third-party files remain under their own licenses; nothing in this repository expands trademark, patent, media-content or service rights.
+The repository's GPL-3.0 license covers Yingyu-Theater project modifications distributed here. Third-party files remain under their own licenses; nothing in this repository expands trademark, patent, media-content or service rights.
 
 For complete corresponding source, exact versions and build configuration, use the source archive attached to the same binary release. The Windows installer also contains `THIRD-PARTY-NOTICES.txt` and component-local license directories. If a notice appears incomplete, open an Issue without attaching private media or credentials.
