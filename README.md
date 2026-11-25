@@ -1,4 +1,7 @@
-# Yingyu-Theater · 映屿
+<div align="center">
+  <img src="assets/icon.png" alt="Yingyu-Theater 软件图标" width="112" height="112">
+  <h1>Yingyu-Theater · 映屿</h1>
+</div>
 
 面向 Android 手机、平板和 Windows 电脑的 Emby 媒体播放器。连接自己的媒体库，即可浏览、搜索和原文件播放。
 

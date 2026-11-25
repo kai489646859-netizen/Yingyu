@@ -1,4 +1,7 @@
-# Yingyu-Theater
+<div align="center">
+  <img src="assets/icon.png" alt="Yingyu-Theater 软件图标" width="112" height="112">
+  <h1>Yingyu-Theater</h1>
+</div>
 
 An independent Emby client for Android phones and tablets and Windows PCs. Browse and search your own library, resume watching and play original files with mpv.
 
