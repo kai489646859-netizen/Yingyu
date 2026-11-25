@@ -7,7 +7,7 @@
 | Android | [0.0.2 APK](https://github.com/kai489646859-netizen/Yingyu-Theater/releases/download/android-formal-v0.0.2/Yingyu-0.0.2.apk) | Android 8.0+ |
 | Windows | [0.0.2 EXE](https://github.com/kai489646859-netizen/Yingyu-Theater/releases/download/android-formal-v0.0.2/Yingyu-Setup-x64-0.0.2.exe) | Windows 10 / 11，x64 |
 
-[所有正式版](https://github.com/kai489646859-netizen/Yingyu-Theater/releases) · [English](README_EN.md)
+[更新记录](CHANGELOG.md) · [所有正式版](https://github.com/kai489646859-netizen/Yingyu-Theater/releases) · [English](README_EN.md)
 
 ## 功能
 
@@ -17,7 +17,7 @@
 
 ## 安装
 
-安装对应平台的版本，打开应用并添加你有权访问的 Emby 服务器。已有同一安装线可直接覆盖。Windows 请先关闭播放器再运行安装器，系统可能提示「未知发布者」。SHA-256、源码与调试符号见各版本的发行页。
+安装对应平台的版本，打开应用并添加你有权访问的 Emby 服务器。已有同一安装线可直接覆盖。Windows 请先关闭播放器再运行安装器，系统可能提示「未知发布者」。SHA-256、源码与调试符号见各版本的发行页。仓库改名后，如应用内未发现更新，请从上表下载并覆盖安装。
 
 ## 免责声明
 
