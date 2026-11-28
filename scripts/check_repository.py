@@ -81,7 +81,7 @@ def main() -> int:
             fail(f"missing required file: {name}", errors)
 
     readme = (ROOT / "README.md").read_text("utf-8")
-    for expected in ("0.0.2 APK", "0.0.2 EXE", "THIRD_PARTY_NOTICES.md", "OPEN_SOURCE_AND_DISCLAIMER.md"):
+    for expected in ("Yingyu-0.0.3.apk", "Yingyu-Setup-x64-0.0.3.exe", "THIRD_PARTY_NOTICES.md", "OPEN_SOURCE_AND_DISCLAIMER.md"):
         if expected not in readme:
             fail(f"README missing current reference: {expected}", errors)
     if "界面预览" in readme:

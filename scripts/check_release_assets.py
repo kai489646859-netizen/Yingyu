@@ -14,7 +14,7 @@ REQUIRED = {
         f"Yingyu-{version}-source-and-symbols.zip",
         "SHA256SUMS.txt",
     }
-    for version in ("0.0.1", "0.0.2")
+    for version in ("0.0.1", "0.0.2", "0.0.3")
 }
 
 

@@ -19,8 +19,8 @@
 
 | 平台 | 安装包 | 系统要求 |
 | --- | --- | --- |
-| Android | [0.0.2 APK](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-formal-v0.0.2/Yingyu-0.0.2.apk) | Android 8.0+，arm64-v8a / armeabi-v7a / x86_64 |
-| Windows | [0.0.2 EXE](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-formal-v0.0.2/Yingyu-Setup-x64-0.0.2.exe) | Windows 10 / 11，x64 |
+| Android | [0.0.3 APK](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-formal-v0.0.3/Yingyu-0.0.3.apk) | Android 8.0+，arm64-v8a / armeabi-v7a / x86_64 |
+| Windows | [0.0.3 EXE](https://github.com/kai489646859-netizen/Yingyu/releases/download/android-formal-v0.0.3/Yingyu-Setup-x64-0.0.3.exe) | Windows 10 / 11，x64 |
 
 各版本的 Android 和 Windows 更新说明、SHA-256、对应源码及调试符号见 [GitHub Releases](https://github.com/kai489646859-netizen/Yingyu/releases)。
 
